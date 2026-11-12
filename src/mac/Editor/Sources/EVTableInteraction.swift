@@ -1,7 +1,7 @@
 import AppKit
 import CViemCore
 
-extension ViemLogicalSelectionIdentityV1 {
+extension ViemLogicalSelectionIdentity {
     func isSameSelection(as other: Self) -> Bool {
         document_id == other.document_id && document_revision == other.document_revision
             && view_id == other.view_id && text_start == other.text_start && text_end == other.text_end
@@ -12,9 +12,9 @@ extension ViemLogicalSelectionIdentityV1 {
 }
 
 private final class EVTableMenuAction: NSObject {
-    let context: ViemTableContextV1
+    let context: ViemTableContext
     let action: UInt32, alignment: UInt32
-    init(_ context: ViemTableContextV1, _ action: UInt32, _ alignment: UInt32 = 0) {
+    init(_ context: ViemTableContext, _ action: UInt32, _ alignment: UInt32 = 0) {
         self.context = context; self.action = action; self.alignment = alignment
     }
 }
@@ -36,14 +36,14 @@ final class EVTableInteraction: NSObject, NSMenuDelegate {
     private struct ColumnGesture { let table: UInt64, anchor: UInt64, rows: UInt64 }
     private weak var editor: EVEditorView?
     private let widget = NSStackView()
-    private var target: ViemTableContextV1?
+    private var target: ViemTableContext?
     private var targetViewport = NSPoint.zero
-    private var targetIdentity: ViemLayoutSnapshotIdentityV1?
+    private var targetIdentity: ViemLayoutSnapshotIdentity?
     private var activation = NSRect.zero
     private var targetKind: WidgetKind?
     private var popupTracking = false
-    private var dragAnchor: ViemTableCellV1?
-    private var dragIdentity: ViemLayoutSnapshotIdentityV1?
+    private var dragAnchor: ViemTableCell?
+    private var dragIdentity: ViemLayoutSnapshotIdentity?
     private var dragOrigin = NSPoint.zero
     private var cellDrag = false
     private var columnGesture: ColumnGesture?
@@ -164,19 +164,19 @@ final class EVTableInteraction: NSObject, NSMenuDelegate {
         show(context, kind: kind, cell: editor.viewRect(cell.rect), table: editor.viewRect(cell.table_rect), identity: snapshot.info.identity)
     }
 
-    private static func rowsName(_ context: ViemTableContextV1) -> String {
+    private static func rowsName(_ context: ViemTableContext) -> String {
         context.row_end - context.row > 1 ? "rows \(context.row + 1)–\(context.row_end)"
             : context.row == 0 ? "header row" : "row \(context.row + 1)"
     }
-    private static func columnsName(_ context: ViemTableContextV1) -> String {
+    private static func columnsName(_ context: ViemTableContext) -> String {
         context.column_end - context.column > 1 ? "columns \(context.column + 1)–\(context.column_end)" : "column \(context.column + 1)"
     }
-    private static func alignmentName(_ context: ViemTableContextV1) -> String {
+    private static func alignmentName(_ context: ViemTableContext) -> String {
         let columns = columnsName(context)
         return columns.prefix(1).uppercased() + columns.dropFirst() + " alignment"
     }
 
-    private func show(_ context: ViemTableContextV1, kind: WidgetKind, cell: NSRect, table: NSRect, identity: ViemLayoutSnapshotIdentityV1) {
+    private func show(_ context: ViemTableContext, kind: WidgetKind, cell: NSRect, table: NSRect, identity: ViemLayoutSnapshotIdentity) {
         guard let editor else { return }
         let column = kind == .column || kind == .columnSelection
         target = context; targetKind = kind; targetIdentity = identity; targetViewport = editor.viewportOrigin
@@ -226,7 +226,7 @@ final class EVTableInteraction: NSObject, NSMenuDelegate {
     }
 
     /// The table cell whose column owns the strip along the table's top edge.
-    func columnSelectionCell(at point: NSPoint) -> ViemTableCellV1? {
+    func columnSelectionCell(at point: NSPoint) -> ViemTableCell? {
         guard let editor, let surface, surface.backend.sourceFormat == .markdown, let snapshot = surface.layoutSnapshot,
               editor.bounds.contains(point), !ownsPointerInteraction(at: point) else { return nil }
         return snapshot.tableCells.first { Self.ownsColumn(point, cell: editor.viewRect($0.rect), table: editor.viewRect($0.table_rect)) }
@@ -246,7 +246,7 @@ final class EVTableInteraction: NSObject, NSMenuDelegate {
     }
     func dragColumns(to point: NSPoint) {
         guard let editor, let gesture = columnGesture, let snapshot = surface?.layoutSnapshot else { return }
-        func distance(_ cell: ViemTableCellV1) -> CGFloat {
+        func distance(_ cell: ViemTableCell) -> CGFloat {
             let rect = editor.viewRect(cell.rect)
             return max(rect.minX - point.x, 0, point.x - rect.maxX)
         }
@@ -271,7 +271,7 @@ final class EVTableInteraction: NSObject, NSMenuDelegate {
         // direction: at the end of the last column's final cell, or at the
         // start of the first column's header cell.
         let forward = column >= gesture.anchor
-        var selection = ViemTableSelectionV1(); selection.struct_size = UInt32(MemoryLayout<ViemTableSelectionV1>.size)
+        var selection = ViemTableSelection()
         selection.active = 1; selection.document_id = snapshot.info.identity.document_id
         selection.document_revision = snapshot.info.identity.document_revision; selection.table_id = gesture.table
         selection.anchor_row = forward ? 0 : gesture.rows - 1; selection.anchor_column = gesture.anchor
@@ -290,7 +290,7 @@ final class EVTableInteraction: NSObject, NSMenuDelegate {
     }
     func menuWillOpen(_ menu: NSMenu) { popupTracking = true }
     func menuDidClose(_ menu: NSMenu) { popupTracking = false; invalidate() }
-    private func alignmentMenu(_ context: ViemTableContextV1) -> NSMenu {
+    private func alignmentMenu(_ context: ViemTableContext) -> NSMenu {
         let menu = NSMenu(title: Self.alignmentName(context))
         for (name, symbol, alignment) in [("Left", "text.alignleft", UInt32(1)), ("Center", "text.aligncenter", 2), ("Right", "text.alignright", 3)] {
             let item = menuItem(name, context: context, action: 7, alignment: alignment)
@@ -302,7 +302,7 @@ final class EVTableInteraction: NSObject, NSMenuDelegate {
     }
     func appendMenu(to menu: NSMenu, event: NSEvent) {
         guard let editor, let surface, let session = surface.session, surface.backend.sourceFormat == .markdown else { return }
-        var context: ViemTableContextV1?
+        var context: ViemTableContext?
         let selection = try? session.tableContext()
         if event.type == .keyDown { context = selection }
         else if let snapshot = surface.layoutSnapshot, let cell = snapshot.tableCells.first(where: { editor.viewRect($0.rect).contains(editor.convert(event.locationInWindow, from: nil)) }) {
@@ -331,7 +331,7 @@ final class EVTableInteraction: NSObject, NSMenuDelegate {
             alignment.submenu = alignmentMenu(context); menu.addItem(alignment)
         }
     }
-    private func menuItem(_ title: String, context: ViemTableContextV1, action: UInt32, alignment: UInt32 = 0) -> NSMenuItem {
+    private func menuItem(_ title: String, context: ViemTableContext, action: UInt32, alignment: UInt32 = 0) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: #selector(menuAction(_:)), keyEquivalent: "")
         item.target = self; item.representedObject = EVTableMenuAction(context, action, alignment); return item
     }
@@ -355,7 +355,7 @@ final class EVTableInteraction: NSObject, NSMenuDelegate {
         let cells = snapshot.tableCells.filter { $0.table_id == anchor.table_id }
         let layoutPoint = editor.layoutPoint(fromViewPoint: point)
         let destination = cells.min { a, b in
-            func distance(_ c: ViemTableCellV1) -> CGFloat {
+            func distance(_ c: ViemTableCell) -> CGFloat {
                 let r = NSRect(x: CGFloat(c.rect.x), y: CGFloat(c.rect.y), width: CGFloat(c.rect.width), height: CGFloat(c.rect.height))
                 return hypot(max(r.minX - layoutPoint.x, 0, layoutPoint.x - r.maxX), max(r.minY - layoutPoint.y, 0, layoutPoint.y - r.maxY))
             }
@@ -376,7 +376,7 @@ final class EVTableInteraction: NSObject, NSMenuDelegate {
             }
         }
         guard cellDrag else { return false }
-        var selection = ViemTableSelectionV1(); selection.struct_size = UInt32(MemoryLayout<ViemTableSelectionV1>.size)
+        var selection = ViemTableSelection()
         selection.active = 1; selection.document_id = identity.document_id; selection.document_revision = identity.document_revision
         selection.table_id = anchor.table_id; selection.anchor_row = anchor.row; selection.anchor_column = anchor.column
         selection.active_row = destination.row; selection.active_column = destination.column
@@ -409,7 +409,7 @@ final class EVTableInteraction: NSObject, NSMenuDelegate {
                     }
                     element.focusCell = { [weak surface, weak editor] in
                         guard let surface, let session = surface.session, surface.documentState.document_revision == snapshot.info.identity.document_revision else { return false }
-                        var point = ViemLayoutCaretPointV1(); point.document_revision = snapshot.info.identity.document_revision
+                        var point = ViemLayoutCaretPoint(); point.document_revision = snapshot.info.identity.document_revision
                         point.text_offset = cell.text_start; point.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)
                         surface.performInput { _ = try session.placeCursor(point, extendSelection: false) }
                         editor?.window?.makeFirstResponder(editor); return true

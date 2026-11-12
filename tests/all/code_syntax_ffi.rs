@@ -21,8 +21,8 @@ impl Core {
         );
         Self(handle)
     }
-    fn state(&self) -> ViemDocumentStateV1 {
-        let mut state = ViemDocumentStateV1::default();
+    fn state(&self) -> ViemDocumentState {
+        let mut state = ViemDocumentState::default();
         assert_eq!(
             unsafe { viem_core_document_state(self.0, &mut state) },
             ViemStatus::Ok

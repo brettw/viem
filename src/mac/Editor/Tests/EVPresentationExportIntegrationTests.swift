@@ -188,8 +188,7 @@ final class EVPresentationExportIntegrationTests: XCTestCase {
     func testBidiSelectionPaintsEveryExactExportedRectangle() throws {
         let (surface, session, window) = try makeSurface(text: "abc אבג def")
         let revision = surface.viewPresentation.document_revision
-        var start = ViemLayoutCaretPointV1()
-        start.struct_size = UInt32(MemoryLayout<ViemLayoutCaretPointV1>.size)
+        var start = ViemLayoutCaretPoint()
         start.document_revision = revision
         start.text_offset = 2
         start.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)

@@ -82,8 +82,7 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
     info.canvas_background = rgba(red: 0.1, green: 0.2, blue: 0.3, alpha: 1)
     info.default_paint = textPaint(foreground: rgba(red: 0, green: 0, blue: 0, alpha: 1))
     info.paint_run_count = 1
-    var run = ViemPaintStyleRunV1()
-    run.struct_size = UInt32(MemoryLayout<ViemPaintStyleRunV1>.size)
+    var run = ViemPaintStyleRun()
     run.text_start = second.text_start
     run.text_end = second.text_end
     run.paint = textPaint(
@@ -233,7 +232,7 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
 
   @MainActor
   private func unionOfInkBounds(
-    _ clusters: [ViemPositionedClusterV1],
+    _ clusters: [ViemPositionedCluster],
     in view: EVEditorView
   ) -> NSRect? {
     clusters.reduce(nil as NSRect?) { result, cluster in
@@ -260,8 +259,8 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
     return result
   }
 
-  private func rgba(red: Float, green: Float, blue: Float, alpha: Float) -> ViemRgbaV1 {
-    var value = ViemRgbaV1()
+  private func rgba(red: Float, green: Float, blue: Float, alpha: Float) -> ViemRgba {
+    var value = ViemRgba()
     value.red = red
     value.green = green
     value.blue = blue
@@ -271,11 +270,10 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
 
   private func textPaint(
     flags: UInt32 = 0,
-    foreground: ViemRgbaV1,
-    background: ViemRgbaV1 = ViemRgbaV1()
-  ) -> ViemTextPaintV1 {
-    var value = ViemTextPaintV1()
-    value.struct_size = UInt32(MemoryLayout<ViemTextPaintV1>.size)
+    foreground: ViemRgba,
+    background: ViemRgba = ViemRgba()
+  ) -> ViemTextPaint {
+    var value = ViemTextPaint()
     value.flags = flags
     value.foreground = foreground
     value.background = background
@@ -283,7 +281,7 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
   }
 
   private func assertRGBA(
-    _ actual: ViemRgbaV1,
+    _ actual: ViemRgba,
     red: Float,
     green: Float,
     blue: Float,

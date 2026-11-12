@@ -91,7 +91,7 @@ internal sealed unsafe class DiffComparison : IDisposable
         using var timing = Diagnostics.InputPerformance.Measure("diff.sync");
         uint result = 0;
         Check(viem_diff_session_sync(handle, basis.Document.Handle, basis.Id, live.Document.Handle, live.Id, &result), "Update comparison");
-        var info = New<ViemDiffSessionInfoV1>();
+        var info = new ViemDiffSessionInfo();
         Check(viem_diff_session_info(handle, &info), "Read comparison totals");
         LineTotals = (info.added, info.removed);
     }
@@ -102,7 +102,7 @@ internal sealed unsafe class DiffComparison : IDisposable
     }
     internal bool Navigate(bool next)
     {
-        var target = New<ViemDiffNavigationV1>();
+        var target = new ViemDiffNavigation();
         Check(viem_diff_session_navigate(handle, basis.Document.Handle, basis.Id, live.Document.Handle, live.Id,
             next ? VIEM_DIFF_NAVIGATE_NEXT : VIEM_DIFF_NAVIGATE_PREVIOUS, &target), "Go to change");
         return (target.flags & VIEM_DIFF_NAVIGATION_FOUND) != 0;
@@ -132,7 +132,7 @@ internal sealed unsafe class DiffComparison : IDisposable
             fromLive ? 1u : 0u, &changed), "Align vertical scroll range and position");
         return changed;
     }
-    internal (ViemDiffScrollbarMarkV1[] Marks, float Extent, ViemRgbaV1 Added, ViemRgbaV1 Removed) Marks(bool newSide)
+    internal (ViemDiffScrollbarMark[] Marks, float Extent, ViemRgba Added, ViemRgba Removed) Marks(bool newSide)
     {
         using var timing = Diagnostics.InputPerformance.Measure(newSide ? "diff.marks.live" : "diff.marks.base");
         var view = newSide ? live : basis;
@@ -141,10 +141,10 @@ internal sealed unsafe class DiffComparison : IDisposable
         uint side = newSide ? 1u : 0u;
         uint status = viem_diff_session_scrollbar_marks(handle, view.Document.Handle, view.Id, side, null, 0, &count, &extent);
         if (status != VIEM_STATUS_BUFFER_TOO_SMALL) Check(status, "Measure diff marks");
-        var marks = new ViemDiffScrollbarMarkV1[checked((int)count)];
-        fixed (ViemDiffScrollbarMarkV1* p = marks)
+        var marks = new ViemDiffScrollbarMark[checked((int)count)];
+        fixed (ViemDiffScrollbarMark* p = marks)
             Check(viem_diff_session_scrollbar_marks(handle, view.Document.Handle, view.Id, side, p, count, &count, &extent), "Read diff marks");
-        ViemRgbaV1 added, removed;
+        ViemRgba added, removed;
         Check(viem_diff_line_colors(&added, &removed), "Read diff colors");
         return (marks, extent, added, removed);
     }

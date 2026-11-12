@@ -7,8 +7,8 @@ use super::*;
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_view_toggle_checkbox(
     handle: ViemCoreHandle, view: ViemViewId,
-    expected: *const ViemLayoutSnapshotIdentityV1, paragraph_id: u64,
-    output: *mut ViemCoreOutcomeV1,
+    expected: *const ViemLayoutSnapshotIdentity, paragraph_id: u64,
+    output: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let request = unsafe { read_core_request(expected, output)? };

@@ -3,10 +3,9 @@ import CViemCore
 
 extension EVCoreViewSession {
     @discardableResult
-    func editCommandLine(_ snapshot: EVCommandLineExport, selecting range: Range<Int>? = nil, anchor: Int? = nil, active: Int? = nil, replacement: String? = nil) throws -> ViemCoreOutcomeV1 {
+    func editCommandLine(_ snapshot: EVCommandLineExport, selecting range: Range<Int>? = nil, anchor: Int? = nil, active: Int? = nil, replacement: String? = nil) throws -> ViemCoreOutcome {
         var identity = snapshot.info.identity
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        var outcome = ViemCoreOutcome()
         let start = range?.lowerBound ?? anchor ?? Int(snapshot.selectionAnchorUTF8Offset)
         let end = range?.upperBound ?? active ?? Int(snapshot.info.cursor_utf8_offset)
         let bytes = Array((replacement ?? "").utf8)

@@ -124,13 +124,13 @@ pub unsafe extern "C" fn viem_core_view_copy_link_context(
 pub unsafe extern "C" fn viem_core_view_edit_link(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemLogicalSelectionIdentityV1,
+    expected: *const ViemLogicalSelectionIdentity,
     action: u32,
     link_start: u64,
     link_end: u64,
     text: ViemUtf8Slice,
     destination: ViemUtf8Slice,
-    output: *mut ViemCoreOutcomeV1,
+    output: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         validate_disjoint_regions(&[
@@ -218,7 +218,7 @@ pub unsafe extern "C" fn viem_core_view_navigate_link_fragment(
     revision: u64,
     fragment: ViemUtf8Slice,
     found: *mut u8,
-    output: *mut ViemCoreOutcomeV1,
+    output: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         validate_disjoint_regions(&[
@@ -256,8 +256,8 @@ pub unsafe extern "C" fn viem_core_view_navigate_link_fragment(
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_view_reference_action(
     handle: ViemCoreHandle, view: ViemViewId,
-    expected: *const ViemLogicalSelectionIdentityV1, request: ViemUtf8Slice,
-    output: *mut ViemCoreOutcomeV1,
+    expected: *const ViemLogicalSelectionIdentity, request: ViemUtf8Slice,
+    output: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         validate_disjoint_regions(&[typed_pointer_region(expected,1)?,

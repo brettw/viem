@@ -16,7 +16,7 @@ pub unsafe extern "C" fn viem_core_view_read_file(
     after: u64,
     input: *const u8,
     length: u64,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         validate_disjoint_regions(&[
@@ -57,8 +57,8 @@ pub unsafe extern "C" fn viem_core_view_execute_command_line(
     view: ViemViewId,
     input: *const u8,
     length: u64,
-    context: *const ViemCommandTurnContextV2,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    context: *const ViemCommandTurnContext,
+    out_outcome: *mut ViemCoreOutcome,
     out_effects: *mut ViemEffectBatchHandle,
 ) -> ViemStatus {
     ffi_boundary(|| {
@@ -116,13 +116,13 @@ mod tests {
     use super::*;
     #[test]
     fn file_continuations_validate_regions_before_touching_core_state() {
-        let mut outcome = ViemCoreOutcomeV1::default();
+        let mut outcome = ViemCoreOutcome::default();
         unsafe {
             assert_eq!(
                 viem_core_view_read_file(0, 0, 0, 0, 0, 0, std::ptr::null(), 1, &mut outcome),
                 ViemStatus::NullPointer
             );
-            let aliased = (&outcome as *const ViemCoreOutcomeV1).cast::<u8>();
+            let aliased = (&outcome as *const ViemCoreOutcome).cast::<u8>();
             assert_eq!(
                 viem_core_view_read_file(0, 0, 0, 0, 0, 0, aliased, 1, &mut outcome),
                 ViemStatus::InvalidArgument
@@ -153,8 +153,8 @@ mod tests {
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_view_resume_script(
     handle: ViemCoreHandle, view: ViemViewId, token: u64, success: u32,
-    context: *const ViemCommandTurnContextV2,
-    out_outcome: *mut ViemCoreOutcomeV1, out_effects: *mut ViemEffectBatchHandle,
+    context: *const ViemCommandTurnContext,
+    out_outcome: *mut ViemCoreOutcome, out_effects: *mut ViemEffectBatchHandle,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let regions = [typed_pointer_region(out_outcome, 1)?, typed_pointer_region(out_effects, 1)?];
@@ -179,7 +179,7 @@ pub unsafe extern "C" fn viem_core_view_resume_script(
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_view_take_startup_effects(
     handle: ViemCoreHandle, view: ViemViewId,
-    out_outcome: *mut ViemCoreOutcomeV1, out_effects: *mut ViemEffectBatchHandle,
+    out_outcome: *mut ViemCoreOutcome, out_effects: *mut ViemEffectBatchHandle,
 ) -> ViemStatus {
     ffi_boundary(|| {
         validate_disjoint_regions(&[typed_pointer_region(out_outcome, 1)?, typed_pointer_region(out_effects, 1)?])?;
@@ -197,7 +197,7 @@ pub unsafe extern "C" fn viem_core_view_take_startup_effects(
 
 fn export_script_outcome(core: &Core<CTextMeasurementProvider>, view: ViemViewId,
     outcome: crate::coordinator::CoreOutcome, clipboard: &ClipboardCommandContext,
-) -> Result<(ViemCoreOutcomeV1, Option<OwnedEffectBatch>), ViemStatus> {
+) -> Result<(ViemCoreOutcome, Option<OwnedEffectBatch>), ViemStatus> {
     let id = ViewId(view);
     let mut summary = summarize_core_outcome(core, id, Some(&outcome))?;
     let effects = OwnedEffectBatch::from_command(core.document(),

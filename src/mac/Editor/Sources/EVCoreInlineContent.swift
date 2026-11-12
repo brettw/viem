@@ -75,8 +75,7 @@ extension EVCoreViewSession {
     }
 
     func selectImage(at offset: UInt64, documentID: UInt64, revision: UInt64) throws {
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        var outcome = ViemCoreOutcome()
         let status = viem_core_view_select_image(document.core, viewID, documentID, revision, offset, &outcome)
         guard status == 0 else { throw EVCoreFrontendError.core(operation: "Select image", status: status) }
         finishStyleEdit(outcome)
@@ -99,11 +98,10 @@ extension EVCoreViewSession {
     }
 
     @discardableResult
-    func editInlineContent(_ kind: EVInlineContentKind, action: UInt32, context: EVInlineContentContext, expected: ViemLogicalSelectionIdentityV1,
-                  text: String = "", destination: String = "", imageSize: (width: UInt32?, height: UInt32?)? = nil) throws -> ViemCoreOutcomeV1 {
+    func editInlineContent(_ kind: EVInlineContentKind, action: UInt32, context: EVInlineContentContext, expected: ViemLogicalSelectionIdentity,
+                  text: String = "", destination: String = "", imageSize: (width: UInt32?, height: UInt32?)? = nil) throws -> ViemCoreOutcome {
         var selection = expected
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        var outcome = ViemCoreOutcome()
         let status = Array(text.utf8).withUnsafeBufferPointer { label in
             Array(destination.utf8).withUnsafeBufferPointer { url in
                 let label = ViemUtf8Slice(data: label.baseAddress, length: UInt64(label.count))
@@ -129,7 +127,7 @@ extension EVCoreViewSession {
 }
 
 extension EVCoreViewSession {
-    func referenceAction(_ action: String, context: EVInlineContentContext, expected: ViemLogicalSelectionIdentityV1,
+    func referenceAction(_ action: String, context: EVInlineContentContext, expected: ViemLogicalSelectionIdentity,
                          fields: [String: Any] = [:]) throws {
         guard context.reference != nil || action == "insert" else { throw EVDocumentHostError.unsupportedRequest }
         var request = fields
@@ -137,7 +135,7 @@ extension EVCoreViewSession {
         if action == "insert" { request["end"] = expected.text_end }
         let bytes = Array(try JSONSerialization.data(withJSONObject: request))
         var selection = expected
-        var outcome = ViemCoreOutcomeV1(); outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        var outcome = ViemCoreOutcome()
         let status = bytes.withUnsafeBufferPointer { buffer in
             viem_core_view_reference_action(document.core, viewID, &selection,
                 ViemUtf8Slice(data: buffer.baseAddress, length: UInt64(buffer.count)), &outcome)

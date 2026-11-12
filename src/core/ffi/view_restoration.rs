@@ -4,8 +4,7 @@ use super::*;
 /// Presentation hints for an explicit replacement; never a snapshot edit point.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct ViemViewRestorationV1 {
-    pub struct_size: u32,
+pub struct ViemViewRestoration {
     pub cursor_affinity: u32,
     pub cursor_line: u64,
     pub cursor_column: u64,
@@ -14,20 +13,18 @@ pub struct ViemViewRestorationV1 {
     pub row_fraction: f32,
     pub left: f32,
 }
-pub const VIEM_VIEW_RESTORATION_V1_SIZE: u32 = size_of::<ViemViewRestorationV1>() as u32;
 
 /// Capture a view before replacing the document.
 /// # Safety
 /// `out_state` must identify one aligned writable value.
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_view_capture_restoration(handle: ViemCoreHandle,
-    view: ViemViewId, out_state: *mut ViemViewRestorationV1) -> ViemStatus {
+    view: ViemViewId, out_state: *mut ViemViewRestoration) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_state, 1)?;
-        unsafe { out_state.write(ViemViewRestorationV1::default()) };
+        unsafe { out_state.write(ViemViewRestoration::default()) };
         let state = with_core(handle, |core| core.capture_view_restoration(ViewId(view)).map_err(core_status))?;
-        unsafe { out_state.write(ViemViewRestorationV1 {
-            struct_size: VIEM_VIEW_RESTORATION_V1_SIZE,
+        unsafe { out_state.write(ViemViewRestoration {
             cursor_affinity: affinity_to_ffi(state.cursor_affinity),
             cursor_line: state.cursor.0 as u64, cursor_column: state.cursor.1 as u64,
             viewport_line: state.viewport.0 as u64, viewport_column: state.viewport.1 as u64,
@@ -43,11 +40,10 @@ pub unsafe extern "C" fn viem_core_view_capture_restoration(handle: ViemCoreHand
 /// Input and output must be aligned, valid for their sizes, and disjoint.
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_view_restore(handle: ViemCoreHandle, view: ViemViewId,
-    document: u64, revision: u64, state: *const ViemViewRestorationV1,
-    out_outcome: *mut ViemCoreOutcomeV1) -> ViemStatus {
+    document: u64, revision: u64, state: *const ViemViewRestoration,
+    out_outcome: *mut ViemCoreOutcome) -> ViemStatus {
     ffi_boundary(|| {
         let state = unsafe { read_core_request(state, out_outcome)? };
-        if state.struct_size < VIEM_VIEW_RESTORATION_V1_SIZE { return Err(ViemStatus::InvalidArgument); }
         let coordinate = |value| usize::try_from(value).map_err(|_| ViemStatus::LengthOverflow);
         let state = crate::coordinator::ViewRestoration {
             cursor: (coordinate(state.cursor_line)?, coordinate(state.cursor_column)?),

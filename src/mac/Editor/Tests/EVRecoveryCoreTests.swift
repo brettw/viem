@@ -46,8 +46,8 @@ final class EVRecoveryCoreTests: XCTestCase {
       _ = try session.sendTestKeys(index == 0 ? "jlll" : "jjlllll")
       _ = try session.setViewportOrigin(left: 0, top: CGFloat(310 + index * 220))
     }
-    func captured(_ surface: EVEditorSurfaceController) throws -> ViemViewRestorationV1 {
-      var state = ViemViewRestorationV1()
+    func captured(_ surface: EVEditorSurfaceController) throws -> ViemViewRestoration {
+      var state = ViemViewRestoration()
       let session = try XCTUnwrap(surface.session)
       XCTAssertEqual(viem_core_view_capture_restoration(backend.core, session.viewID, &state), UInt32(VIEM_STATUS_OK))
       return state

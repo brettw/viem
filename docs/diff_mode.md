@@ -550,7 +550,7 @@ context), built in this order:
   in the knob slot; overlay: a paint-only view under the knob overlay).
 - [x] 8. Folder diffs. `GitRepository::changed_files(kind, scope, …)` adds
   the folder as a literal pathspec (`relative_folder`; the root scopes
-  nothing) and `discover` accepts a folder. `ViemDiffBaseRequestV1` gained
+  nothing) and `discover` accepts a folder. `ViemDiffBaseRequest` gained
   `scope_path`; unsaved buffers join a scoped list only from inside the
   folder. macOS: `EVDiffFolder.menuTitle` (40-character left clip), the
   Diff menu's directory item retitled in `menuNeedsUpdate`,

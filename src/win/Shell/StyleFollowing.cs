@@ -12,7 +12,7 @@ internal sealed partial class StyleWindow
     private bool refreshAfterFollowing;
     // This snapshot is only compared with the next presentation to detect a
     // change, never resolved as a retained editing position.
-    private ViemViewPresentationV1 followedPresentation;
+    private ViemViewPresentation followedPresentation;
     private DispatcherQueueTimer? caretFollowTimer;
 
     private void AttachView(bool followCaret)
@@ -154,7 +154,7 @@ internal sealed partial class StyleWindow
         if (openColorPickers.Count > 0) { refreshAfterColorPopup = true; return; }
         Load(selected?.Key);
     }
-    private static bool SelectionChanged(ViemViewPresentationV1 previous, ViemViewPresentationV1 next)
+    private static bool SelectionChanged(ViemViewPresentation previous, ViemViewPresentation next)
     {
         if (previous.document_id != next.document_id || previous.cursor_utf8_offset != next.cursor_utf8_offset
             || previous.cursor_affinity != next.cursor_affinity) return true;

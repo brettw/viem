@@ -20,7 +20,7 @@ internal sealed unsafe partial class CoreView
     }
     internal static FileMarkTarget ResolveFileMark(uint name)
     {
-        ViemFileMarkTargetV1 info = default;
+        ViemFileMarkTarget info = default;
         Check(viem_file_mark_target(name, 0, &info, null, 0), "Find file mark");
         byte[] bytes = new byte[checked((int)info.path_length)];
         fixed (byte* path = bytes) Check(viem_file_mark_target(name, info.generation, &info, path, (ulong)bytes.Length), "Read file mark");

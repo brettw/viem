@@ -188,8 +188,7 @@ enum EVDiffBaseLoader {
   }
 
   private nonisolated static func item(_ handle: ViemDiffResultHandle, _ index: UInt64) -> (path: String, basePath: String, change: UInt32, added: UInt64, removed: UInt64)? {
-    var entry = ViemDiffListItemV1()
-    entry.struct_size = UInt32(MemoryLayout<ViemDiffListItemV1>.size)
+    var entry = ViemDiffListItem()
     var required: UInt64 = 0
     var text = [UInt8](repeating: 0, count: 4096)
     var status = viem_diff_result_copy_item(handle, index, &entry, &text, UInt64(text.count), &required)
@@ -207,8 +206,8 @@ enum EVDiffBaseLoader {
   /// Build one request, call the core, read the owned result and release it.
   private nonisolated static func withResult<T>(
     _ base: EVDiffBase, path: String, unsaved: [String], scope: String? = nil,
-    call: (UnsafePointer<ViemDiffBaseRequestV1>?, UnsafeMutablePointer<ViemDiffResultHandle>?) -> ViemStatus,
-    read: (ViemDiffResultHandle, ViemDiffResultInfoV1) -> T
+    call: (UnsafePointer<ViemDiffBaseRequest>?, UnsafeMutablePointer<ViemDiffResultHandle>?) -> ViemStatus,
+    read: (ViemDiffResultHandle, ViemDiffResultInfo) -> T
   ) -> Result<T, EVDiffLoadFailure> {
     let filePath: String
     let branch: String
@@ -229,8 +228,7 @@ enum EVDiffBaseLoader {
       ViemUtf8Slice(data: UnsafePointer(buffers[index].baseAddress), length: UInt64(strings[index].utf8.count))
     }
     var unsavedSlices = (3..<strings.count).map(slice)
-    var request = ViemDiffBaseRequestV1()
-    request.struct_size = UInt32(MemoryLayout<ViemDiffBaseRequestV1>.size)
+    var request = ViemDiffBaseRequest()
     request.kind = base.kind
     request.file_path = slice(0)
     request.revision = slice(1)
@@ -246,8 +244,7 @@ enum EVDiffBaseLoader {
                                         message: "The diff base request was rejected (\(status))."))
     }
     defer { _ = viem_diff_result_release(handle) }
-    var info = ViemDiffResultInfoV1()
-    info.struct_size = UInt32(MemoryLayout<ViemDiffResultInfoV1>.size)
+    var info = ViemDiffResultInfo()
     guard viem_diff_result_info(handle, &info) == UInt32(VIEM_STATUS_OK) else {
       return .failure(EVDiffLoadFailure(result: UInt32(VIEM_DIFF_RESULT_UNAVAILABLE), message: ""))
     }

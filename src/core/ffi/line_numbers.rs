@@ -10,24 +10,20 @@ pub const VIEM_LINE_NUMBER_DIFF_REMOVED: u32 = 1 << 3;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemLineNumberSnapshotInfoV1 {
-    pub struct_size: u32,
+pub struct ViemLineNumberSnapshotInfo {
     pub flags: u32,
-    pub identity: ViemLayoutSnapshotIdentityV1,
-    pub viewport: ViemLayoutRectV1,
+    pub identity: ViemLayoutSnapshotIdentity,
+    pub viewport: ViemLayoutRect,
     pub source_line_count: u64,
     pub current_source_line: u64,
     pub region_count: u64,
 }
-pub const VIEM_LINE_NUMBER_SNAPSHOT_INFO_V1_SIZE: u32 =
-    size_of::<ViemLineNumberSnapshotInfoV1>() as u32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemLineNumberRegionV1 {
+pub struct ViemLineNumberRegion {
     pub source_line: u64,
     pub flags: u32,
-    pub reserved: u32,
     pub top: f32,
     pub bottom: f32,
 }
@@ -77,7 +73,7 @@ pub extern "C" fn viem_core_view_set_number(
 pub unsafe extern "C" fn viem_core_view_row_selection_hit_test(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemLayoutSnapshotIdentityV1,
+    expected: *const ViemLayoutSnapshotIdentity,
     x: f32,
     y: f32,
     out_hit: *mut u32,
@@ -109,10 +105,10 @@ pub unsafe extern "C" fn viem_core_view_row_selection_hit_test(
 pub unsafe extern "C" fn viem_core_view_select_pointer_row(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemLayoutSnapshotIdentityV1,
+    expected: *const ViemLayoutSnapshotIdentity,
     y: f32,
     extend_selection: u32,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         validate_disjoint_regions(&[typed_pointer_region(expected, 1)?, typed_pointer_region(out_outcome, 1)?])?;
@@ -135,11 +131,11 @@ pub unsafe extern "C" fn viem_core_view_select_pointer_row(
 fn viewport(
     core: &Core<CTextMeasurementProvider>,
     id: ViewId,
-) -> Result<ViemLayoutRectV1, ViemStatus> {
+) -> Result<ViemLayoutRect, ViemStatus> {
     let layout = core
         .presentation_layout(id)
         .ok_or(ViemStatus::InvalidView)?;
-    Ok(ViemLayoutRectV1 {
+    Ok(ViemLayoutRect {
         x: layout.viewport_left(),
         y: layout.viewport_top(),
         width: layout.width(),
@@ -151,18 +147,17 @@ fn viewport(
 pub unsafe extern "C" fn viem_core_view_line_number_snapshot_info(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    out_info: *mut ViemLineNumberSnapshotInfoV1,
+    out_info: *mut ViemLineNumberSnapshotInfo,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_info, 1)?;
-        unsafe { out_info.write(ViemLineNumberSnapshotInfoV1::default()) };
+        unsafe { out_info.write(ViemLineNumberSnapshotInfo::default()) };
         let info = with_core(handle, |core| {
             let id = ViewId(view);
             let snapshot = current_ffi_layout_snapshot(core, id)?;
             let diff = core.presentation_layout(id).ok_or(ViemStatus::InvalidView)?
                 .presentation_overlays(core.document().id(), core.document().revision()).diff;
-            Ok(ViemLineNumberSnapshotInfoV1 {
-                struct_size: VIEM_LINE_NUMBER_SNAPSHOT_INFO_V1_SIZE,
+            Ok(ViemLineNumberSnapshotInfo {
                 flags: if core.number(id).map_err(core_status)? {
                     VIEM_LINE_NUMBER_SNAPSHOT_ENABLED | diff.map_or(0, |d|
                         if d.added { VIEM_LINE_NUMBER_DIFF_ADDED } else { VIEM_LINE_NUMBER_DIFF_REMOVED })
@@ -191,9 +186,9 @@ pub unsafe extern "C" fn viem_core_view_line_number_snapshot_info(
 pub unsafe extern "C" fn viem_core_view_copy_line_number_regions(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemLayoutSnapshotIdentityV1,
-    expected_viewport: *const ViemLayoutRectV1,
-    output: *mut ViemLineNumberRegionV1,
+    expected: *const ViemLayoutSnapshotIdentity,
+    expected_viewport: *const ViemLayoutRect,
+    output: *mut ViemLineNumberRegion,
     capacity: u64,
     out_count: *mut u64,
 ) -> ViemStatus {
@@ -218,7 +213,7 @@ pub unsafe extern "C" fn viem_core_view_copy_line_number_regions(
             regions
                 .into_iter()
                 .map(|region| {
-                    Ok(ViemLineNumberRegionV1 {
+                    Ok(ViemLineNumberRegion {
                         source_line: checked_export_count(region.source_line)?,
                         flags: (if region.estimated { VIEM_LINE_NUMBER_REGION_ESTIMATED } else { 0 })
                             | (if region.current { VIEM_LINE_NUMBER_REGION_CURRENT } else { 0 })
@@ -227,7 +222,6 @@ pub unsafe extern "C" fn viem_core_view_copy_line_number_regions(
                                 Some(crate::diff::Side::Base) => VIEM_LINE_NUMBER_DIFF_REMOVED,
                                 None => 0,
                             },
-                        reserved: 0,
                         top: region.top,
                         bottom: region.bottom,
                     })

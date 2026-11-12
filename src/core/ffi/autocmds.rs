@@ -11,8 +11,8 @@ use super::*;
 pub unsafe extern "C" fn viem_core_view_fire_autocmd(
     handle: ViemCoreHandle, view: ViemViewId,
     event: *const u8, event_length: u64, matched: *const u8, matched_length: u64,
-    context: *const ViemCommandTurnContextV2,
-    out_outcome: *mut ViemCoreOutcomeV1, out_effects: *mut ViemEffectBatchHandle,
+    context: *const ViemCommandTurnContext,
+    out_outcome: *mut ViemCoreOutcome, out_effects: *mut ViemEffectBatchHandle,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let regions = [typed_pointer_region(event, event_length)?, typed_pointer_region(matched, matched_length)?,

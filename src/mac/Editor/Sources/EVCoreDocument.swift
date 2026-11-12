@@ -54,13 +54,13 @@ public enum EVCoreFrontendError: LocalizedError, Equatable {
 }
 
 struct EVLayoutExport {
-    var info: ViemLayoutSnapshotInfoV1
-    var rows: [ViemVisualRowV1]
-    var clusters: [ViemPositionedClusterV1]
-    var carets: [ViemPositionedCaretV1]
-    var decorations: [ViemLayoutDecorationV1] = []
+    var info: ViemLayoutSnapshotInfo
+    var rows: [ViemVisualRow]
+    var clusters: [ViemPositionedCluster]
+    var carets: [ViemPositionedCaret]
+    var decorations: [ViemLayoutDecoration] = []
     var decorationLabels: [UInt8] = []
-    var tableCells: [ViemTableCellV1] = []
+    var tableCells: [ViemTableCell] = []
     var whitespace = EVWhitespaceMarkerExport()
 }
 
@@ -90,7 +90,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     private var recoveryInterpretation: EVRecoverySnapshot?
     private var isStylePreview = false
     var cachedStyleSheet: EVStyleSheetSnapshot?
-    private(set) var currentDocumentState = ViemDocumentStateV1()
+    private(set) var currentDocumentState = ViemDocumentState()
     private(set) var formattedAccessCounters = EVFormattedAccessCounters()
     private var surfaces: [WeakSurface] = []
     private var isRefreshingLayoutSurfaces = false
@@ -368,8 +368,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
 
     public func acknowledgeNativeSave(_ snapshot: EVDocumentSaveSnapshot) throws {
         guard snapshot.isCompleteSource else { throw EVDocumentHostError.preparedWriteUnavailable }
-        var request = ViemMarkSavedV1()
-        request.struct_size = UInt32(MemoryLayout<ViemMarkSavedV1>.size)
+        var request = ViemMarkSaved()
         request.document_id = snapshot.documentID
         request.document_revision = snapshot.documentRevision
         try checked(viem_core_mark_saved(core, &request), operation: "Acknowledge saved document")
@@ -390,14 +389,12 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
 
     func formattedSnapshot() throws -> EVFormattedSnapshot {
         formattedAccessCounters.snapshotInfoCalls &+= 1
-        var info = ViemFormattedSnapshotInfoV1()
-        info.struct_size = UInt32(MemoryLayout<ViemFormattedSnapshotInfoV1>.size)
+        var info = ViemFormattedSnapshotInfo()
         try checked(
             viem_core_formatted_snapshot_info(core, &info),
             operation: "Read formatted snapshot"
         )
-        guard info.identity.struct_size >= UInt32(MemoryLayout<ViemFormattedSnapshotIdentityV1>.size),
-              info.utf8_length <= UInt64(Int.max),
+        guard info.utf8_length <= UInt64(Int.max),
               info.utf16_length <= UInt64(Int.max),
               info.hard_line_count <= UInt64(Int.max)
         else {
@@ -458,11 +455,10 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     func formattedPointInfo(
         atUTF8Offset offset: UInt64,
         snapshot: EVFormattedSnapshot
-    ) throws -> ViemFormattedPointInfoV1 {
+    ) throws -> ViemFormattedPointInfo {
         formattedAccessCounters.pointInfoCalls &+= 1
         var identity = snapshot.info.identity
-        var info = ViemFormattedPointInfoV1()
-        info.struct_size = UInt32(MemoryLayout<ViemFormattedPointInfoV1>.size)
+        var info = ViemFormattedPointInfo()
         try checked(
             viem_core_formatted_point_info(core, &identity, offset, &info),
             operation: "Read formatted point"
@@ -489,9 +485,8 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     }
 
     @discardableResult
-    func documentState() throws -> ViemDocumentStateV1 {
-        var state = ViemDocumentStateV1()
-        state.struct_size = UInt32(MemoryLayout<ViemDocumentStateV1>.size)
+    func documentState() throws -> ViemDocumentState {
+        var state = ViemDocumentState()
         try checked(viem_core_document_state(core, &state), operation: "Read document state")
         installDocumentState(state)
         return state
@@ -551,8 +546,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         defer { isRefreshingLayoutSurfaces = false }
         for surface in surfaces.compactMap(\.value) {
             guard let session = surface.session, session.viewID != originatingViewID else { continue }
-            var info = ViemLayoutSnapshotInfoV1()
-            info.struct_size = UInt32(MemoryLayout<ViemLayoutSnapshotInfoV1>.size)
+            var info = ViemLayoutSnapshotInfo()
             let status = viem_core_view_layout_snapshot_info(core, session.viewID, &info)
             if status == UInt32(VIEM_STATUS_LAYOUT_UNAVAILABLE)
                 || (status == UInt32(VIEM_STATUS_OK)
@@ -574,7 +568,6 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         }
         EVStartupPerformance.mark("core.codeStyles.ready")
         var options = ViemDocumentOptions()
-        options.struct_size = UInt32(MemoryLayout<ViemDocumentOptions>.size)
         // Opening policy belongs to the portable encoding projection. The
         // frontend identifies the format container but never decodes or scans
         // authoritative source bytes itself.
@@ -782,8 +775,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
             formattedAccessCounters.fullRangeReadCalls &+= 1
         }
 
-        var request = ViemFormattedUtf8RangeV1()
-        request.struct_size = UInt32(MemoryLayout<ViemFormattedUtf8RangeV1>.size)
+        var request = ViemFormattedUtf8Range()
         request.identity = snapshot.info.identity
         request.utf8_start = utf8Range.lowerBound
         request.utf8_end = utf8Range.upperBound
@@ -881,7 +873,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         return (mode.language ?? mode.detectedLanguage) == "markdown"
     }
 
-    private func installDocumentState(_ state: ViemDocumentStateV1) {
+    private func installDocumentState(_ state: ViemDocumentState) {
         let oldPersistence = Self.persistenceState(from: currentDocumentState)
         let previousFormat = sourceFormat
         let nextFormat = Self.sourceFormat(from: state)
@@ -914,7 +906,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         }
     }
 
-    private static func persistenceState(from state: ViemDocumentStateV1) -> EVDocumentPersistenceState {
+    private static func persistenceState(from state: ViemDocumentState) -> EVDocumentPersistenceState {
         EVDocumentPersistenceState(
             isDirty: state.flags & UInt32(VIEM_DOCUMENT_STATE_IS_DIRTY) != 0,
             isReadOnly: state.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) != 0,
@@ -940,7 +932,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         }
     }
 
-    private static func sourceFormat(from state: ViemDocumentStateV1) -> EVSourceFormat {
+    private static func sourceFormat(from state: ViemDocumentState) -> EVSourceFormat {
         switch state.format {
         case UInt32(VIEM_FORMAT_MARKDOWN): .markdown
         case UInt32(VIEM_FORMAT_CODE): .code
@@ -968,7 +960,7 @@ final class EVCoreViewSession {
     let provider: CoreTextMeasurementProvider
     private nonisolated let coreHandle: ViemCoreHandle
     private(set) var viewID: ViemViewId = 0
-    private(set) var lastOutcome = ViemCoreOutcomeV1()
+    private(set) var lastOutcome = ViemCoreOutcome()
     private(set) var characterContextGeneration: UInt64 = 0
     private var viewportSize = CGSize(width: 1, height: 1)
     private(set) var hasActiveComposition = false
@@ -1029,8 +1021,7 @@ final class EVCoreViewSession {
 
     func attach(width: CGFloat, height: CGFloat, margins: EVViewMargins) throws {
         guard viewID == 0 else { return }
-        var options = ViemViewOptionsV1()
-        options.struct_size = UInt32(MemoryLayout<ViemViewOptionsV1>.size)
+        var options = ViemViewOptions()
         options.execution_context = UInt32(VIEM_LAYOUT_EXECUTION_FRONTEND_MAIN)
         options.width = Float(max(width, 1))
         options.height = Float(max(height, 1))
@@ -1040,8 +1031,7 @@ final class EVCoreViewSession {
         options.padding_right = Float(margins.right)
         var table = provider.makeProviderTable()
         var newView: ViemViewId = 0
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        var outcome = ViemCoreOutcome()
         try checked(
             viem_core_view_add(document.core, &options, &table, &newView, &outcome),
             operation: "Attach editor view"
@@ -1051,18 +1041,16 @@ final class EVCoreViewSession {
         lastOutcome = outcome
     }
 
-    func refreshState() throws -> ViemCoreOutcomeV1 {
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+    func refreshState() throws -> ViemCoreOutcome {
+        var outcome = ViemCoreOutcome()
         try checked(viem_core_view_state(document.core, viewID, &outcome), operation: "Read view state")
         lastOutcome = outcome
         return outcome
     }
 
     @discardableResult
-    func readFile(_ bytes: Data, after: UInt64, source: Bool, expected: EVDocumentPersistenceState) throws -> ViemCoreOutcomeV1 {
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+    func readFile(_ bytes: Data, after: UInt64, source: Bool, expected: EVDocumentPersistenceState) throws -> ViemCoreOutcome {
+        var outcome = ViemCoreOutcome()
         try bytes.withUnsafeBytes { raw in
             try checked(viem_core_view_read_file(document.core, viewID, expected.documentID,
                 expected.documentRevision, source ? 1 : 0, after, raw.bindMemory(to: UInt8.self).baseAddress,
@@ -1078,7 +1066,7 @@ final class EVCoreViewSession {
 
     /// Run one command line as if typed after `:` (Vim script).
     @discardableResult
-    func executeCommandLine(_ text: String) throws -> ViemCoreOutcomeV1 {
+    func executeCommandLine(_ text: String) throws -> ViemCoreOutcome {
         let data = Data(text.utf8)
         return try performHostEffectTurn("Execute command line") { outcome, effects in
             withCommandTurnContext { context in
@@ -1092,7 +1080,7 @@ final class EVCoreViewSession {
 
     /// Fire a native lifecycle event through the same effect pipeline as input.
     @discardableResult
-    func fireAutocmd(_ event: String, matched: String = "") throws -> ViemCoreOutcomeV1 {
+    func fireAutocmd(_ event: String, matched: String = "") throws -> ViemCoreOutcome {
         let eventData = Data(event.utf8), matchedData = Data(matched.utf8)
         return try performHostEffectTurn("Run \(event) autocommands") { outcome, effects in
             withCommandTurnContext { context in
@@ -1109,12 +1097,12 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func sendText(_ text: String) throws -> ViemCoreOutcomeV1 {
+    func sendText(_ text: String) throws -> ViemCoreOutcome {
         let data = Data(text.utf8)
         return try performHostEffectTurn("Send text input") { outcome, effects in
             withCommandTurnContext { context in
                 data.withUnsafeBytes { raw in
-                    viem_core_view_send_text_with_host_context_v2(
+                    viem_core_view_send_text_with_host_context(
                         document.core,
                         viewID,
                         raw.bindMemory(to: UInt8.self).baseAddress,
@@ -1129,15 +1117,14 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func sendKey(kind: UInt32, codepoint: UInt32 = 0, modifiers: UInt32 = 0) throws -> ViemCoreOutcomeV1 {
-        var input = ViemKeyInputV1()
-        input.struct_size = UInt32(MemoryLayout<ViemKeyInputV1>.size)
+    func sendKey(kind: UInt32, codepoint: UInt32 = 0, modifiers: UInt32 = 0) throws -> ViemCoreOutcome {
+        var input = ViemKeyInput()
         input.kind = kind
         input.codepoint = codepoint
         input.modifiers = modifiers
         return try performHostEffectTurn("Send key input") { outcome, effects in
             withCommandTurnContext { context in
-                viem_core_view_send_key_with_host_context_v2(
+                viem_core_view_send_key_with_host_context(
                     document.core,
                     viewID,
                     &input,
@@ -1153,10 +1140,9 @@ final class EVCoreViewSession {
     /// together. The caller still decides whether the turn needs host context.
     func performHostEffectTurn(
         _ operation: String,
-        _ body: (UnsafeMutablePointer<ViemCoreOutcomeV1>, UnsafeMutablePointer<ViemEffectBatchHandle>) -> UInt32
-    ) throws -> ViemCoreOutcomeV1 {
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        _ body: (UnsafeMutablePointer<ViemCoreOutcome>, UnsafeMutablePointer<ViemEffectBatchHandle>) -> UInt32
+    ) throws -> ViemCoreOutcome {
+        var outcome = ViemCoreOutcome()
         var effects: ViemEffectBatchHandle = 0
         let status = body(&outcome, &effects)
         try finishHostContextTurn(status: status, outcome: outcome, effectBatch: effects, operation: operation)
@@ -1165,7 +1151,7 @@ final class EVCoreViewSession {
 
     private func finishHostContextTurn(
         status: UInt32,
-        outcome: ViemCoreOutcomeV1,
+        outcome: ViemCoreOutcome,
         effectBatch: ViemEffectBatchHandle,
         operation: String
     ) throws {
@@ -1203,8 +1189,7 @@ final class EVCoreViewSession {
     }
 
     func takeStartupEffects() throws {
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        var outcome = ViemCoreOutcome()
         var effects: ViemEffectBatchHandle = 0
         let status = viem_core_view_take_startup_effects(document.core, viewID, &outcome, &effects)
         var batch: EVHostEffectBatch?
@@ -1226,10 +1211,10 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func flushMappingPrefix() throws -> ViemCoreOutcomeV1 {
+    func flushMappingPrefix() throws -> ViemCoreOutcome {
         try performHostEffectTurn("Resolve key mapping") { outcome, effects in
             withCommandTurnContext { context in
-                viem_core_view_flush_mapping_with_host_context_v2(
+                viem_core_view_flush_mapping_with_host_context(
                     document.core, viewID, context, outcome, effects)
             }
         }
@@ -1254,8 +1239,8 @@ final class EVCoreViewSession {
         RunLoop.main.add(timer, forMode: .common)
     }
 
-    func lineLocation() throws -> ViemViewLineLocationV1 {
-        var value = ViemViewLineLocationV1(); value.struct_size = UInt32(MemoryLayout<ViemViewLineLocationV1>.size)
+    func lineLocation() throws -> ViemViewLineLocation {
+        var value = ViemViewLineLocation()
         try checked(viem_core_view_line_location(document.core, viewID, &value), operation: "Read line position")
         return value
     }
@@ -1318,9 +1303,8 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func resize(width: CGFloat, height: CGFloat) throws -> ViemCoreOutcomeV1 {
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+    func resize(width: CGFloat, height: CGFloat) throws -> ViemCoreOutcome {
+        var outcome = ViemCoreOutcome()
         try checked(
             viem_core_view_resize(document.core, viewID, Float(max(width, 1)), Float(max(height, 1)), &outcome),
             operation: "Resize editor view"
@@ -1338,7 +1322,7 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func setScale(_ scale: CGFloat) throws -> ViemCoreOutcomeV1 {
+    func setScale(_ scale: CGFloat) throws -> ViemCoreOutcome {
         return try performCoreOperation("Change editor zoom") { outcome in
             viem_core_view_set_scale(document.core, viewID, Float(scale), outcome)
         }
@@ -1346,7 +1330,7 @@ final class EVCoreViewSession {
 
     @discardableResult
     func setStrikethrough(_ enabled: Bool,
-                         expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
+                         expected selection: ViemLogicalSelectionIdentity) throws -> ViemCoreOutcome {
         var selection = selection
         return try performCoreOperation("Change strikethrough", pendingCharacterSelection: selection) { outcome in
             viem_core_view_set_strikethrough(document.core, viewID, &selection, enabled ? 1 : 0, outcome)
@@ -1355,7 +1339,7 @@ final class EVCoreViewSession {
 
     @discardableResult
     func setInlineProperty(_ property: EVStyleProperty, _ enabled: Bool,
-                           expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
+                           expected selection: ViemLogicalSelectionIdentity) throws -> ViemCoreOutcome {
         var selection = selection
         return try performCoreOperation("Change \(property.displayName)", pendingCharacterSelection: selection) { outcome in
             viem_core_view_set_inline_property(document.core, viewID, &selection, property.rawValue, enabled ? 1 : 0, outcome)
@@ -1380,9 +1364,8 @@ final class EVCoreViewSession {
 
     func semanticStylePresentation(
         _ style: UInt32
-    ) throws -> ViemSemanticStylePresentationV1 {
-        var value = ViemSemanticStylePresentationV1()
-        value.struct_size = UInt32(MemoryLayout<ViemSemanticStylePresentationV1>.size)
+    ) throws -> ViemSemanticStylePresentation {
+        var value = ViemSemanticStylePresentation()
         try checked(
             viem_core_view_semantic_style_presentation(
                 document.core,
@@ -1399,13 +1382,11 @@ final class EVCoreViewSession {
     func setSemanticStyle(
         _ style: UInt32,
         enabled: Bool,
-        expected selection: ViemLogicalSelectionIdentityV1
-    ) throws -> ViemCoreOutcomeV1 {
-        var request = ViemSetSemanticStyleV1()
-        request.struct_size = UInt32(MemoryLayout<ViemSetSemanticStyleV1>.size)
+        expected selection: ViemLogicalSelectionIdentity
+    ) throws -> ViemCoreOutcome {
+        var request = ViemSetSemanticStyle()
         request.style = style
         request.enabled = enabled ? 1 : 0
-        request.reserved = 0
         request.expected_selection = selection
         return try performCoreOperation(enabled ? "Apply selection semantic style" : "Clear selection semantic style",
                                         pendingCharacterSelection: selection) { outcome in
@@ -1420,8 +1401,8 @@ final class EVCoreViewSession {
 
     @discardableResult
     func useSelectionForFind(
-        _ selection: ViemVisualSelectionIdentityV1
-    ) throws -> ViemCoreOutcomeV1 {
+        _ selection: ViemVisualSelectionIdentity
+    ) throws -> ViemCoreOutcome {
         var expected = selection
         return try performCoreOperation("Use selection for find") { outcome in
             viem_core_view_use_selection_for_find(
@@ -1434,14 +1415,14 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func revealSelection() throws -> ViemCoreOutcomeV1 {
+    func revealSelection() throws -> ViemCoreOutcome {
         return try performCoreOperation("Jump to selection") { outcome in
             viem_core_view_reveal_selection(document.core, viewID, outcome)
         }
     }
 
     @discardableResult
-    func setWrap(_ enabled: Bool) throws -> ViemCoreOutcomeV1 {
+    func setWrap(_ enabled: Bool) throws -> ViemCoreOutcome {
         return try performCoreOperation("Change wrapping") { outcome in
             viem_core_view_set_wrap(document.core, viewID, enabled ? 1 : 0, outcome)
         }
@@ -1450,10 +1431,9 @@ final class EVCoreViewSession {
     @discardableResult
     func setFileFormat(
         _ fileFormat: UInt32,
-        expected state: ViemDocumentStateV1
-    ) throws -> ViemCoreOutcomeV1 {
-        var request = ViemSetFileFormatV1()
-        request.struct_size = UInt32(MemoryLayout<ViemSetFileFormatV1>.size)
+        expected state: ViemDocumentState
+    ) throws -> ViemCoreOutcome {
+        var request = ViemSetFileFormat()
         request.file_format = fileFormat
         request.document_id = state.document_id
         request.document_revision = state.document_revision
@@ -1462,12 +1442,12 @@ final class EVCoreViewSession {
         }
     }
 
-    func tableCells(identity: ViemLayoutSnapshotIdentityV1) throws -> [ViemTableCellV1] {
+    func tableCells(identity: ViemLayoutSnapshotIdentity) throws -> [ViemTableCell] {
         var identity = identity, required: UInt64 = 0
         let status = viem_core_view_copy_table_cells(document.core, viewID, &identity, nil, 0, &required)
         if status != UInt32(VIEM_STATUS_BUFFER_TOO_SMALL) { try checked(status, operation: "Read table geometry") }
         guard required <= UInt64(Int.max) else { throw EVCoreFrontendError.core(operation: "Read table geometry", status: Status.lengthOverflow) }
-        var cells = [ViemTableCellV1](repeating: ViemTableCellV1(), count: Int(required))
+        var cells = [ViemTableCell](repeating: ViemTableCell(), count: Int(required))
         let capacity = required
         try checked(cells.withUnsafeMutableBufferPointer {
             viem_core_view_copy_table_cells(document.core, viewID, &identity, $0.baseAddress, capacity, &required)
@@ -1475,14 +1455,13 @@ final class EVCoreViewSession {
         return cells
     }
 
-    func tableSelection() throws -> ViemTableSelectionV1 {
-        var selection = ViemTableSelectionV1()
-        selection.struct_size = UInt32(MemoryLayout<ViemTableSelectionV1>.size)
+    func tableSelection() throws -> ViemTableSelection {
+        var selection = ViemTableSelection()
         try checked(viem_core_view_table_selection(document.core, viewID, &selection), operation: "Read cell selection")
         return selection
     }
 
-    func tableSelectionText(_ selection: ViemTableSelectionV1) throws -> String {
+    func tableSelectionText(_ selection: ViemTableSelection) throws -> String {
         var selection = selection, required: UInt64 = 0
         let status = viem_core_view_copy_table_selection_text(document.core, viewID, &selection, nil, 0, &required)
         if status != UInt32(VIEM_STATUS_BUFFER_TOO_SMALL) { try checked(status, operation: "Read selected table text") }
@@ -1494,12 +1473,12 @@ final class EVCoreViewSession {
         return String(decoding: bytes, as: UTF8.self)
     }
 
-    func tableSelectionRanges(_ selection: ViemTableSelectionV1) throws -> [Range<Int>] {
+    func tableSelectionRanges(_ selection: ViemTableSelection) throws -> [Range<Int>] {
         var selection = selection, required: UInt64 = 0
         let status = viem_core_view_copy_table_selection_ranges(document.core, viewID, &selection, nil, 0, &required)
         if status != UInt32(VIEM_STATUS_BUFFER_TOO_SMALL) { try checked(status, operation: "Read selected table ranges") }
         guard required <= UInt64(Int.max) else { throw EVCoreFrontendError.core(operation: "Read selected table ranges", status: Status.lengthOverflow) }
-        var ranges = [ViemFormattedUtf8RangeV1](repeating: ViemFormattedUtf8RangeV1(), count: Int(required)); let capacity = required
+        var ranges = [ViemFormattedUtf8Range](repeating: ViemFormattedUtf8Range(), count: Int(required)); let capacity = required
         try checked(ranges.withUnsafeMutableBufferPointer {
             viem_core_view_copy_table_selection_ranges(document.core, viewID, &selection, $0.baseAddress, capacity, &required)
         }, operation: "Copy selected table ranges")
@@ -1512,31 +1491,28 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func selectTableCells(_ selection: ViemTableSelectionV1) throws -> ViemCoreOutcomeV1 {
+    func selectTableCells(_ selection: ViemTableSelection) throws -> ViemCoreOutcome {
         var selection = selection
         return try performCoreOperation("Select table cells") { outcome in
             viem_core_view_select_table_cells(document.core, viewID, &selection, outcome)
         }
     }
 
-    func tableContext() throws -> ViemTableContextV1 {
-        var context = ViemTableContextV1()
-        context.struct_size = UInt32(MemoryLayout<ViemTableContextV1>.size)
+    func tableContext() throws -> ViemTableContext {
+        var context = ViemTableContext()
         try checked(viem_core_view_table_context(document.core, viewID, &context), operation: "Read table actions")
         return context
     }
 
-    func tableContext(at offset: UInt64, documentID: UInt64, revision: UInt64) throws -> ViemTableContextV1 {
-        var context = ViemTableContextV1()
-        context.struct_size = UInt32(MemoryLayout<ViemTableContextV1>.size)
+    func tableContext(at offset: UInt64, documentID: UInt64, revision: UInt64) throws -> ViemTableContext {
+        var context = ViemTableContext()
         try checked(viem_core_view_table_context_at(document.core, viewID, documentID, revision, offset, &context), operation: "Read table cell")
         return context
     }
 
     @discardableResult
-    func insertTable(columns: Int, bodyRows: Int, expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
-        var request = ViemInsertTableV1()
-        request.struct_size = UInt32(MemoryLayout<ViemInsertTableV1>.size)
+    func insertTable(columns: Int, bodyRows: Int, expected selection: ViemLogicalSelectionIdentity) throws -> ViemCoreOutcome {
+        var request = ViemInsertTable()
         request.expected_selection = selection
         request.columns = UInt32(columns); request.body_rows = UInt32(bodyRows)
         return try performCoreOperation("Insert table") { outcome in
@@ -1545,23 +1521,21 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func tableAction(_ action: UInt32, alignment: UInt32 = 0, expected context: ViemTableContextV1) throws -> ViemCoreOutcomeV1 {
-        var request = ViemTableActionV1()
-        request.struct_size = UInt32(MemoryLayout<ViemTableActionV1>.size)
+    func tableAction(_ action: UInt32, alignment: UInt32 = 0, expected context: ViemTableContext) throws -> ViemCoreOutcome {
+        var request = ViemTableAction()
         request.action = action; request.alignment = alignment; request.expected = context
         return try performCoreOperation("Edit table") { outcome in
             viem_core_view_table_action(document.core, viewID, &request, outcome)
         }
     }
 
-    func listSelection() throws -> ViemLogicalSelectionIdentityV1 {
-        var selection = ViemLogicalSelectionIdentityV1()
-        selection.struct_size = UInt32(MemoryLayout<ViemLogicalSelectionIdentityV1>.size)
+    func listSelection() throws -> ViemLogicalSelectionIdentity {
+        var selection = ViemLogicalSelectionIdentity()
         try checked(viem_core_view_list_selection(document.core, viewID, &selection), operation: "Read list selection")
         return selection
     }
 
-    func listIndentCapabilities(expected selection: ViemLogicalSelectionIdentityV1) throws -> UInt32 {
+    func listIndentCapabilities(expected selection: ViemLogicalSelectionIdentity) throws -> UInt32 {
         var selection = selection
         var flags: UInt32 = 0
         try checked(viem_core_view_list_indent_capabilities(document.core, viewID, &selection, &flags),
@@ -1570,9 +1544,8 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func indentList(unindent: Bool, expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
-        var request = ViemListIndentV1()
-        request.struct_size = UInt32(MemoryLayout<ViemListIndentV1>.size)
+    func indentList(unindent: Bool, expected selection: ViemLogicalSelectionIdentity) throws -> ViemCoreOutcome {
+        var request = ViemListIndent()
         request.unindent = unindent ? 1 : 0
         request.expected_selection = selection
         return try performCoreOperation(unindent ? "Unindent list item" : "Indent list item") { outcome in
@@ -1581,7 +1554,7 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func insertListParagraph(expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
+    func insertListParagraph(expected selection: ViemLogicalSelectionIdentity) throws -> ViemCoreOutcome {
         var selection = selection
         return try performCoreOperation("Insert paragraph in list item") { outcome in
             viem_core_view_insert_list_paragraph(document.core, viewID, &selection, outcome)
@@ -1589,9 +1562,8 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func setBlockQuote(_ enabled: Bool, expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
-        var request = ViemSetBlockQuoteV1()
-        request.struct_size = UInt32(MemoryLayout<ViemSetBlockQuoteV1>.size)
+    func setBlockQuote(_ enabled: Bool, expected selection: ViemLogicalSelectionIdentity) throws -> ViemCoreOutcome {
+        var request = ViemSetBlockQuote()
         request.enabled = enabled ? 1 : 0
         request.expected_selection = selection
         return try performCoreOperation("Change block quote") { outcome in
@@ -1601,9 +1573,8 @@ final class EVCoreViewSession {
 
     /// `VIEM_ALERT_NONE` turns selected alerts back into plain quotes.
     @discardableResult
-    func setAlert(_ kind: UInt32, expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
-        var request = ViemSetAlertV1()
-        request.struct_size = UInt32(MemoryLayout<ViemSetAlertV1>.size)
+    func setAlert(_ kind: UInt32, expected selection: ViemLogicalSelectionIdentity) throws -> ViemCoreOutcome {
+        var request = ViemSetAlert()
         request.kind = kind
         request.expected_selection = selection
         return try performCoreOperation("Change alert") { outcome in
@@ -1612,9 +1583,8 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func setListStyle(_ style: UInt32, expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
-        var request = ViemSetListStyleV1()
-        request.struct_size = UInt32(MemoryLayout<ViemSetListStyleV1>.size)
+    func setListStyle(_ style: UInt32, expected selection: ViemLogicalSelectionIdentity) throws -> ViemCoreOutcome {
+        var request = ViemSetListStyle()
         request.style = style
         request.expected_selection = selection
         return try performCoreOperation("Change paragraph list") { outcome in
@@ -1624,9 +1594,8 @@ final class EVCoreViewSession {
 
     @discardableResult
     func assignStyle(_ key: EVStyleKey, identity: EVStyleSheetIdentity,
-                     expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
-        var request = ViemAssignStyleV1()
-        request.struct_size = UInt32(MemoryLayout<ViemAssignStyleV1>.size)
+                     expected selection: ViemLogicalSelectionIdentity) throws -> ViemCoreOutcome {
+        var request = ViemAssignStyle()
         request.namespace = key.namespace.rawValue
         request.identity = identity.abiValue
         request.expected_selection = selection
@@ -1642,9 +1611,8 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func setParagraphStyle(level: UInt32, expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
-        var request = ViemSetParagraphStyleV1()
-        request.struct_size = UInt32(MemoryLayout<ViemSetParagraphStyleV1>.size)
+    func setParagraphStyle(level: UInt32, expected selection: ViemLogicalSelectionIdentity) throws -> ViemCoreOutcome {
+        var request = ViemSetParagraphStyle()
         request.level = level
         request.expected_selection = selection
         return try performCoreOperation("Change paragraph style") { outcome in
@@ -1653,21 +1621,20 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func setDocumentMode(_ choice: EVDocumentModeChoice, expected state: EVDocumentModeState) throws -> ViemCoreOutcomeV1 {
+    func setDocumentMode(_ choice: EVDocumentModeChoice, expected state: EVDocumentModeState) throws -> ViemCoreOutcome {
         try setDocumentMode(choice, documentID: state.documentId, revision: state.documentRevision)
     }
 
     /// Markdown Preview on, or off into literal Code with the Markdown language.
     @discardableResult
-    func setMarkdownPreview(_ enabled: Bool, expected state: ViemDocumentStateV1) throws -> ViemCoreOutcomeV1 {
+    func setMarkdownPreview(_ enabled: Bool, expected state: ViemDocumentState) throws -> ViemCoreOutcome {
         try setDocumentMode(enabled ? .markdown : .code("markdown"),
             documentID: state.document_id, revision: state.document_revision)
     }
 
     private func setDocumentMode(_ choice: EVDocumentModeChoice, documentID: UInt64,
-                                 revision: UInt64) throws -> ViemCoreOutcomeV1 {
-        var request = ViemSetDocumentModeV1()
-        request.struct_size = UInt32(MemoryLayout<ViemSetDocumentModeV1>.size)
+                                 revision: UInt64) throws -> ViemCoreOutcome {
+        var request = ViemSetDocumentMode()
         request.mode = choice.code
         request.document_id = documentID
         request.document_revision = revision
@@ -1681,9 +1648,8 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func setEncoding(_ encoding: UInt32, expected state: ViemDocumentStateV1) throws -> ViemCoreOutcomeV1 {
-        var request = ViemSetEncodingV1()
-        request.struct_size = UInt32(MemoryLayout<ViemSetEncodingV1>.size)
+    func setEncoding(_ encoding: UInt32, expected state: ViemDocumentState) throws -> ViemCoreOutcome {
+        var request = ViemSetEncoding()
         request.encoding = encoding
         request.document_id = state.document_id
         request.document_revision = state.document_revision
@@ -1693,14 +1659,14 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func undo() throws -> ViemCoreOutcomeV1 {
+    func undo() throws -> ViemCoreOutcome {
         return try performCoreOperation("Undo") { outcome in
             viem_core_view_undo(document.core, viewID, outcome)
         }
     }
 
     @discardableResult
-    func redo() throws -> ViemCoreOutcomeV1 {
+    func redo() throws -> ViemCoreOutcome {
         return try performCoreOperation("Redo") { outcome in
             viem_core_view_redo(document.core, viewID, outcome)
         }
@@ -1710,17 +1676,16 @@ final class EVCoreViewSession {
     func setViewportOrigin(
         left: CGFloat,
         top: CGFloat? = nil,
-        expected state: ViemViewportStateV1? = nil
-    ) throws -> ViemCoreOutcomeV1 {
-        var request = ViemViewportOriginV1()
-        request.struct_size = UInt32(MemoryLayout<ViemViewportOriginV1>.size)
+        expected state: ViemViewportState? = nil
+    ) throws -> ViemCoreOutcome {
+        var request = ViemViewportOrigin()
         request.flags = top == nil ? 0 : UInt32(VIEM_VIEWPORT_ORIGIN_HAS_TOP)
         request.left = Float(max(left, 0))
         request.top = Float(max(top ?? 0, 0))
         // An omitted expected state means a fresh native scroll request. It
         // must still capture the current identity; zero-filled identities are
         // rejected by core just like any other stale layout.
-        let captured: ViemViewportStateV1?
+        let captured: ViemViewportState?
         if top != nil && state == nil {
             try refreshLayoutIfNeeded()
             captured = try viewportState()
@@ -1740,7 +1705,7 @@ final class EVCoreViewSession {
     }
 
     func restorePosition(from previous: EVCoreViewSession) throws {
-        var state = ViemViewRestorationV1()
+        var state = ViemViewRestoration()
         try checked(viem_core_view_capture_restoration(previous.document.core, previous.viewID, &state),
                     operation: "Capture document position")
         let target = try document.documentState()
@@ -1750,9 +1715,8 @@ final class EVCoreViewSession {
         }
     }
 
-    func viewportState() throws -> ViemViewportStateV1 {
-        var state = ViemViewportStateV1()
-        state.struct_size = UInt32(MemoryLayout<ViemViewportStateV1>.size)
+    func viewportState() throws -> ViemViewportState {
+        var state = ViemViewportState()
         try checked(
             viem_core_view_viewport_state(document.core, viewID, &state),
             operation: "Read viewport state"
@@ -1760,9 +1724,8 @@ final class EVCoreViewSession {
         return state
     }
 
-    func presentation() throws -> ViemViewPresentationV1 {
-        var value = ViemViewPresentationV1()
-        value.struct_size = UInt32(MemoryLayout<ViemViewPresentationV1>.size)
+    func presentation() throws -> ViemViewPresentation {
+        var value = ViemViewPresentation()
         try checked(
             viem_core_view_presentation(document.core, viewID, &value),
             operation: "Read view presentation"
@@ -1770,16 +1733,15 @@ final class EVCoreViewSession {
         return value
     }
 
-    func layoutSnapshotInfo() throws -> ViemLayoutSnapshotInfoV1 {
-        var info = ViemLayoutSnapshotInfoV1()
-        info.struct_size = UInt32(MemoryLayout<ViemLayoutSnapshotInfoV1>.size)
+    func layoutSnapshotInfo() throws -> ViemLayoutSnapshotInfo {
+        var info = ViemLayoutSnapshotInfo()
         let status = viem_core_view_layout_snapshot_info(document.core, viewID, &info)
         if status == Status.layoutUnavailable { throw EVCoreFrontendError.unavailableLayout }
         try checked(status, operation: "Read layout snapshot")
         return info
     }
 
-    private var cachedLayoutDiagnostics: (identity: ViemLayoutSnapshotIdentityV1, text: String)?
+    private var cachedLayoutDiagnostics: (identity: ViemLayoutSnapshotIdentity, text: String)?
 
     /// Optional, read-only UI exports may be omitted for the current frame.
     /// Required source/layout identities are validated by the caller as usual.
@@ -1791,7 +1753,7 @@ final class EVCoreViewSession {
         }
     }
 
-    func layoutDiagnostics(identity: ViemLayoutSnapshotIdentityV1) throws -> String {
+    func layoutDiagnostics(identity: ViemLayoutSnapshotIdentity) throws -> String {
         if let cachedLayoutDiagnostics, cachedLayoutDiagnostics.identity.isSameLayout(as: identity) {
             return cachedLayoutDiagnostics.text
         }
@@ -1827,11 +1789,10 @@ final class EVCoreViewSession {
             throw EVCoreFrontendError.core(operation: "Read layout snapshot", status: Status.lengthOverflow)
         }
 
-        var rows = Array(repeating: ViemVisualRowV1(), count: Int(info.row_count))
-        var clusters = Array(repeating: ViemPositionedClusterV1(), count: Int(info.cluster_count))
-        var carets = Array(repeating: ViemPositionedCaretV1(), count: Int(info.caret_count))
-        var copiedInfo = ViemLayoutSnapshotInfoV1()
-        copiedInfo.struct_size = UInt32(MemoryLayout<ViemLayoutSnapshotInfoV1>.size)
+        var rows = Array(repeating: ViemVisualRow(), count: Int(info.row_count))
+        var clusters = Array(repeating: ViemPositionedCluster(), count: Int(info.cluster_count))
+        var carets = Array(repeating: ViemPositionedCaret(), count: Int(info.caret_count))
+        var copiedInfo = ViemLayoutSnapshotInfo()
         var identity = info.identity
         let copied = rows.withUnsafeMutableBufferPointer { rowBuffer in
             clusters.withUnsafeMutableBufferPointer { clusterBuffer in
@@ -1852,10 +1813,10 @@ final class EVCoreViewSession {
             }
         }
         try checked(copied, operation: "Copy layout snapshot")
-        let furniture = optionalPresentation("paragraph decorations", fallback: nil as ([ViemLayoutDecorationV1], [UInt8])?) {
+        let furniture = optionalPresentation("paragraph decorations", fallback: nil as ([ViemLayoutDecoration], [UInt8])?) {
             try layoutDecorationsExport(identity: copiedInfo.identity)
         }
-        let cells = optionalPresentation("table controls", fallback: nil as [ViemTableCellV1]?) {
+        let cells = optionalPresentation("table controls", fallback: nil as [ViemTableCell]?) {
             try tableCells(identity: copiedInfo.identity)
         }
         let exported = EVLayoutExport(info: copiedInfo, rows: rows, clusters: clusters, carets: carets,
@@ -1876,8 +1837,7 @@ final class EVCoreViewSession {
     /// a new identity; never reuse an old hit-test identity or replay an edit.
     @discardableResult
     func refreshLayoutIfNeeded() throws -> Bool {
-        var info = ViemLayoutSnapshotInfoV1()
-        info.struct_size = UInt32(MemoryLayout<ViemLayoutSnapshotInfoV1>.size)
+        var info = ViemLayoutSnapshotInfo()
         let status = viem_core_view_layout_snapshot_info(document.core, viewID, &info)
         guard status == Status.layoutUnavailable else {
             try checked(status, operation: "Validate editor layout")
@@ -1887,15 +1847,13 @@ final class EVCoreViewSession {
         return true
     }
 
-    func hitTest(_ point: CGPoint, in snapshot: ViemLayoutSnapshotInfoV1, pointerDown: Bool = false) throws -> ViemLayoutCaretPointV1 {
-        var request = ViemLayoutHitTestRequestV1()
-        request.struct_size = UInt32(MemoryLayout<ViemLayoutHitTestRequestV1>.size)
+    func hitTest(_ point: CGPoint, in snapshot: ViemLayoutSnapshotInfo, pointerDown: Bool = false) throws -> ViemLayoutCaretPoint {
+        var request = ViemLayoutHitTestRequest()
         request.flags = pointerDown ? UInt32(VIEM_LAYOUT_HIT_TEST_POINTER_DOWN) : 0
         request.identity = snapshot.identity
         request.x = Float(point.x)
         request.y = Float(point.y)
-        var result = ViemLayoutCaretPointV1()
-        result.struct_size = UInt32(MemoryLayout<ViemLayoutCaretPointV1>.size)
+        var result = ViemLayoutCaretPoint()
         try checked(
             viem_core_view_layout_hit_test(document.core, viewID, &request, &result),
             operation: "Hit-test editor"
@@ -1903,7 +1861,7 @@ final class EVCoreViewSession {
         return result
     }
 
-    func rowSelectionHitTest(_ point: CGPoint, in snapshot: ViemLayoutSnapshotInfoV1) throws -> Bool {
+    func rowSelectionHitTest(_ point: CGPoint, in snapshot: ViemLayoutSnapshotInfo) throws -> Bool {
         var identity = snapshot.identity
         var hit: UInt32 = 0
         try checked(viem_core_view_row_selection_hit_test(document.core, viewID, &identity,
@@ -1912,7 +1870,7 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func selectPointerRow(y: CGFloat, in snapshot: ViemLayoutSnapshotInfoV1, extending: Bool) throws -> ViemCoreOutcomeV1 {
+    func selectPointerRow(y: CGFloat, in snapshot: ViemLayoutSnapshotInfo, extending: Bool) throws -> ViemCoreOutcome {
         var identity = snapshot.identity
         return try performCoreOperation("Select displayed row") { outcome in
             viem_core_view_select_pointer_row(document.core, viewID, &identity, Float(y), extending ? 1 : 0, outcome)
@@ -1920,9 +1878,8 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func placeCursor(_ point: ViemLayoutCaretPointV1, extendSelection: Bool, wholeWords: Bool = false, beginPointerGesture: Bool = false) throws -> ViemCoreOutcomeV1 {
-        var request = ViemPlaceCursorV1()
-        request.struct_size = UInt32(MemoryLayout<ViemPlaceCursorV1>.size)
+    func placeCursor(_ point: ViemLayoutCaretPoint, extendSelection: Bool, wholeWords: Bool = false, beginPointerGesture: Bool = false) throws -> ViemCoreOutcome {
+        var request = ViemPlaceCursor()
         request.flags = (extendSelection ? UInt32(VIEM_PLACE_CURSOR_EXTEND_SELECTION) : 0)
             | (wholeWords ? UInt32(VIEM_PLACE_CURSOR_WORD_SELECTION) : 0)
             | (beginPointerGesture ? UInt32(VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE) : 0)
@@ -1935,7 +1892,7 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func goToLine(_ line: UInt64) throws -> ViemCoreOutcomeV1 {
+    func goToLine(_ line: UInt64) throws -> ViemCoreOutcome {
         let state = try document.documentState()
         return try performCoreOperation("Go to physical line") { outcome in
             viem_core_view_go_to_line(document.core, viewID, state.document_id,
@@ -1958,7 +1915,7 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func selectAll() throws -> ViemCoreOutcomeV1 {
+    func selectAll() throws -> ViemCoreOutcome {
         let state = try document.documentState()
         return try performCoreOperation("Select all text") { outcome in
             viem_core_view_select_all(document.core, viewID, state.document_id,
@@ -1967,19 +1924,18 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func setSelectionOrigin(_ origin: UInt32, returningTo mode: UInt32 = UInt32(VIEM_MODE_NORMAL)) throws -> ViemCoreOutcomeV1 {
+    func setSelectionOrigin(_ origin: UInt32, returningTo mode: UInt32 = UInt32(VIEM_MODE_NORMAL)) throws -> ViemCoreOutcome {
         try performCoreOperation("Set selection origin") { outcome in
             viem_core_view_set_selection_origin(document.core, viewID, origin,
                 [UInt32(VIEM_MODE_INSERT), UInt32(VIEM_MODE_REPLACE)].contains(mode) ? mode : UInt32(VIEM_MODE_NORMAL), outcome)
         }
     }
 
-    func pointerCaret(_ point: CGPoint, in snapshot: ViemLayoutSnapshotInfoV1) throws -> ViemPointerCaretV1 {
-        var request = ViemLayoutHitTestRequestV1()
-        request.struct_size = UInt32(MemoryLayout<ViemLayoutHitTestRequestV1>.size)
+    func pointerCaret(_ point: CGPoint, in snapshot: ViemLayoutSnapshotInfo) throws -> ViemPointerCaret {
+        var request = ViemLayoutHitTestRequest()
         request.identity = snapshot.identity
         request.x = Float(point.x); request.y = Float(point.y)
-        var result = ViemPointerCaretV1()
+        var result = ViemPointerCaret()
         try checked(viem_core_view_pointer_caret(document.core, viewID, &request, &result), operation: "Preview pointer caret")
         return result
     }
@@ -1987,15 +1943,13 @@ final class EVCoreViewSession {
     func caretGeometry(
         offset: UInt64,
         affinity: UInt32,
-        in snapshot: ViemLayoutSnapshotInfoV1
-    ) throws -> ViemLayoutCaretGeometryV1 {
-        var request = ViemLayoutCaretRequestV1()
-        request.struct_size = UInt32(MemoryLayout<ViemLayoutCaretRequestV1>.size)
+        in snapshot: ViemLayoutSnapshotInfo
+    ) throws -> ViemLayoutCaretGeometry {
+        var request = ViemLayoutCaretRequest()
         request.affinity = affinity
         request.identity = snapshot.identity
         request.text_offset = offset
-        var geometry = ViemLayoutCaretGeometryV1()
-        geometry.struct_size = UInt32(MemoryLayout<ViemLayoutCaretGeometryV1>.size)
+        var geometry = ViemLayoutCaretGeometry()
         try checked(
             viem_core_view_caret_geometry(document.core, viewID, &request, &geometry),
             operation: "Read caret geometry"
@@ -2004,9 +1958,8 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func beginComposition(replacing range: Range<UInt64>) throws -> ViemCoreOutcomeV1 {
-        var request = ViemCompositionBeginV1()
-        request.struct_size = UInt32(MemoryLayout<ViemCompositionBeginV1>.size)
+    func beginComposition(replacing range: Range<UInt64>) throws -> ViemCoreOutcome {
+        var request = ViemCompositionBegin()
         request.document_revision = try document.revision()
         request.replacement_start = range.lowerBound
         request.replacement_end = range.upperBound
@@ -2016,9 +1969,8 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func updateComposition(_ text: String, selected: Range<UInt64>) throws -> ViemCoreOutcomeV1 {
-        var request = ViemCompositionUpdateV1()
-        request.struct_size = UInt32(MemoryLayout<ViemCompositionUpdateV1>.size)
+    func updateComposition(_ text: String, selected: Range<UInt64>) throws -> ViemCoreOutcome {
+        var request = ViemCompositionUpdate()
         request.document_revision = try document.revision()
         request.selected_start = selected.lowerBound
         request.selected_end = selected.upperBound
@@ -2033,9 +1985,8 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func commitComposition(_ text: String) throws -> ViemCoreOutcomeV1 {
-        var request = ViemCompositionCommitV1()
-        request.struct_size = UInt32(MemoryLayout<ViemCompositionCommitV1>.size)
+    func commitComposition(_ text: String) throws -> ViemCoreOutcome {
+        var request = ViemCompositionCommit()
         request.document_revision = try document.revision()
         let data = Data(text.utf8)
         return try data.withUnsafeBytes { raw in
@@ -2048,9 +1999,8 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func cancelComposition() throws -> ViemCoreOutcomeV1 {
-        var request = ViemCompositionCancelV1()
-        request.struct_size = UInt32(MemoryLayout<ViemCompositionCancelV1>.size)
+    func cancelComposition() throws -> ViemCoreOutcome {
+        var request = ViemCompositionCancel()
         request.document_revision = try document.revision()
         return try performCoreOperation("Cancel marked text", transition: .deactivate) { outcome in
             viem_core_view_composition_cancel(document.core, viewID, &request, outcome)
@@ -2062,11 +2012,10 @@ final class EVCoreViewSession {
     func performCoreOperation(
         _ operation: String,
         transition: CompositionTransition = .cancelIfChanged,
-        pendingCharacterSelection: ViemLogicalSelectionIdentityV1? = nil,
-        _ body: (UnsafeMutablePointer<ViemCoreOutcomeV1>) -> UInt32
-    ) throws -> ViemCoreOutcomeV1 {
-        var outcome = ViemCoreOutcomeV1()
-        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        pendingCharacterSelection: ViemLogicalSelectionIdentity? = nil,
+        _ body: (UnsafeMutablePointer<ViemCoreOutcome>) -> UInt32
+    ) throws -> ViemCoreOutcome {
+        var outcome = ViemCoreOutcome()
         try checked(body(&outcome), operation: operation)
         if let pendingCharacterSelection {
             notePendingCharacterContextChange(outcome, expected: pendingCharacterSelection)
@@ -2079,15 +2028,15 @@ final class EVCoreViewSession {
         publishCompositionState(false)
     }
 
-    func finishStyleEdit(_ outcome: ViemCoreOutcomeV1) {
+    func finishStyleEdit(_ outcome: ViemCoreOutcome) {
         finish(outcome)
     }
 
     /// Pending choices have no source revision or caret movement. Publish their
     /// view-local context with the next presentation, without treating unrelated
     /// stylesheet edits or refreshes as a reason to leave a manual inspector choice.
-    func notePendingCharacterContextChange(_ outcome: ViemCoreOutcomeV1,
-                                           expected selection: ViemLogicalSelectionIdentityV1) {
+    func notePendingCharacterContextChange(_ outcome: ViemCoreOutcome,
+                                           expected selection: ViemLogicalSelectionIdentity) {
         guard selection.kind == UInt32(VIEM_LOGICAL_SELECTION_KIND_NONE),
               selection.text_start == selection.text_end,
               outcome.flags & UInt32(VIEM_OUTCOME_DOCUMENT_CHANGED) == 0 else { return }
@@ -2095,7 +2044,7 @@ final class EVCoreViewSession {
     }
 
     private func finish(
-        _ outcome: ViemCoreOutcomeV1,
+        _ outcome: ViemCoreOutcome,
         composition transition: CompositionTransition = .cancelIfChanged
     ) {
         lastOutcome = outcome

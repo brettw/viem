@@ -128,10 +128,10 @@ final class EVPresentationCacheIntegrationTests: XCTestCase {
         let original = try XCTUnwrap(surface.layoutSnapshot)
         XCTAssertFalse(original.whitespace.markers.isEmpty)
         var malformedIdentity = original.info.identity
-        malformedIdentity.struct_size = 0
+        malformedIdentity.document_revision += 1
         XCTAssertThrowsError(try session.whitespaceMarkersExport(identity: malformedIdentity))
         let viewport = try session.viewportState()
-        let oldViewport = ViemLayoutRectV1(x: viewport.left, y: viewport.top,
+        let oldViewport = ViemLayoutRect(x: viewport.left, y: viewport.top,
             width: original.info.viewport_width, height: original.info.viewport_height)
         let copies = session.presentationExportCounters
 

@@ -118,15 +118,12 @@ use std::str;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Version of the C ABI implemented by this library.
-pub const VIEM_CORE_ABI_VERSION: u32 = 8;
+pub const VIEM_CORE_ABI_VERSION: u32 = 9;
 
 /// Adds passive inline image metadata to the context-owned shaping contract.
 /// Image resources share the existing explicit fragment leases and metrics
 /// generations; local decoding remains a native provider responsibility.
-pub const VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V4: u32 = 4;
-/// Current version of the injected text-measurement provider vtable.
-pub const VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION: u32 =
-    VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V4;
+pub const VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION: u32 = 4;
 
 /// Opaque process-local controller/core token. Zero is always invalid.
 pub type ViemCoreHandle = u64;
@@ -184,8 +181,7 @@ pub const VIEM_DOCUMENT_STATE_MARKDOWN_SOURCE: u32 = 1 << 6;
 /// Immutable model/history metadata captured in one serial core query.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ViemDocumentStateV1 {
-    pub struct_size: u32,
+pub struct ViemDocumentState {
     pub flags: u32,
     pub document_id: u64,
     pub document_revision: u64,
@@ -197,15 +193,12 @@ pub struct ViemDocumentStateV1 {
     pub file_format_origin: u32,
     pub undo_action_category: u32,
     pub redo_action_category: u32,
-    pub reserved: [u32; 2],
 }
 
-pub const VIEM_DOCUMENT_STATE_V1_SIZE: u32 = size_of::<ViemDocumentStateV1>() as u32;
 
-impl Default for ViemDocumentStateV1 {
+impl Default for ViemDocumentState {
     fn default() -> Self {
         Self {
-            struct_size: VIEM_DOCUMENT_STATE_V1_SIZE,
             flags: 0,
             document_id: 0,
             document_revision: 0,
@@ -217,56 +210,44 @@ impl Default for ViemDocumentStateV1 {
             file_format_origin: 0,
             undo_action_category: VIEM_HISTORY_ACTION_CATEGORY_NONE,
             redo_action_category: VIEM_HISTORY_ACTION_CATEGORY_NONE,
-            reserved: [0; 2],
         }
     }
 }
 
 /// Exact identity of one immutable formatted projection.
 ///
-/// A caller copies this value from [`ViemFormattedSnapshotInfoV1`] into every
+/// A caller copies this value from [`ViemFormattedSnapshotInfo`] into every
 /// dependent range, mapping, and point request. Core rejects a request after
 /// the document advances rather than applying its numeric positions to a new
 /// projection.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemFormattedSnapshotIdentityV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
+pub struct ViemFormattedSnapshotIdentity {
     pub document_id: u64,
     pub document_revision: u64,
 }
 
-pub const VIEM_FORMATTED_SNAPSHOT_IDENTITY_V1_SIZE: u32 =
-    size_of::<ViemFormattedSnapshotIdentityV1>() as u32;
 
 /// Constant-time aggregate metadata for the current formatted projection.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemFormattedSnapshotInfoV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
-    pub identity: ViemFormattedSnapshotIdentityV1,
+pub struct ViemFormattedSnapshotInfo {
+    pub identity: ViemFormattedSnapshotIdentity,
     pub utf8_length: u64,
     pub utf16_length: u64,
     pub hard_line_count: u64,
 }
 
-pub const VIEM_FORMATTED_SNAPSHOT_INFO_V1_SIZE: u32 =
-    size_of::<ViemFormattedSnapshotInfoV1>() as u32;
 
 /// One scalar-aligned, half-open UTF-8 range in an exact formatted snapshot.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemFormattedUtf8RangeV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
-    pub identity: ViemFormattedSnapshotIdentityV1,
+pub struct ViemFormattedUtf8Range {
+    pub identity: ViemFormattedSnapshotIdentity,
     pub utf8_start: u64,
     pub utf8_end: u64,
 }
 
-pub const VIEM_FORMATTED_UTF8_RANGE_V1_SIZE: u32 = size_of::<ViemFormattedUtf8RangeV1>() as u32;
 
 /// Logical metadata for one grapheme-aligned formatted point.
 ///
@@ -276,10 +257,8 @@ pub const VIEM_FORMATTED_UTF8_RANGE_V1_SIZE: u32 = size_of::<ViemFormattedUtf8Ra
 /// UTF-8 offset.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemFormattedPointInfoV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
-    pub identity: ViemFormattedSnapshotIdentityV1,
+pub struct ViemFormattedPointInfo {
+    pub identity: ViemFormattedSnapshotIdentity,
     pub utf8_offset: u64,
     pub utf16_offset: u64,
     pub hard_line_index: u64,
@@ -288,7 +267,6 @@ pub struct ViemFormattedPointInfoV1 {
     pub grapheme_column: u64,
 }
 
-pub const VIEM_FORMATTED_POINT_INFO_V1_SIZE: u32 = size_of::<ViemFormattedPointInfoV1>() as u32;
 
 /// Status returned by every fallible ABI operation.
 ///
@@ -354,23 +332,18 @@ pub enum ViemStatus {
 }
 
 /// Options for [`viem_core_create`].
-///
-/// `struct_size` must be at least [`VIEM_DOCUMENT_OPTIONS_SIZE`].
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ViemDocumentOptions {
-    pub struct_size: u32,
     pub encoding: u32,
     pub format: u32,
     pub file_format: u32,
 }
 
-pub const VIEM_DOCUMENT_OPTIONS_SIZE: u32 = std::mem::size_of::<ViemDocumentOptions>() as u32;
 
 impl Default for ViemDocumentOptions {
     fn default() -> Self {
         Self {
-            struct_size: VIEM_DOCUMENT_OPTIONS_SIZE,
             encoding: VIEM_ENCODING_UTF8,
             format: VIEM_FORMAT_PLAIN_TEXT,
             file_format: VIEM_FILE_FORMAT_DETECT,
@@ -636,33 +609,25 @@ impl Default for ViemUtf8Slice {
 /// validated Viem fragment JSON image. Each target may occur at most once.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct ViemClipboardTurnEntryV2 {
-    pub struct_size: u32,
+pub struct ViemClipboardTurnEntry {
     pub flags: u32,
     pub target: u32,
-    pub reserved: u32,
     pub generation: u64,
     pub plain_text: ViemUtf8Slice,
     pub fragment_json: ViemUtf8Slice,
 }
-pub const VIEM_CLIPBOARD_TURN_ENTRY_V2_SIZE: u32 = size_of::<ViemClipboardTurnEntryV2>() as u32;
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct ViemCommandTurnContextV2 {
-    pub struct_size: u32,
-    pub reserved: u32,
-    pub clipboards: *const ViemClipboardTurnEntryV2,
+pub struct ViemCommandTurnContext {
+    pub clipboards: *const ViemClipboardTurnEntry,
     pub clipboard_count: u64,
 }
-pub const VIEM_COMMAND_TURN_CONTEXT_V2_SIZE: u32 = size_of::<ViemCommandTurnContextV2>() as u32;
 
-impl Default for ViemClipboardTurnEntryV2 {
+impl Default for ViemClipboardTurnEntry {
     fn default() -> Self {
         Self {
-            struct_size: VIEM_CLIPBOARD_TURN_ENTRY_V2_SIZE,
             flags: 0,
             target: 0,
-            reserved: 0,
             generation: 0,
             plain_text: ViemUtf8Slice::default(),
             fragment_json: ViemUtf8Slice::default(),
@@ -670,11 +635,9 @@ impl Default for ViemClipboardTurnEntryV2 {
     }
 }
 
-impl Default for ViemCommandTurnContextV2 {
+impl Default for ViemCommandTurnContext {
     fn default() -> Self {
         Self {
-            struct_size: VIEM_COMMAND_TURN_CONTEXT_V2_SIZE,
-            reserved: 0,
             clipboards: std::ptr::null(),
             clipboard_count: 0,
         }
@@ -685,85 +648,75 @@ impl Default for ViemCommandTurnContextV2 {
 /// explicitly documents otherwise, referenced bytes are valid UTF-8.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemEffectBytesRefV1 {
+pub struct ViemEffectBytesRef {
     pub offset: u64,
     pub length: u64,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemClipboardWriteV1 {
-    pub struct_size: u32,
+pub struct ViemClipboardWrite {
     pub flags: u32,
     pub target: u32,
     pub register_kind: u32,
     pub document_id: u64,
     pub document_revision: u64,
-    pub plain_text: ViemEffectBytesRefV1,
+    pub plain_text: ViemEffectBytesRef,
     pub first_hard_break: u64,
     pub hard_break_count: u64,
 }
 
-pub const VIEM_CLIPBOARD_WRITE_V1_SIZE: u32 = size_of::<ViemClipboardWriteV1>() as u32;
 
 /// One displayed option value embedded by an `OPTIONS` frontend request.
 /// For `FILE_FORMATS`, `first_file_format..+file_format_count` indexes the
 /// copied file-format value array in exact display order.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemExOptionDisplayV1 {
-    pub struct_size: u32,
+pub struct ViemExOptionDisplay {
     pub name: u32,
     pub value_kind: u32,
     pub scalar_value: u32,
     pub first_file_format: u64,
     pub file_format_count: u64,
-    pub text: ViemEffectBytesRefV1,
+    pub text: ViemEffectBytesRef,
 }
 
-pub const VIEM_EX_OPTION_DISPLAY_V1_SIZE: u32 = size_of::<ViemExOptionDisplayV1>() as u32;
 
 /// One resolved mark captured against the effect batch's exact formatted
 /// revision. `line_text` contains the complete hard-line content without its
 /// semantic break.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemExMarkV1 {
-    pub struct_size: u32,
+pub struct ViemExMark {
     pub name: u32,
     pub utf8_offset: u64,
     pub hard_line_index: u64,
     pub hard_line_start: u64,
     pub hard_line_end: u64,
     pub grapheme_column: u64,
-    pub line_text: ViemEffectBytesRefV1,
+    pub line_text: ViemEffectBytesRef,
 }
 
-pub const VIEM_EX_MARK_V1_SIZE: u32 = size_of::<ViemExMarkV1>() as u32;
 
 /// One resolved Vim register captured for an Ex info request. Hard-break
 /// indices reference the shared hard-break array and are UTF-8 byte offsets
 /// inside `text`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemExRegisterV1 {
-    pub struct_size: u32,
+pub struct ViemExRegister {
     pub name: u32,
     pub register_kind: u32,
-    pub reserved: u32,
-    pub text: ViemEffectBytesRefV1,
+    pub text: ViemEffectBytesRef,
     pub first_hard_break: u64,
     pub hard_break_count: u64,
 }
 
-pub const VIEM_EX_REGISTER_V1_SIZE: u32 = size_of::<ViemExRegisterV1>() as u32;
 
 /// One jump captured in oldest-to-newest order. Exactly one record has
 /// `CURRENT` when the list is nonempty. Line text excludes the semantic break.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemExJumpV1 {
-    pub struct_size: u32,
+pub struct ViemExJump {
     pub flags: u32,
     pub list_index: u64,
     pub utf8_offset: u64,
@@ -771,25 +724,21 @@ pub struct ViemExJumpV1 {
     pub hard_line_start: u64,
     pub hard_line_end: u64,
     pub grapheme_column: u64,
-    pub line_text: ViemEffectBytesRefV1,
+    pub line_text: ViemEffectBytesRef,
 }
 
-pub const VIEM_EX_JUMP_V1_SIZE: u32 = size_of::<ViemExJumpV1>() as u32;
 
 /// One exact formatted hard line captured for PRINT_LINES. Text excludes the
 /// semantic hard break; request NUMBER/LIST flags describe its presentation.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemExTextLineV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
+pub struct ViemExTextLine {
     pub hard_line_index: u64,
     pub utf8_start: u64,
     pub utf8_end: u64,
-    pub text: ViemEffectBytesRefV1,
+    pub text: ViemEffectBytesRef,
 }
 
-pub const VIEM_EX_TEXT_LINE_V1_SIZE: u32 = size_of::<ViemExTextLineV1>() as u32;
 
 /// One raw Ex host request in command execution order.
 ///
@@ -802,15 +751,14 @@ pub const VIEM_EX_TEXT_LINE_V1_SIZE: u32 = size_of::<ViemExTextLineV1>() as u32;
 /// jump, or text-line array for those four info-request kinds.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemExFrontendRequestV1 {
-    pub struct_size: u32,
+pub struct ViemExFrontendRequest {
     pub kind: u32,
     pub flags: u32,
     /// One `VIEM_WINDOW_*` value when `kind` is `VIEM_EX_FRONTEND_WINDOW`.
     pub window_command: u32,
     pub document_id: u64,
     pub document_revision: u64,
-    pub text: ViemEffectBytesRefV1,
+    pub text: ViemEffectBytesRef,
     pub hard_line_start: u64,
     pub hard_line_end: u64,
     pub first_option: u64,
@@ -822,20 +770,17 @@ pub struct ViemExFrontendRequestV1 {
     pub window_count: u64,
     /// One VIEM_ARGUMENT_* command for argument navigation.
     pub argument_command: u32,
-    pub reserved: u32,
     pub argument_count: u64,
     /// With HAS_LINE, a one-based initial line; zero means the last line.
     pub argument_line: u64,
-    pub display_text: ViemEffectBytesRefV1,
+    pub display_text: ViemEffectBytesRef,
 }
 
-pub const VIEM_EX_FRONTEND_REQUEST_V1_SIZE: u32 = size_of::<ViemExFrontendRequestV1>() as u32;
 
 /// Exact sizes and command identity for an immutable owned effect batch.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemEffectBatchInfoV1 {
-    pub struct_size: u32,
+pub struct ViemEffectBatchInfo {
     pub flags: u32,
     pub batch_handle: ViemEffectBatchHandle,
     pub document_id: u64,
@@ -854,11 +799,10 @@ pub struct ViemEffectBatchInfoV1 {
     pub substitution_count: u64,
 }
 
-pub const VIEM_EFFECT_BATCH_INFO_V1_SIZE: u32 = size_of::<ViemEffectBatchInfoV1>() as u32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemTextMetricsV1 {
+pub struct ViemTextMetrics {
     pub cap_height: f32,
     pub ascent: f32,
     pub descent: f32,
@@ -867,7 +811,7 @@ pub struct ViemTextMetricsV1 {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemShapedBoundsV1 {
+pub struct ViemShapedBounds {
     pub x: f32,
     pub y: f32,
     pub width: f32,
@@ -876,7 +820,7 @@ pub struct ViemShapedBoundsV1 {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemOpenTypeFeatureV1 {
+pub struct ViemOpenTypeFeature {
     pub tag: [u8; 4],
     pub value: u32,
 }
@@ -884,13 +828,14 @@ pub struct ViemOpenTypeFeatureV1 {
 /// ABI-v1 resolved shaping style supplied to the frontend callback.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct ViemResolvedTextStyleV1 {
-    pub struct_size: u32,
+pub struct ViemResolvedTextStyle {
     pub slant: u32,
     pub direction: u32,
     pub has_language: u32,
     pub has_script: u32,
-    pub reserved: u32,
+    /// Nonzero when `weight` includes relative bold (+300): keep the selected
+    /// face as the base rather than choosing a bold face.
+    pub relative_bold: u32,
     pub size: f32,
     pub weight: f32,
     pub letter_spacing: f32,
@@ -899,25 +844,21 @@ pub struct ViemResolvedTextStyleV1 {
     pub font_family_count: u64,
     pub language: ViemUtf8Slice,
     pub script: ViemUtf8Slice,
-    pub features: *const ViemOpenTypeFeatureV1,
+    pub features: *const ViemOpenTypeFeature,
     pub feature_count: u64,
     pub font_axes: ViemUtf8Slice,
     pub font_face: ViemUtf8Slice,
 }
 
-pub const VIEM_RESOLVED_TEXT_STYLE_V1_SIZE: u32 = size_of::<ViemResolvedTextStyleV1>() as u32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct ViemShapeStyleRunV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
+pub struct ViemShapeStyleRun {
     pub text_start: u64,
     pub text_end: u64,
-    pub style: ViemResolvedTextStyleV1,
+    pub style: ViemResolvedTextStyle,
 }
 
-pub const VIEM_SHAPE_STYLE_RUN_V1_SIZE: u32 = size_of::<ViemShapeStyleRunV1>() as u32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -930,17 +871,16 @@ pub const VIEM_SHAPE_STYLE_RUN_V1_SIZE: u32 = size_of::<ViemShapeStyleRunV1>() a
 /// and snapshots. The token remains usable while leased and its generation is
 /// current. Borrowed frontend exports must not outlive their exact layout.
 /// Releasing a lease is valid even after its generation or view is retired.
-pub struct ViemRenderRunHandleV1 {
+pub struct ViemRenderRunHandle {
     pub owner: u64,
     pub identifier: u64,
     pub metrics_generation: u64,
     pub threading: u32,
-    pub reserved: u32,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemClusterCaretStopV1 {
+pub struct ViemClusterCaretStop {
     pub text_offset: u64,
     pub inline_offset: f32,
     pub affinity: u32,
@@ -948,41 +888,35 @@ pub struct ViemClusterCaretStopV1 {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct ViemShapedClusterV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
+pub struct ViemShapedCluster {
     pub text_start: u64,
     pub text_end: u64,
     pub advance: f32,
-    pub metrics: ViemTextMetricsV1,
-    pub typographic_bounds: ViemShapedBoundsV1,
-    pub ink_bounds: ViemShapedBoundsV1,
+    pub metrics: ViemTextMetrics,
+    pub typographic_bounds: ViemShapedBounds,
+    pub ink_bounds: ViemShapedBounds,
     pub bidi_level: u32,
     pub has_render_run: u32,
     pub fallback_font: ViemUtf8Slice,
-    pub caret_stops: *const ViemClusterCaretStopV1,
+    pub caret_stops: *const ViemClusterCaretStop,
     pub caret_stop_count: u64,
-    pub render_run: ViemRenderRunHandleV1,
+    pub render_run: ViemRenderRunHandle,
 }
 
-pub const VIEM_SHAPED_CLUSTER_V1_SIZE: u32 = size_of::<ViemShapedClusterV1>() as u32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct ViemShapingDiagnosticV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
+pub struct ViemShapingDiagnostic {
     pub text_start: u64,
     pub text_end: u64,
     pub message: ViemUtf8Slice,
 }
 
-pub const VIEM_SHAPING_DIAGNOSTIC_V1_SIZE: u32 = size_of::<ViemShapingDiagnosticV1>() as u32;
 
 /// Passive inline image metadata borrowed during one shaping callback.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct ViemInlineImageV1 {
+pub struct ViemInlineImage {
     pub text_start: u64,
     pub text_end: u64,
     pub destination: ViemUtf8Slice,
@@ -996,8 +930,7 @@ pub struct ViemInlineImageV1 {
 /// following context; a cluster beginning in preceding context is omitted.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct ViemShapeRequestV1 {
-    pub struct_size: u32,
+pub struct ViemShapeRequest {
     pub purpose: u32,
     pub document_id: u64,
     pub document_revision: u64,
@@ -1008,20 +941,19 @@ pub struct ViemShapeRequestV1 {
     pub text: ViemUtf8Slice,
     pub context_before: ViemUtf8Slice,
     pub context_after: ViemUtf8Slice,
-    pub style_runs: *const ViemShapeStyleRunV1,
+    pub style_runs: *const ViemShapeStyleRun,
     pub style_run_count: u64,
-    pub default_style: ViemResolvedTextStyleV1,
+    pub default_style: ViemResolvedTextStyle,
     pub scale: f32,
     pub has_render_run_policy: u32,
     pub render_run_owner: u64,
     pub render_run_threading: u32,
     /// The containing paragraph's `VIEM_TEXT_DIRECTION_*` value.
     pub paragraph_base_direction: u32,
-    pub inline_images: *const ViemInlineImageV1,
+    pub inline_images: *const ViemInlineImage,
     pub inline_image_count: u64,
 }
 
-pub const VIEM_SHAPE_REQUEST_V1_SIZE: u32 = size_of::<ViemShapeRequestV1>() as u32;
 
 /// One callback-owned shaping response. All pointed-to arrays and UTF-8 bytes
 /// must remain readable when the callback returns and until the next provider
@@ -1030,8 +962,7 @@ pub const VIEM_SHAPE_REQUEST_V1_SIZE: u32 = size_of::<ViemShapeRequestV1>() as u
 /// returned cluster ranges.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct ViemShapeResponseV1 {
-    pub struct_size: u32,
+pub struct ViemShapeResponse {
     pub default_font_is_monospaced: u32,
     pub document_id: u64,
     pub document_revision: u64,
@@ -1039,19 +970,18 @@ pub struct ViemShapeResponseV1 {
     pub metrics_generation: u64,
     pub text_start: u64,
     pub text_end: u64,
-    pub clusters: *const ViemShapedClusterV1,
+    pub clusters: *const ViemShapedCluster,
     pub cluster_count: u64,
     pub visual_order: *const u64,
     pub visual_order_count: u64,
-    pub default_metrics: ViemTextMetricsV1,
-    pub diagnostics: *const ViemShapingDiagnosticV1,
+    pub default_metrics: ViemTextMetrics,
+    pub diagnostics: *const ViemShapingDiagnostic,
     pub diagnostic_count: u64,
 }
 
-impl Default for ViemShapeResponseV1 {
+impl Default for ViemShapeResponse {
     fn default() -> Self {
         Self {
-            struct_size: size_of::<Self>() as u32,
             default_font_is_monospaced: 0,
             document_id: 0,
             document_revision: 0,
@@ -1063,19 +993,18 @@ impl Default for ViemShapeResponseV1 {
             cluster_count: 0,
             visual_order: std::ptr::null(),
             visual_order_count: 0,
-            default_metrics: ViemTextMetricsV1::default(),
+            default_metrics: ViemTextMetrics::default(),
             diagnostics: std::ptr::null(),
             diagnostic_count: 0,
         }
     }
 }
 
-pub const VIEM_SHAPE_RESPONSE_V1_SIZE: u32 = size_of::<ViemShapeResponseV1>() as u32;
 
 /// Retain the resource identifiers in one shaped fragment. The returned opaque
 /// lease has its own lifetime and must remain releasable after view removal.
 pub type ViemRetainRenderRunsCallback = unsafe extern "C" fn(
-    context: *mut c_void, handles: *const ViemRenderRunHandleV1, count: u64,
+    context: *mut c_void, handles: *const ViemRenderRunHandle, count: u64,
 ) -> *mut c_void;
 /// May be invoked on any thread. The provider marshals native destruction to
 /// its required executor. This callback must never call back into the core.
@@ -1084,9 +1013,9 @@ pub type ViemReleaseRenderRunsCallback = unsafe extern "C" fn(lease: *mut c_void
 pub type ViemMetricsGenerationCallback = unsafe extern "C" fn(context: *mut c_void) -> u64;
 pub type ViemShapeBatchCallback = unsafe extern "C" fn(
     context: *mut c_void,
-    requests: *const ViemShapeRequestV1,
+    requests: *const ViemShapeRequest,
     request_count: u64,
-    responses: *mut ViemShapeResponseV1,
+    responses: *mut ViemShapeResponse,
     response_capacity: u64,
 ) -> u32;
 
@@ -1095,15 +1024,14 @@ pub type ViemShapeBatchCallback = unsafe extern "C" fn(
 /// valid until that view is removed or its core is successfully destroyed. A
 /// destroy call returning [`ViemStatus::CoreBusy`] has not destroyed the core
 /// and does not end that lifetime. Render-run tokens have the separate
-/// lease and generation lifetime documented on [`ViemRenderRunHandleV1`]. A
+/// lease and generation lifetime documented on [`ViemRenderRunHandle`]. A
 /// successful callback affirms stable ownership interiors. A provider
 /// unable to make that bounded-context guarantee returns
 /// [`ViemStatus::UnstableShapingContext`]; core caches and installs none of that
 /// batch.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct ViemTextMeasurementProviderV1 {
-    pub struct_size: u32,
+pub struct ViemTextMeasurementProvider {
     pub abi_version: u32,
     pub context: *mut c_void,
     pub measurement_environment_id: u64,
@@ -1111,20 +1039,16 @@ pub struct ViemTextMeasurementProviderV1 {
     pub has_render_run_policy: u32,
     pub render_run_owner: u64,
     pub render_run_threading: u32,
-    pub reserved: u32,
     pub metrics_generation: Option<ViemMetricsGenerationCallback>,
     pub shape_batch: Option<ViemShapeBatchCallback>,
     pub retain_render_runs: Option<ViemRetainRenderRunsCallback>,
     pub release_render_runs: Option<ViemReleaseRenderRunsCallback>,
 }
 
-pub const VIEM_TEXT_MEASUREMENT_PROVIDER_V1_SIZE: u32 =
-    size_of::<ViemTextMeasurementProviderV1>() as u32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ViemViewOptionsV1 {
-    pub struct_size: u32,
+pub struct ViemViewOptions {
     pub execution_context: u32,
     pub width: f32,
     pub height: f32,
@@ -1134,12 +1058,10 @@ pub struct ViemViewOptionsV1 {
     pub padding_right: f32,
 }
 
-pub const VIEM_VIEW_OPTIONS_V1_SIZE: u32 = size_of::<ViemViewOptionsV1>() as u32;
 
-impl Default for ViemViewOptionsV1 {
+impl Default for ViemViewOptions {
     fn default() -> Self {
         Self {
-            struct_size: VIEM_VIEW_OPTIONS_V1_SIZE,
             execution_context: VIEM_LAYOUT_EXECUTION_WORKER_POOL,
             width: 800.0,
             height: 600.0,
@@ -1157,12 +1079,11 @@ impl Default for ViemViewOptionsV1 {
 /// installs bounded regional layout and both requested coordinates.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ViemViewportOriginV1 {
-    pub struct_size: u32,
+pub struct ViemViewportOrigin {
     pub flags: u32,
     pub left: f32,
     pub top: f32,
-    /// Exact state identity from `ViemViewportStateV1`. These fields are
+    /// Exact state identity from `ViemViewportState`. These fields are
     /// ignored for horizontal-only requests.
     pub expected_document_id: u64,
     pub expected_document_revision: u64,
@@ -1172,13 +1093,11 @@ pub struct ViemViewportOriginV1 {
     pub expected_metrics_generation: u64,
 }
 
-pub const VIEM_VIEWPORT_ORIGIN_V1_SIZE: u32 = size_of::<ViemViewportOriginV1>() as u32;
 pub const VIEM_VIEWPORT_ORIGIN_HAS_TOP: u32 = 1 << 0;
 
-impl Default for ViemViewportOriginV1 {
+impl Default for ViemViewportOrigin {
     fn default() -> Self {
         Self {
-            struct_size: VIEM_VIEWPORT_ORIGIN_V1_SIZE,
             flags: 0,
             left: 0.0,
             top: 0.0,
@@ -1212,8 +1131,7 @@ pub const VIEM_VIEWPORT_STATE_MAXIMUM_TOP_EXACT: u32 = 1 << 5;
 /// treated as a durable absolute document position.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ViemViewportStateV1 {
-    pub struct_size: u32,
+pub struct ViemViewportState {
     pub flags: u32,
     pub left: f32,
     pub top: f32,
@@ -1228,12 +1146,10 @@ pub struct ViemViewportStateV1 {
     pub metrics_generation: u64,
 }
 
-pub const VIEM_VIEWPORT_STATE_V1_SIZE: u32 = size_of::<ViemViewportStateV1>() as u32;
 
-impl Default for ViemViewportStateV1 {
+impl Default for ViemViewportState {
     fn default() -> Self {
         Self {
-            struct_size: VIEM_VIEWPORT_STATE_V1_SIZE,
             flags: 0,
             left: 0.0,
             top: 0.0,
@@ -1251,13 +1167,11 @@ impl Default for ViemViewportStateV1 {
 }
 
 /// Exact dependency identity for one immutable layout snapshot. Callers copy
-/// this value from [`ViemLayoutSnapshotInfoV1`] into subsequent geometry
+/// this value from [`ViemLayoutSnapshotInfo`] into subsequent geometry
 /// requests; core never silently substitutes a newer snapshot.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemLayoutSnapshotIdentityV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
+pub struct ViemLayoutSnapshotIdentity {
     pub view_id: u64,
     pub document_id: u64,
     pub document_revision: u64,
@@ -1267,12 +1181,10 @@ pub struct ViemLayoutSnapshotIdentityV1 {
     pub metrics_generation: u64,
 }
 
-pub const VIEM_LAYOUT_SNAPSHOT_IDENTITY_V1_SIZE: u32 =
-    size_of::<ViemLayoutSnapshotIdentityV1>() as u32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemLayoutInsetsV1 {
+pub struct ViemLayoutInsets {
     pub top: f32,
     pub left: f32,
     pub bottom: f32,
@@ -1281,7 +1193,7 @@ pub struct ViemLayoutInsetsV1 {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemLayoutRectV1 {
+pub struct ViemLayoutRect {
     pub x: f32,
     pub y: f32,
     pub width: f32,
@@ -1292,7 +1204,7 @@ pub struct ViemLayoutRectV1 {
 /// component is finite and in the inclusive range zero to one.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemRgbaV1 {
+pub struct ViemRgba {
     pub red: f32,
     pub green: f32,
     pub blue: f32,
@@ -1431,20 +1343,17 @@ pub const VIEM_STYLE_EDIT_SET_PARENT_VARIANT: u32 = 8;
 /// Exact identity of one immutable normalized style sheet.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemStyleSheetIdentityV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
+pub struct ViemStyleSheetIdentity {
     pub document_id: u64,
     pub document_revision: u64,
     pub style_sheet_revision: u64,
 }
 
-pub const VIEM_STYLE_SHEET_IDENTITY_V1_SIZE: u32 = size_of::<ViemStyleSheetIdentityV1>() as u32;
 
 /// Byte range in the UTF-8 arena returned with one style-sheet export.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemStyleStringRefV1 {
+pub struct ViemStyleStringRef {
     pub offset: u64,
     pub length: u64,
 }
@@ -1452,10 +1361,8 @@ pub struct ViemStyleStringRefV1 {
 /// Fixed summary and exact array/arena sizes for one immutable style sheet.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemStyleSheetInfoV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
-    pub identity: ViemStyleSheetIdentityV1,
+pub struct ViemStyleSheetInfo {
+    pub identity: ViemStyleSheetIdentity,
     pub definition_count: u64,
     pub property_count: u64,
     pub value_item_count: u64,
@@ -1463,114 +1370,93 @@ pub struct ViemStyleSheetInfoV1 {
     pub string_bytes: u64,
 }
 
-pub const VIEM_STYLE_SHEET_INFO_V1_SIZE: u32 = size_of::<ViemStyleSheetInfoV1>() as u32;
 
 /// Tagged style value. String and array payloads index the arena and value-item
 /// array copied by the same atomic export.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemStyleValueV1 {
-    pub struct_size: u32,
+pub struct ViemStyleValue {
     pub kind: u32,
     pub enum_value: u32,
-    pub reserved: u32,
     pub number: f32,
-    pub number_reserved: f32,
-    pub color: ViemRgbaV1,
-    pub string: ViemStyleStringRefV1,
+    pub color: ViemRgba,
+    pub string: ViemStyleStringRef,
     pub first_item: u64,
     pub item_count: u64,
 }
 
-pub const VIEM_STYLE_VALUE_V1_SIZE: u32 = size_of::<ViemStyleValueV1>() as u32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemStyleValueItemV1 {
-    pub struct_size: u32,
+pub struct ViemStyleValueItem {
     pub kind: u32,
-    pub string: ViemStyleStringRefV1,
+    pub string: ViemStyleStringRef,
     pub unsigned_value: u32,
-    pub reserved: u32,
 }
 
-pub const VIEM_STYLE_VALUE_ITEM_V1_SIZE: u32 = size_of::<ViemStyleValueItemV1>() as u32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemStyleDependencyV1 {
-    pub struct_size: u32,
+pub struct ViemStyleDependency {
     pub namespace: u32,
-    pub style_id: ViemStyleStringRefV1,
+    pub style_id: ViemStyleStringRef,
 }
 
-pub const VIEM_STYLE_DEPENDENCY_V1_SIZE: u32 = size_of::<ViemStyleDependencyV1>() as u32;
 
 /// One definition in namespace/stable-ID order. Property indices refer to the
 /// property array from the same export.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemStyleDefinitionV1 {
-    pub struct_size: u32,
+pub struct ViemStyleDefinition {
     pub flags: u32,
     pub namespace: u32,
     pub role: u32,
     pub origin: u32,
     pub capabilities: u32,
     pub parent_variant: u32,
-    pub reserved: u32,
-    pub stable_id: ViemStyleStringRefV1,
-    pub display_name: ViemStyleStringRefV1,
-    pub parent_id: ViemStyleStringRefV1,
-    pub next_style_id: ViemStyleStringRefV1,
+    pub stable_id: ViemStyleStringRef,
+    pub display_name: ViemStyleStringRef,
+    pub parent_id: ViemStyleStringRef,
+    pub next_style_id: ViemStyleStringRef,
     pub first_property: u64,
     pub property_count: u64,
 }
 
-pub const VIEM_STYLE_DEFINITION_V1_SIZE: u32 = size_of::<ViemStyleDefinitionV1>() as u32;
 
 /// One applicable schema property for a definition. `declared` is meaningful
 /// only with `DECLARED`; an absent optional effective value uses kind NONE.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemStylePropertyV1 {
-    pub struct_size: u32,
+pub struct ViemStyleProperty {
     pub flags: u32,
     pub property: u32,
     pub contributor_kind: u32,
     pub contributor_namespace: u32,
-    pub reserved: u32,
-    pub declared: ViemStyleValueV1,
-    pub effective: ViemStyleValueV1,
-    pub contributor_style_id: ViemStyleStringRefV1,
+    pub declared: ViemStyleValue,
+    pub effective: ViemStyleValue,
+    pub contributor_style_id: ViemStyleStringRef,
     pub first_dependency: u64,
     pub dependency_count: u64,
 }
 
-pub const VIEM_STYLE_PROPERTY_V1_SIZE: u32 = size_of::<ViemStylePropertyV1>() as u32;
 
 /// Caller-owned item for an array-valued style edit. `text` contains a font
 /// family or four-byte OpenType tag according to `kind`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct ViemStyleEditValueItemV1 {
-    pub struct_size: u32,
+pub struct ViemStyleEditValueItem {
     pub kind: u32,
     pub text: ViemUtf8Slice,
     pub unsigned_value: u32,
-    pub reserved: u32,
 }
 
-pub const VIEM_STYLE_EDIT_VALUE_ITEM_V1_SIZE: u32 = size_of::<ViemStyleEditValueItemV1>() as u32;
 
-impl Default for ViemStyleEditValueItemV1 {
+impl Default for ViemStyleEditValueItem {
     fn default() -> Self {
         Self {
-            struct_size: VIEM_STYLE_EDIT_VALUE_ITEM_V1_SIZE,
             kind: 0,
             text: ViemUtf8Slice::default(),
             unsigned_value: 0,
-            reserved: 0,
         }
     }
 }
@@ -1578,31 +1464,24 @@ impl Default for ViemStyleEditValueItemV1 {
 /// Caller-owned typed value for one style field edit.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct ViemStyleEditValueV1 {
-    pub struct_size: u32,
+pub struct ViemStyleEditValue {
     pub kind: u32,
     pub enum_value: u32,
-    pub reserved: u32,
     pub number: f32,
-    pub number_reserved: f32,
-    pub color: ViemRgbaV1,
+    pub color: ViemRgba,
     pub text: ViemUtf8Slice,
-    pub items: *const ViemStyleEditValueItemV1,
+    pub items: *const ViemStyleEditValueItem,
     pub item_count: u64,
 }
 
-pub const VIEM_STYLE_EDIT_VALUE_V1_SIZE: u32 = size_of::<ViemStyleEditValueV1>() as u32;
 
-impl Default for ViemStyleEditValueV1 {
+impl Default for ViemStyleEditValue {
     fn default() -> Self {
         Self {
-            struct_size: VIEM_STYLE_EDIT_VALUE_V1_SIZE,
             kind: VIEM_STYLE_VALUE_NONE,
             enum_value: 0,
-            reserved: 0,
             number: 0.0,
-            number_reserved: 0.0,
-            color: ViemRgbaV1::default(),
+            color: ViemRgba::default(),
             text: ViemUtf8Slice::default(),
             items: std::ptr::null(),
             item_count: 0,
@@ -1613,32 +1492,27 @@ impl Default for ViemStyleEditValueV1 {
 /// Exact-revision request to edit one field of an existing editable style.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct ViemStyleEditV1 {
-    pub struct_size: u32,
+pub struct ViemStyleEdit {
     pub flags: u32,
-    pub identity: ViemStyleSheetIdentityV1,
+    pub identity: ViemStyleSheetIdentity,
     pub namespace: u32,
     pub operation: u32,
     pub property: u32,
-    pub reserved: u32,
     pub style_id: ViemUtf8Slice,
-    pub value: ViemStyleEditValueV1,
+    pub value: ViemStyleEditValue,
 }
 
-pub const VIEM_STYLE_EDIT_V1_SIZE: u32 = size_of::<ViemStyleEditV1>() as u32;
 
-impl Default for ViemStyleEditV1 {
+impl Default for ViemStyleEdit {
     fn default() -> Self {
         Self {
-            struct_size: VIEM_STYLE_EDIT_V1_SIZE,
             flags: 0,
-            identity: ViemStyleSheetIdentityV1::default(),
+            identity: ViemStyleSheetIdentity::default(),
             namespace: 0,
             operation: 0,
             property: 0,
-            reserved: 0,
             style_id: ViemUtf8Slice::default(),
-            value: ViemStyleEditValueV1::default(),
+            value: ViemStyleEditValue::default(),
         }
     }
 }
@@ -1649,8 +1523,7 @@ impl Default for ViemStyleEditV1 {
 /// intentionally do not advance as grouped edits commit newer snapshots.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ViemStyleEditGroupV1 {
-    pub struct_size: u32,
+pub struct ViemStyleEditGroup {
     pub flags: u32,
     pub token: u64,
     pub view_id: u64,
@@ -1659,12 +1532,10 @@ pub struct ViemStyleEditGroupV1 {
     pub begin_style_sheet_revision: u64,
 }
 
-pub const VIEM_STYLE_EDIT_GROUP_V1_SIZE: u32 = size_of::<ViemStyleEditGroupV1>() as u32;
 
-impl Default for ViemStyleEditGroupV1 {
+impl Default for ViemStyleEditGroup {
     fn default() -> Self {
         Self {
-            struct_size: VIEM_STYLE_EDIT_GROUP_V1_SIZE,
             flags: 0,
             token: 0,
             view_id: 0,
@@ -1675,10 +1546,9 @@ impl Default for ViemStyleEditGroupV1 {
     }
 }
 
-impl ViemStyleEditGroupV1 {
+impl ViemStyleEditGroup {
     fn from_core(group: StyleEditGroup) -> Self {
         Self {
-            struct_size: VIEM_STYLE_EDIT_GROUP_V1_SIZE,
             flags: 0,
             token: group.id().0,
             view_id: group.view().0,
@@ -1710,44 +1580,37 @@ pub const VIEM_LAYOUT_PAINT_DEFAULT_CANVAS: u32 = 1 << 0;
 /// that the corresponding decoration is enabled.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemTextPaintV1 {
-    pub struct_size: u32,
+pub struct ViemTextPaint {
     pub flags: u32,
-    pub foreground: ViemRgbaV1,
-    pub background: ViemRgbaV1,
+    pub foreground: ViemRgba,
+    pub background: ViemRgba,
     pub baseline_offset: f32,
 }
 
-pub const VIEM_TEXT_PAINT_V1_SIZE: u32 = size_of::<ViemTextPaintV1>() as u32;
 
 /// Fixed canvas/default-paint state and required override-run count from one
 /// exact immutable layout snapshot.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemLayoutPaintInfoV1 {
-    pub struct_size: u32,
+pub struct ViemLayoutPaintInfo {
     pub flags: u32,
-    pub identity: ViemLayoutSnapshotIdentityV1,
-    pub canvas_background: ViemRgbaV1,
-    pub default_paint: ViemTextPaintV1,
+    pub identity: ViemLayoutSnapshotIdentity,
+    pub canvas_background: ViemRgba,
+    pub default_paint: ViemTextPaint,
     pub paint_run_count: u64,
 }
 
-pub const VIEM_LAYOUT_PAINT_INFO_V1_SIZE: u32 = size_of::<ViemLayoutPaintInfoV1>() as u32;
 
 /// One logical half-open UTF-8 range whose resolved paint differs from the
 /// default paint. Runs are ordered in document order and never overlap.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemPaintStyleRunV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
+pub struct ViemPaintStyleRun {
     pub text_start: u64,
     pub text_end: u64,
-    pub paint: ViemTextPaintV1,
+    pub paint: ViemTextPaint,
 }
 
-pub const VIEM_PAINT_STYLE_RUN_V1_SIZE: u32 = size_of::<ViemPaintStyleRunV1>() as u32;
 
 pub const VIEM_LAYOUT_SNAPSHOT_FULL_DOCUMENT: u32 = 1 << 0;
 pub const VIEM_LAYOUT_SNAPSHOT_PREFIX_EXACT: u32 = 1 << 1;
@@ -1759,16 +1622,15 @@ pub const VIEM_LAYOUT_SNAPSHOT_TOTAL_HEIGHT_EXACT: u32 = 1 << 3;
 /// separately. Partial snapshots report their exact materialized coverage.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemLayoutSnapshotInfoV1 {
-    pub struct_size: u32,
+pub struct ViemLayoutSnapshotInfo {
     pub flags: u32,
-    pub identity: ViemLayoutSnapshotIdentityV1,
+    pub identity: ViemLayoutSnapshotIdentity,
     pub viewport_width: f32,
     pub viewport_height: f32,
     pub usable_width: f32,
     pub content_width: f32,
     pub total_height: f32,
-    pub content_insets: ViemLayoutInsetsV1,
+    pub content_insets: ViemLayoutInsets,
     pub coverage_hard_line_start: u64,
     pub coverage_hard_line_end: u64,
     pub document_hard_line_count: u64,
@@ -1779,7 +1641,6 @@ pub struct ViemLayoutSnapshotInfoV1 {
     pub caret_count: u64,
 }
 
-pub const VIEM_LAYOUT_SNAPSHOT_INFO_V1_SIZE: u32 = size_of::<ViemLayoutSnapshotInfoV1>() as u32;
 
 pub const VIEM_VISUAL_ROW_HAS_PARAGRAPH: u32 = 1 << 0;
 pub const VIEM_VISUAL_ROW_WRAPPED_FROM_PREVIOUS: u32 = 1 << 1;
@@ -1789,8 +1650,7 @@ pub const VIEM_VISUAL_ROW_WRAPS_TO_NEXT: u32 = 1 << 2;
 /// by the same atomic snapshot export.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemVisualRowV1 {
-    pub struct_size: u32,
+pub struct ViemVisualRow {
     pub flags: u32,
     pub row_index: u64,
     pub paragraph_id: u64,
@@ -1814,39 +1674,34 @@ pub struct ViemVisualRowV1 {
     pub caret_count: u64,
 }
 
-pub const VIEM_VISUAL_ROW_V1_SIZE: u32 = size_of::<ViemVisualRowV1>() as u32;
 
 pub const VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN: u32 = 1 << 0;
 
 /// One shaped cluster in row visual order. The optional render-run token keeps
 /// the provider ownership and generation lifetime declared on
-/// [`ViemRenderRunHandleV1`]; core never transfers or retains it for callers.
+/// [`ViemRenderRunHandle`]; core never transfers or retains it for callers.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemPositionedClusterV1 {
-    pub struct_size: u32,
+pub struct ViemPositionedCluster {
     pub flags: u32,
     pub row_index: u64,
     pub text_start: u64,
     pub text_end: u64,
     pub x: f32,
     pub advance: f32,
-    pub typographic_bounds: ViemLayoutRectV1,
-    pub ink_bounds: ViemLayoutRectV1,
+    pub typographic_bounds: ViemLayoutRect,
+    pub ink_bounds: ViemLayoutRect,
     pub bidi_level: u32,
-    pub reserved: u32,
-    pub render_run: ViemRenderRunHandleV1,
+    pub render_run: ViemRenderRunHandle,
 }
 
-pub const VIEM_POSITIONED_CLUSTER_V1_SIZE: u32 = size_of::<ViemPositionedClusterV1>() as u32;
 
 /// Noneditable layout furniture, with label-local bytes in a separate export
 /// blob. These offsets never address formatted document text.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemLayoutDecorationV1 {
+pub struct ViemLayoutDecoration {
     pub paragraph_id: u64,
-    pub struct_size: u32,
     pub flags: u32,
     pub row_index: u64,
     pub label_byte_start: u64,
@@ -1856,12 +1711,11 @@ pub struct ViemLayoutDecorationV1 {
     pub font_size: f32,
     /// A text decoration's layout baseline; zero for non-text furniture.
     pub baseline: f32,
-    pub typographic_bounds: ViemLayoutRectV1,
-    pub ink_bounds: ViemLayoutRectV1,
-    pub render_run: ViemRenderRunHandleV1,
-    pub paint: ViemTextPaintV1,
+    pub typographic_bounds: ViemLayoutRect,
+    pub ink_bounds: ViemLayoutRect,
+    pub render_run: ViemRenderRunHandle,
+    pub paint: ViemTextPaint,
 }
-pub const VIEM_LAYOUT_DECORATION_V1_SIZE: u32 = size_of::<ViemLayoutDecorationV1>() as u32;
 pub const VIEM_LAYOUT_DECORATION_CHECKBOX: u32 = 1 << 6;
 pub const VIEM_LAYOUT_DECORATION_CHECKED: u32 = 1 << 7;
 pub const VIEM_LAYOUT_DECORATION_ALERT_ICON: u32 = 1 << 8;
@@ -1877,42 +1731,33 @@ pub const VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED: u32 = 1 << 5;
 pub const VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT: u32 = 1 << 13;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemLayoutDecorationsInfoV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
-    pub identity: ViemLayoutSnapshotIdentityV1,
+pub struct ViemLayoutDecorationsInfo {
+    pub identity: ViemLayoutSnapshotIdentity,
     pub decoration_count: u64,
     pub label_bytes: u64,
 }
-pub const VIEM_LAYOUT_DECORATIONS_INFO_V1_SIZE: u32 =
-    size_of::<ViemLayoutDecorationsInfoV1>() as u32;
 
 /// One legal shaping caret stop positioned in document-layout coordinates.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemPositionedCaretV1 {
-    pub struct_size: u32,
+pub struct ViemPositionedCaret {
     pub affinity: u32,
     pub row_index: u64,
     pub text_offset: u64,
     pub x: f32,
-    pub reserved: f32,
 }
 
-pub const VIEM_POSITIONED_CARET_V1_SIZE: u32 = size_of::<ViemPositionedCaretV1>() as u32;
 
 /// Revision-bound request for logical endpoint geometry. The result may be a
 /// containing-cluster fallback without changing the logical endpoint.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemLayoutCaretRequestV1 {
-    pub struct_size: u32,
+pub struct ViemLayoutCaretRequest {
     pub affinity: u32,
-    pub identity: ViemLayoutSnapshotIdentityV1,
+    pub identity: ViemLayoutSnapshotIdentity,
     pub text_offset: u64,
 }
 
-pub const VIEM_LAYOUT_CARET_REQUEST_V1_SIZE: u32 = size_of::<ViemLayoutCaretRequestV1>() as u32;
 
 /// Pointer-down queries use character cells when the view addresses characters.
 pub const VIEM_LAYOUT_HIT_TEST_POINTER_DOWN: u32 = 1 << 0;
@@ -1920,21 +1765,17 @@ pub const VIEM_LAYOUT_HIT_TEST_POINTER_DOWN: u32 = 1 << 0;
 /// Revision-bound request for hit testing a document-layout coordinate.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemLayoutHitTestRequestV1 {
-    pub struct_size: u32,
+pub struct ViemLayoutHitTestRequest {
     pub flags: u32,
-    pub identity: ViemLayoutSnapshotIdentityV1,
+    pub identity: ViemLayoutSnapshotIdentity,
     pub x: f32,
     pub y: f32,
 }
 
-pub const VIEM_LAYOUT_HIT_TEST_REQUEST_V1_SIZE: u32 =
-    size_of::<ViemLayoutHitTestRequestV1>() as u32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemLayoutCaretPointV1 {
-    pub struct_size: u32,
+pub struct ViemLayoutCaretPoint {
     pub affinity: u32,
     pub document_id: u64,
     pub document_revision: u64,
@@ -1942,28 +1783,24 @@ pub struct ViemLayoutCaretPointV1 {
     pub text_offset: u64,
 }
 
-pub const VIEM_LAYOUT_CARET_POINT_V1_SIZE: u32 = size_of::<ViemLayoutCaretPointV1>() as u32;
 
 pub const VIEM_CARET_GEOMETRY_CLUSTER_FALLBACK: u32 = 1 << 0;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemLayoutCaretGeometryV1 {
-    pub struct_size: u32,
+pub struct ViemLayoutCaretGeometry {
     pub flags: u32,
-    pub point: ViemLayoutCaretPointV1,
-    pub rect: ViemLayoutRectV1,
+    pub point: ViemLayoutCaretPoint,
+    pub rect: ViemLayoutRect,
     pub row_index: u64,
 }
 
-pub const VIEM_LAYOUT_CARET_GEOMETRY_V1_SIZE: u32 = size_of::<ViemLayoutCaretGeometryV1>() as u32;
 
 pub const VIEM_POINTER_CARET_CURRENT: u32 = 1 << 0;
 /// Predicted plain-click caret in an exact snapshot. Never changes editor state.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemPointerCaretV1 {
-    pub struct_size: u32,
+pub struct ViemPointerCaret {
     pub flags: u32,
     pub mode: u32,
     pub caret_shape: u32,
@@ -1972,7 +1809,6 @@ pub struct ViemPointerCaretV1 {
     pub text_start: u64,
     pub text_end: u64,
 }
-pub const VIEM_POINTER_CARET_V1_SIZE: u32 = size_of::<ViemPointerCaretV1>() as u32;
 
 pub const VIEM_VIEW_PRESENTATION_HAS_VISUAL_ANCHOR: u32 = 1 << 0;
 pub const VIEM_VIEW_PRESENTATION_VISUAL_ANCHOR_AFFINITY_EXACT: u32 = 1 << 1;
@@ -1991,8 +1827,7 @@ pub const VIEM_VIEW_PRESENTATION_COMMAND_INPUT_PENDING: u32 = 1 << 7;
 /// present. Visual Block endpoints retain exact layout affinity and x edges.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemViewPresentationV1 {
-    pub struct_size: u32,
+pub struct ViemViewPresentation {
     pub flags: u32,
     pub mode: u32,
     /// Row disambiguation for `caret_utf8_start` when the caret shape is a
@@ -2009,7 +1844,6 @@ pub struct ViemViewPresentationV1 {
     pub visual_block_left_x: f32,
     pub visual_block_right_x: f32,
     pub desired_x: f32,
-    pub reserved_float: f32,
     pub command_line_utf8_length: u64,
     pub command_line_cursor_utf8_offset: u64,
     /// Exact formatted range the caret occupies. A cell covers one grapheme of
@@ -2024,7 +1858,6 @@ pub struct ViemViewPresentationV1 {
     pub pending_command: [u8; 32],
 }
 
-pub const VIEM_VIEW_PRESENTATION_V1_SIZE: u32 = size_of::<ViemViewPresentationV1>() as u32;
 
 /// The caret covers one grapheme. Draw the character cell `caret_utf8_start
 /// ..caret_utf8_end`; boundary affinity does not apply.
@@ -2044,8 +1877,7 @@ pub const VIEM_COMMAND_LINE_KIND_EXPRESSION: u32 = 4;
 /// when the document revision does not.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemCommandLineIdentityV1 {
-    pub struct_size: u32,
+pub struct ViemCommandLineIdentity {
     pub kind: u32,
     pub view_id: u64,
     pub document_id: u64,
@@ -2053,22 +1885,18 @@ pub struct ViemCommandLineIdentityV1 {
     pub state_identity: [u8; 32],
 }
 
-pub const VIEM_COMMAND_LINE_IDENTITY_V1_SIZE: u32 = size_of::<ViemCommandLineIdentityV1>() as u32;
 
 /// Fixed summary and required byte length for one command-line export. The
 /// cursor is a UTF-8 byte boundary in the copied bytes; the prompt prefix is
 /// represented by `identity.kind` and is not part of those bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemCommandLineInfoV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
-    pub identity: ViemCommandLineIdentityV1,
+pub struct ViemCommandLineInfo {
+    pub identity: ViemCommandLineIdentity,
     pub utf8_length: u64,
     pub cursor_utf8_offset: u64,
 }
 
-pub const VIEM_COMMAND_LINE_INFO_V1_SIZE: u32 = size_of::<ViemCommandLineInfoV1>() as u32;
 
 pub const VIEM_VISUAL_SELECTION_KIND_NONE: u32 = 0;
 pub const VIEM_VISUAL_SELECTION_KIND_CHARACTER: u32 = 1;
@@ -2084,38 +1912,31 @@ pub const VIEM_VISUAL_SELECTION_SEGMENT_HAS_EDGE_AFFINITIES: u32 = 1 << 2;
 /// when the selection payload changes without relayout.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemVisualSelectionIdentityV1 {
-    pub struct_size: u32,
+pub struct ViemVisualSelectionIdentity {
     pub kind: u32,
-    pub layout: ViemLayoutSnapshotIdentityV1,
+    pub layout: ViemLayoutSnapshotIdentity,
     pub state_identity: [u8; 32],
 }
 
-pub const VIEM_VISUAL_SELECTION_IDENTITY_V1_SIZE: u32 =
-    size_of::<ViemVisualSelectionIdentityV1>() as u32;
 
 /// Required array counts for the exact current Visual selection. Segments are
 /// ordered by logical UTF-8 document order; rectangles are ordered by visual
 /// row and x coordinate.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemVisualSelectionInfoV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
-    pub identity: ViemVisualSelectionIdentityV1,
+pub struct ViemVisualSelectionInfo {
+    pub identity: ViemVisualSelectionIdentity,
     pub segment_count: u64,
     pub rectangle_count: u64,
 }
 
-pub const VIEM_VISUAL_SELECTION_INFO_V1_SIZE: u32 = size_of::<ViemVisualSelectionInfoV1>() as u32;
 
 /// One exact logical half-open UTF-8 selection segment. Character- and
 /// Linewise Visual selections have one untagged segment. Blockwise segments
 /// retain their originating row, hard line, and display-edge affinities.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemVisualSelectionSegmentV1 {
-    pub struct_size: u32,
+pub struct ViemVisualSelectionSegment {
     pub flags: u32,
     pub text_start: u64,
     pub text_end: u64,
@@ -2125,23 +1946,17 @@ pub struct ViemVisualSelectionSegmentV1 {
     pub right_affinity: u32,
 }
 
-pub const VIEM_VISUAL_SELECTION_SEGMENT_V1_SIZE: u32 =
-    size_of::<ViemVisualSelectionSegmentV1>() as u32;
 
 /// One drawable rectangle for a logical selection segment. `segment_index`
 /// indexes the segment array returned by the same atomic copy.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemVisualSelectionRectangleV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
+pub struct ViemVisualSelectionRectangle {
     pub row_index: u64,
     pub segment_index: u64,
-    pub rect: ViemLayoutRectV1,
+    pub rect: ViemLayoutRect,
 }
 
-pub const VIEM_VISUAL_SELECTION_RECTANGLE_V1_SIZE: u32 =
-    size_of::<ViemVisualSelectionRectangleV1>() as u32;
 
 pub const VIEM_LOGICAL_SELECTION_KIND_NONE: u32 = 0;
 pub const VIEM_LOGICAL_SELECTION_KIND_CHARACTER: u32 = 1;
@@ -2166,8 +1981,7 @@ pub const VIEM_SEMANTIC_STYLE_CAN_CLEAR: u32 = 1 << 2;
 /// Character- and Linewise identities name an actionable contiguous range.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemLogicalSelectionIdentityV1 {
-    pub struct_size: u32,
+pub struct ViemLogicalSelectionIdentity {
     pub kind: u32,
     pub view_id: u64,
     pub document_id: u64,
@@ -2177,36 +1991,28 @@ pub struct ViemLogicalSelectionIdentityV1 {
     pub state_identity: [u8; 32],
 }
 
-pub const VIEM_LOGICAL_SELECTION_IDENTITY_V1_SIZE: u32 =
-    size_of::<ViemLogicalSelectionIdentityV1>() as u32;
 
 /// Check/mixed state and exact source-adapter capabilities for one semantic
 /// style at the current core-owned selection.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemSemanticStylePresentationV1 {
-    pub struct_size: u32,
+pub struct ViemSemanticStylePresentation {
     pub style: u32,
     pub state: u32,
     pub flags: u32,
-    pub selection: ViemLogicalSelectionIdentityV1,
+    pub selection: ViemLogicalSelectionIdentity,
 }
 
-pub const VIEM_SEMANTIC_STYLE_PRESENTATION_V1_SIZE: u32 =
-    size_of::<ViemSemanticStylePresentationV1>() as u32;
 
 /// Revision- and selection-bound request to set or clear one semantic style.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemSetSemanticStyleV1 {
-    pub struct_size: u32,
+pub struct ViemSetSemanticStyle {
     pub style: u32,
     pub enabled: u32,
-    pub reserved: u32,
-    pub expected_selection: ViemLogicalSelectionIdentityV1,
+    pub expected_selection: ViemLogicalSelectionIdentity,
 }
 
-pub const VIEM_SET_SEMANTIC_STYLE_V1_SIZE: u32 = size_of::<ViemSetSemanticStyleV1>() as u32;
 
 pub const VIEM_PLACE_CURSOR_EXTEND_SELECTION: u32 = 1 << 0;
 /// Select whole words; EXTEND retains the gesture's original word.
@@ -2218,40 +2024,33 @@ pub const VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE: u32 = 1 << 2;
 /// side at wrap or bidi split carets.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemPlaceCursorV1 {
-    pub struct_size: u32,
+pub struct ViemPlaceCursor {
     pub flags: u32,
     pub document_revision: u64,
     pub text_offset: u64,
     pub affinity: u32,
-    pub reserved: u32,
 }
 
-pub const VIEM_PLACE_CURSOR_V1_SIZE: u32 = size_of::<ViemPlaceCursorV1>() as u32;
 
 /// Exact model identity for a native file-format change. Only the concrete
 /// Unix, DOS, and Mac values are accepted; detection is an open-time policy.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ViemSetFileFormatV1 {
-    pub struct_size: u32,
+pub struct ViemSetFileFormat {
     pub file_format: u32,
     pub document_id: u64,
     pub document_revision: u64,
 }
 
-pub const VIEM_SET_FILE_FORMAT_V1_SIZE: u32 = size_of::<ViemSetFileFormatV1>() as u32;
 
 /// Revision-bound source-preserving document view selection.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemSetDocumentModeV1 {
-    pub struct_size: u32,
+pub struct ViemSetDocumentMode {
     pub mode: u32,
     pub document_id: u64,
     pub document_revision: u64,
 }
-pub const VIEM_SET_DOCUMENT_MODE_V1_SIZE: u32 = size_of::<ViemSetDocumentModeV1>() as u32;
 pub const VIEM_DOCUMENT_MODE_AUTO: u32 = 0;
 pub const VIEM_DOCUMENT_MODE_PLAIN_TEXT: u32 = 1;
 pub const VIEM_DOCUMENT_MODE_MARKDOWN: u32 = 2;
@@ -2260,13 +2059,11 @@ pub const VIEM_DOCUMENT_MODE_CODE: u32 = 3;
 /// Lossless source transcoding request; automatic detection is not a target.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemSetEncodingV1 {
-    pub struct_size: u32,
+pub struct ViemSetEncoding {
     pub encoding: u32,
     pub document_id: u64,
     pub document_revision: u64,
 }
-pub const VIEM_SET_ENCODING_V1_SIZE: u32 = size_of::<ViemSetEncodingV1>() as u32;
 
 pub const VIEM_LIST_STYLE_NONE: u32 = 0;
 pub const VIEM_LIST_STYLE_BULLET: u32 = 1;
@@ -2278,73 +2075,60 @@ pub const VIEM_SELECTED_STYLE_HAS_TABLE: u32 = 1 << 2;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemSetListStyleV1 {
-    pub struct_size: u32,
+pub struct ViemSetListStyle {
     pub style: u32,
-    pub expected_selection: ViemLogicalSelectionIdentityV1,
+    pub expected_selection: ViemLogicalSelectionIdentity,
 }
-pub const VIEM_SET_LIST_STYLE_V1_SIZE: u32 = size_of::<ViemSetListStyleV1>() as u32;
 
 pub const VIEM_LIST_CAN_INDENT: u32 = 1;
 pub const VIEM_LIST_CAN_UNINDENT: u32 = 2;
 pub const VIEM_LIST_CAN_INSERT_PARAGRAPH: u32 = 4;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemListIndentV1 {
-    pub struct_size: u32,
+pub struct ViemListIndent {
     pub unindent: u32,
-    pub expected_selection: ViemLogicalSelectionIdentityV1,
+    pub expected_selection: ViemLogicalSelectionIdentity,
 }
-pub const VIEM_LIST_INDENT_V1_SIZE: u32 = size_of::<ViemListIndentV1>() as u32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemSetParagraphStyleV1 {
-    pub struct_size: u32,
+pub struct ViemSetParagraphStyle {
     /// Zero means Base Paragraph; one through six select a heading.
     pub level: u32,
-    pub expected_selection: ViemLogicalSelectionIdentityV1,
+    pub expected_selection: ViemLogicalSelectionIdentity,
 }
-pub const VIEM_SET_PARAGRAPH_STYLE_V1_SIZE: u32 = size_of::<ViemSetParagraphStyleV1>() as u32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct ViemAssignStyleV1 {
-    pub struct_size: u32,
+pub struct ViemAssignStyle {
     pub namespace: u32,
-    pub identity: ViemStyleSheetIdentityV1,
-    pub expected_selection: ViemLogicalSelectionIdentityV1,
+    pub identity: ViemStyleSheetIdentity,
+    pub expected_selection: ViemLogicalSelectionIdentity,
     pub style_id: ViemUtf8Slice,
 }
-pub const VIEM_ASSIGN_STYLE_V1_SIZE: u32 = size_of::<ViemAssignStyleV1>() as u32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct ViemCreateStyleV1 {
-    pub struct_size: u32,
+pub struct ViemCreateStyle {
     pub namespace: u32,
-    pub identity: ViemStyleSheetIdentityV1,
+    pub identity: ViemStyleSheetIdentity,
     pub style_id: ViemUtf8Slice,
     pub display_name: ViemUtf8Slice,
     pub parent_id: ViemUtf8Slice,
     pub next_style_id: ViemUtf8Slice,
 }
-pub const VIEM_CREATE_STYLE_V1_SIZE: u32 = size_of::<ViemCreateStyleV1>() as u32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct ViemDeleteStyleV1 {
-    pub struct_size: u32,
+pub struct ViemDeleteStyle {
     pub namespace: u32,
-    pub identity: ViemStyleSheetIdentityV1,
+    pub identity: ViemStyleSheetIdentity,
     pub style_id: ViemUtf8Slice,
 }
-pub const VIEM_DELETE_STYLE_V1_SIZE: u32 = size_of::<ViemDeleteStyleV1>() as u32;
 
-impl Default for ViemSetFileFormatV1 {
+impl Default for ViemSetFileFormat {
     fn default() -> Self {
         Self {
-            struct_size: VIEM_SET_FILE_FORMAT_V1_SIZE,
             file_format: VIEM_FILE_FORMAT_UNIX,
             document_id: 0,
             document_revision: 0,
@@ -2356,20 +2140,15 @@ impl Default for ViemSetFileFormatV1 {
 /// written successfully by a native document frontend.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ViemMarkSavedV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
+pub struct ViemMarkSaved {
     pub document_id: u64,
     pub document_revision: u64,
 }
 
-pub const VIEM_MARK_SAVED_V1_SIZE: u32 = size_of::<ViemMarkSavedV1>() as u32;
 
-impl Default for ViemMarkSavedV1 {
+impl Default for ViemMarkSaved {
     fn default() -> Self {
         Self {
-            struct_size: VIEM_MARK_SAVED_V1_SIZE,
-            reserved: 0,
             document_id: 0,
             document_revision: 0,
         }
@@ -2378,95 +2157,76 @@ impl Default for ViemMarkSavedV1 {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ViemKeyInputV1 {
-    pub struct_size: u32,
+pub struct ViemKeyInput {
     pub kind: u32,
     pub codepoint: u32,
     /// Function-key modifiers; zero for other key kinds.
     pub modifiers: u32,
 }
 
-pub const VIEM_KEY_INPUT_V1_SIZE: u32 = size_of::<ViemKeyInputV1>() as u32;
 
 /// Exact formatted-snapshot replacement target for beginning native marked
 /// text. The frontend supplies its current selection, or an empty range at its
 /// insertion caret, in UTF-8 byte offsets for `document_revision`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ViemCompositionBeginV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
+pub struct ViemCompositionBegin {
     pub document_revision: u64,
     pub replacement_start: u64,
     pub replacement_end: u64,
 }
 
-pub const VIEM_COMPOSITION_BEGIN_V1_SIZE: u32 = size_of::<ViemCompositionBeginV1>() as u32;
 
 /// One replacement of the temporary marked-text overlay. Selection offsets
 /// are relative to `marked_text` and are UTF-8 byte offsets.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct ViemCompositionUpdateV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
+pub struct ViemCompositionUpdate {
     pub document_revision: u64,
     pub marked_text: ViemUtf8Slice,
     pub selected_start: u64,
     pub selected_end: u64,
 }
 
-pub const VIEM_COMPOSITION_UPDATE_V1_SIZE: u32 = size_of::<ViemCompositionUpdateV1>() as u32;
 
 /// Final UTF-8 payload to install as one authoritative document transaction
 /// and one undo unit.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct ViemCompositionCommitV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
+pub struct ViemCompositionCommit {
     pub document_revision: u64,
     pub committed_text: ViemUtf8Slice,
 }
 
-pub const VIEM_COMPOSITION_COMMIT_V1_SIZE: u32 = size_of::<ViemCompositionCommitV1>() as u32;
 
 /// Revision precondition for explicitly cancelling marked text.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ViemCompositionCancelV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
+pub struct ViemCompositionCancel {
     pub document_revision: u64,
 }
 
-pub const VIEM_COMPOSITION_CANCEL_V1_SIZE: u32 = size_of::<ViemCompositionCancelV1>() as u32;
 
 pub const VIEM_COMPOSITION_OVERLAY_ACTIVE: u32 = 1 << 0;
 
 /// Exact identity of one disposable per-view composition projection.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemCompositionOverlayIdentityV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
+pub struct ViemCompositionOverlayIdentity {
     pub view_id: u64,
     pub document_id: u64,
     pub document_revision: u64,
     pub generation: u64,
 }
 
-pub const VIEM_COMPOSITION_OVERLAY_IDENTITY_V1_SIZE: u32 =
-    size_of::<ViemCompositionOverlayIdentityV1>() as u32;
 
 /// Metadata and exact ranges in the temporary composed UTF-8 projection.
 /// An inactive view returns a zeroed value without `ACTIVE`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemCompositionOverlayInfoV1 {
-    pub struct_size: u32,
+pub struct ViemCompositionOverlayInfo {
     pub flags: u32,
-    pub identity: ViemCompositionOverlayIdentityV1,
+    pub identity: ViemCompositionOverlayIdentity,
     pub utf8_length: u64,
     pub replacement_start: u64,
     pub replacement_end: u64,
@@ -2476,27 +2236,20 @@ pub struct ViemCompositionOverlayInfoV1 {
     pub selected_end: u64,
 }
 
-pub const VIEM_COMPOSITION_OVERLAY_INFO_V1_SIZE: u32 =
-    size_of::<ViemCompositionOverlayInfoV1>() as u32;
 
 /// Scalar-aligned range read from one exact composition projection.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemCompositionOverlayUtf8RangeV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
-    pub identity: ViemCompositionOverlayIdentityV1,
+pub struct ViemCompositionOverlayUtf8Range {
+    pub identity: ViemCompositionOverlayIdentity,
     pub start: u64,
     pub end: u64,
 }
 
-pub const VIEM_COMPOSITION_OVERLAY_UTF8_RANGE_V1_SIZE: u32 =
-    size_of::<ViemCompositionOverlayUtf8RangeV1>() as u32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ViemCoreOutcomeV1 {
-    pub struct_size: u32,
+pub struct ViemCoreOutcome {
     pub command_status: u32,
     pub mode: u32,
     pub flags: u32,
@@ -2509,12 +2262,10 @@ pub struct ViemCoreOutcomeV1 {
     pub metrics_generation: u64,
 }
 
-pub const VIEM_CORE_OUTCOME_V1_SIZE: u32 = size_of::<ViemCoreOutcomeV1>() as u32;
 
-impl Default for ViemCoreOutcomeV1 {
+impl Default for ViemCoreOutcome {
     fn default() -> Self {
         Self {
-            struct_size: VIEM_CORE_OUTCOME_V1_SIZE,
             command_status: VIEM_COMMAND_STATUS_NONE,
             mode: 0,
             flags: 0,
@@ -2695,9 +2446,6 @@ unsafe fn read_options(
     // the null case was rejected above. The C representation makes this a
     // field-for-field copy with no Rust-owned resources.
     let options = unsafe { pointer.read() };
-    if options.struct_size < VIEM_DOCUMENT_OPTIONS_SIZE {
-        return Err(ViemStatus::InvalidArgument);
-    }
     Ok(options)
 }
 
@@ -2709,22 +2457,17 @@ fn validate_revision(document: &Document, expected: u64) -> Result<(), ViemStatu
     }
 }
 
-fn formatted_snapshot_identity(document: &Document) -> ViemFormattedSnapshotIdentityV1 {
-    ViemFormattedSnapshotIdentityV1 {
-        struct_size: VIEM_FORMATTED_SNAPSHOT_IDENTITY_V1_SIZE,
-        reserved: 0,
+fn formatted_snapshot_identity(document: &Document) -> ViemFormattedSnapshotIdentity {
+    ViemFormattedSnapshotIdentity {
         document_id: document.id().0,
         document_revision: document.revision().0,
     }
 }
 
 fn validate_formatted_snapshot_identity(
-    expected: ViemFormattedSnapshotIdentityV1,
+    expected: ViemFormattedSnapshotIdentity,
     document: &Document,
 ) -> Result<(), ViemStatus> {
-    if expected.struct_size < VIEM_FORMATTED_SNAPSHOT_IDENTITY_V1_SIZE || expected.reserved != 0 {
-        return Err(ViemStatus::InvalidArgument);
-    }
     let actual = formatted_snapshot_identity(document);
     (expected.document_id == actual.document_id
         && expected.document_revision == actual.document_revision)
@@ -2757,11 +2500,9 @@ fn hard_line_query_status(error: HardLineQueryError) -> ViemStatus {
     }
 }
 
-fn formatted_snapshot_info(document: &Document) -> Result<ViemFormattedSnapshotInfoV1, ViemStatus> {
+fn formatted_snapshot_info(document: &Document) -> Result<ViemFormattedSnapshotInfo, ViemStatus> {
     let snapshot = document.hard_line_snapshot();
-    Ok(ViemFormattedSnapshotInfoV1 {
-        struct_size: VIEM_FORMATTED_SNAPSHOT_INFO_V1_SIZE,
-        reserved: 0,
+    Ok(ViemFormattedSnapshotInfo {
         identity: formatted_snapshot_identity(document),
         utf8_length: checked_export_count(snapshot.text_length())?,
         utf16_length: checked_export_count(snapshot.utf16_length())?,
@@ -2818,19 +2559,17 @@ struct CTextMeasurementProvider {
 impl CTextMeasurementProvider {
     /// Copy and validate the current provider table. The frontend retains ownership
     /// of the context and every resource referenced by callbacks.
-    unsafe fn from_ffi(provider: *const ViemTextMeasurementProviderV1) -> Result<Self, ViemStatus> {
+    unsafe fn from_ffi(provider: *const ViemTextMeasurementProvider) -> Result<Self, ViemStatus> {
         if provider.is_null() {
             return Err(ViemStatus::NullPointer);
         }
-        if (provider as usize) % align_of::<ViemTextMeasurementProviderV1>() != 0 {
+        if (provider as usize) % align_of::<ViemTextMeasurementProvider>() != 0 {
             return Err(ViemStatus::InvalidArgument);
         }
         // SAFETY: The API contract requires a readable aligned provider table. Null
         // and alignment were checked before making the field-for-field copy.
         let provider = unsafe { provider.read() };
-        if provider.struct_size < VIEM_TEXT_MEASUREMENT_PROVIDER_V1_SIZE
-            || provider.abi_version != VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION
-            || provider.reserved != 0
+        if provider.abi_version != VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION
         {
             return Err(ViemStatus::InvalidProvider);
         }
@@ -2885,9 +2624,9 @@ impl Drop for CRenderResourceLease {
 
 struct MarshalledStyle {
     _font_families: Vec<ViemUtf8Slice>,
-    _features: Vec<ViemOpenTypeFeatureV1>,
+    _features: Vec<ViemOpenTypeFeature>,
     _font_axes: String,
-    ffi: ViemResolvedTextStyleV1,
+    ffi: ViemResolvedTextStyle,
 }
 
 impl MarshalledStyle {
@@ -2900,14 +2639,13 @@ impl MarshalledStyle {
         let features: Vec<_> = style
             .features
             .iter()
-            .map(|feature| ViemOpenTypeFeatureV1 {
+            .map(|feature| ViemOpenTypeFeature {
                 tag: feature.tag,
                 value: feature.value,
             })
             .collect();
         let font_axes = serde_json::to_string(&style.font_axes).expect("validated font axes");
-        let ffi = ViemResolvedTextStyleV1 {
-            struct_size: VIEM_RESOLVED_TEXT_STYLE_V1_SIZE,
+        let ffi = ViemResolvedTextStyle {
             slant: match style.slant {
                 FontSlant::Upright => VIEM_FONT_SLANT_UPRIGHT,
                 FontSlant::Italic => VIEM_FONT_SLANT_ITALIC,
@@ -2920,7 +2658,7 @@ impl MarshalledStyle {
             },
             has_language: u32::from(style.language.is_some()),
             has_script: u32::from(style.script.is_some()),
-            reserved: u32::from(style.relative_bold),
+            relative_bold: u32::from(style.relative_bold),
             size: style.size,
             weight: style.weight,
             letter_spacing: style.letter_spacing,
@@ -2952,8 +2690,8 @@ impl MarshalledStyle {
 struct MarshalledRequest {
     default_style: MarshalledStyle,
     _run_styles: Vec<MarshalledStyle>,
-    style_runs: Vec<ViemShapeStyleRunV1>,
-    inline_images: Vec<ViemInlineImageV1>,
+    style_runs: Vec<ViemShapeStyleRun>,
+    inline_images: Vec<ViemInlineImage>,
 }
 
 impl MarshalledRequest {
@@ -2968,9 +2706,7 @@ impl MarshalledRequest {
             .style_runs
             .iter()
             .zip(&run_styles)
-            .map(|(run, style)| ViemShapeStyleRunV1 {
-                struct_size: VIEM_SHAPE_STYLE_RUN_V1_SIZE,
-                reserved: 0,
+            .map(|(run, style)| ViemShapeStyleRun {
                 text_start: run.text_range.start as u64,
                 text_end: run.text_range.end as u64,
                 style: style.ffi,
@@ -2980,20 +2716,19 @@ impl MarshalledRequest {
             default_style,
             _run_styles: run_styles,
             style_runs,
-            inline_images: request.inline_images.iter().map(|image| ViemInlineImageV1 {
+            inline_images: request.inline_images.iter().map(|image| ViemInlineImage {
                 text_start: image.text_range.start as u64, text_end: image.text_range.end as u64,
                 destination: ffi_utf8_slice(&image.destination),
             }).collect(),
         }
     }
 
-    fn request(&self, request: &ShapeRequest<'_>) -> ViemShapeRequestV1 {
+    fn request(&self, request: &ShapeRequest<'_>) -> ViemShapeRequest {
         let (has_render_run_policy, render_run_owner, render_run_threading) =
             request.render_run_policy.map_or((0, 0, 0), |policy| {
                 (1, policy.owner.0, ffi_render_threading(policy.threading))
             });
-        ViemShapeRequestV1 {
-            struct_size: VIEM_SHAPE_REQUEST_V1_SIZE,
+        ViemShapeRequest {
             purpose: match request.purpose {
                 ShapePurpose::MetricsOnly => VIEM_SHAPE_PURPOSE_METRICS_ONLY,
                 ShapePurpose::MetricsAndRenderData => VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA,
@@ -3055,7 +2790,7 @@ impl TextMeasurementProvider for CTextMeasurementProvider {
             .zip(&storage)
             .map(|(request, storage)| storage.request(request))
             .collect();
-        let mut ffi_responses = vec![ViemShapeResponseV1::default(); requests.len()];
+        let mut ffi_responses = vec![ViemShapeResponse::default(); requests.len()];
         // SAFETY: All request pointers refer to storage retained across this
         // synchronous callback. The response allocation has exactly the
         // advertised capacity. The frontend callback/context lifetime is the
@@ -3210,7 +2945,7 @@ unsafe fn provider_utf8(
         .map_err(|_| measurement_failure(format!("{field} is not valid UTF-8")))
 }
 
-fn text_metrics_from_ffi(metrics: ViemTextMetricsV1) -> TextMetrics {
+fn text_metrics_from_ffi(metrics: ViemTextMetrics) -> TextMetrics {
     TextMetrics {
         cap_height: metrics.cap_height,
         ascent: metrics.ascent,
@@ -3219,7 +2954,7 @@ fn text_metrics_from_ffi(metrics: ViemTextMetricsV1) -> TextMetrics {
     }
 }
 
-fn shaped_bounds_from_ffi(bounds: ViemShapedBoundsV1) -> ShapedBounds {
+fn shaped_bounds_from_ffi(bounds: ViemShapedBounds) -> ShapedBounds {
     ShapedBounds {
         x: bounds.x,
         y: bounds.y,
@@ -3246,11 +2981,8 @@ fn render_threading_from_response(raw: u32) -> Result<RenderRunThreading, Measur
 }
 
 unsafe fn shaped_fragment_from_ffi(
-    response: &ViemShapeResponseV1,
+    response: &ViemShapeResponse,
 ) -> Result<ShapedFragment, MeasurementError> {
-    if response.struct_size < VIEM_SHAPE_RESPONSE_V1_SIZE {
-        return Err(measurement_failure("shaping response prefix is too small"));
-    }
     if response.default_font_is_monospaced > 1 {
         return Err(measurement_failure("invalid default-font monospace trait"));
     }
@@ -3304,12 +3036,9 @@ unsafe fn shaped_fragment_from_ffi(
 }
 
 unsafe fn shaped_cluster_from_ffi(
-    cluster: &ViemShapedClusterV1,
+    cluster: &ViemShapedCluster,
     fonts: &mut std::collections::BTreeMap<String, Arc<str>>,
 ) -> Result<ShapedCluster, MeasurementError> {
-    if cluster.struct_size < VIEM_SHAPED_CLUSTER_V1_SIZE || cluster.reserved != 0 {
-        return Err(measurement_failure("shaped-cluster prefix is too small"));
-    }
     let caret_stops = unsafe {
         provider_slice(
             cluster.caret_stops,
@@ -3333,11 +3062,6 @@ unsafe fn shaped_cluster_from_ffi(
     };
     let render_run = has_render_run
         .then(|| {
-            if cluster.render_run.reserved != 0 {
-                return Err(measurement_failure(
-                    "render-run response reserved field is nonzero",
-                ));
-            }
             Ok(RenderRunHandle::new(
                 RenderRunOwner(cluster.render_run.owner), cluster.render_run.identifier,
                 MetricsGeneration(cluster.render_run.metrics_generation),
@@ -3364,13 +3088,8 @@ unsafe fn shaped_cluster_from_ffi(
 }
 
 unsafe fn shaping_diagnostic_from_ffi(
-    diagnostic: &ViemShapingDiagnosticV1,
+    diagnostic: &ViemShapingDiagnostic,
 ) -> Result<ShapingDiagnostic, MeasurementError> {
-    if diagnostic.struct_size < VIEM_SHAPING_DIAGNOSTIC_V1_SIZE || diagnostic.reserved != 0 {
-        return Err(measurement_failure(
-            "shaping-diagnostic prefix is too small",
-        ));
-    }
     Ok(ShapingDiagnostic {
         text_range: checked_response_offset(diagnostic.text_start)?
             ..checked_response_offset(diagnostic.text_end)?,
@@ -3605,24 +3324,24 @@ impl OwnedEffectBatch {
 
 #[derive(Clone, Debug)]
 struct EffectBatchExport {
-    info: ViemEffectBatchInfoV1,
-    clipboard_writes: Vec<ViemClipboardWriteV1>,
-    ex_requests: Vec<ViemExFrontendRequestV1>,
-    ex_options: Vec<ViemExOptionDisplayV1>,
-    ex_marks: Vec<ViemExMarkV1>,
-    ex_registers: Vec<ViemExRegisterV1>,
-    ex_jumps: Vec<ViemExJumpV1>,
-    ex_text_lines: Vec<ViemExTextLineV1>,
+    info: ViemEffectBatchInfo,
+    clipboard_writes: Vec<ViemClipboardWrite>,
+    ex_requests: Vec<ViemExFrontendRequest>,
+    ex_options: Vec<ViemExOptionDisplay>,
+    ex_marks: Vec<ViemExMark>,
+    ex_registers: Vec<ViemExRegister>,
+    ex_jumps: Vec<ViemExJump>,
+    ex_text_lines: Vec<ViemExTextLine>,
     file_formats: Vec<u32>,
     hard_breaks: Vec<u64>,
     strings: Vec<u8>,
 }
 
-fn push_effect_text(strings: &mut Vec<u8>, text: &str) -> Result<ViemEffectBytesRefV1, ViemStatus> {
+fn push_effect_text(strings: &mut Vec<u8>, text: &str) -> Result<ViemEffectBytesRef, ViemStatus> {
     let offset = checked_export_count(strings.len())?;
     let length = checked_export_count(text.len())?;
     strings.extend_from_slice(text.as_bytes());
-    Ok(ViemEffectBytesRefV1 { offset, length })
+    Ok(ViemEffectBytesRef { offset, length })
 }
 
 fn clipboard_target_to_ffi(target: ClipboardTarget) -> u32 {
@@ -3676,9 +3395,9 @@ fn export_ex_option(
     option: &ExOptionDisplay,
     file_formats: &mut Vec<u32>,
     strings: &mut Vec<u8>,
-) -> Result<ViemExOptionDisplayV1, ViemStatus> {
+) -> Result<ViemExOptionDisplay, ViemStatus> {
     let first_file_format = checked_export_count(file_formats.len())?;
-    let mut text = ViemEffectBytesRefV1::default();
+    let mut text = ViemEffectBytesRef::default();
     let (value_kind, scalar_value) = match &option.value {
         ExOptionValue::String(value) => { text = push_effect_text(strings, value)?; (VIEM_EX_OPTION_VALUE_STRING, 0) }
         ExOptionValue::Boolean(value) => (VIEM_EX_OPTION_VALUE_BOOLEAN, u32::from(*value)),
@@ -3696,8 +3415,7 @@ fn export_ex_option(
             (VIEM_EX_OPTION_VALUE_NUMBER, value.unwrap_or(0))
         }
     };
-    Ok(ViemExOptionDisplayV1 {
-        struct_size: VIEM_EX_OPTION_DISPLAY_V1_SIZE,
+    Ok(ViemExOptionDisplay {
         name: ex_option_name_to_ffi(&option.name),
         value_kind,
         scalar_value,
@@ -3710,7 +3428,7 @@ fn export_ex_option(
 }
 
 fn set_ex_path(
-    output: &mut ViemExFrontendRequestV1,
+    output: &mut ViemExFrontendRequest,
     strings: &mut Vec<u8>,
     path: Option<&str>,
 ) -> Result<(), ViemStatus> {
@@ -3721,7 +3439,7 @@ fn set_ex_path(
     Ok(())
 }
 
-fn set_ex_range(output: &mut ViemExFrontendRequestV1, range: Option<&ResolvedExRange>) -> Result<(), ViemStatus> {
+fn set_ex_range(output: &mut ViemExFrontendRequest, range: Option<&ResolvedExRange>) -> Result<(), ViemStatus> {
     if let Some(range) = range {
         output.flags |= VIEM_EX_FRONTEND_HAS_RANGE;
         if matches!(output.kind, VIEM_EX_FRONTEND_WRITE | VIEM_EX_FRONTEND_WRITE_QUIT) {
@@ -3743,19 +3461,18 @@ fn export_ex_frontend_request(
     document_id: DocumentId,
     document_revision: Revision,
     strings: &mut Vec<u8>,
-    options: &mut Vec<ViemExOptionDisplayV1>,
-    marks: &mut Vec<ViemExMarkV1>,
-    registers: &mut Vec<ViemExRegisterV1>,
-    jumps: &mut Vec<ViemExJumpV1>,
-    text_lines: &mut Vec<ViemExTextLineV1>,
+    options: &mut Vec<ViemExOptionDisplay>,
+    marks: &mut Vec<ViemExMark>,
+    registers: &mut Vec<ViemExRegister>,
+    jumps: &mut Vec<ViemExJump>,
+    text_lines: &mut Vec<ViemExTextLine>,
     file_formats: &mut Vec<u32>,
     hard_breaks: &mut Vec<u64>,
-) -> Result<ViemExFrontendRequestV1, ViemStatus> {
-    let mut output = ViemExFrontendRequestV1 {
-        struct_size: VIEM_EX_FRONTEND_REQUEST_V1_SIZE,
+) -> Result<ViemExFrontendRequest, ViemStatus> {
+    let mut output = ViemExFrontendRequest {
         document_id: document_id.0,
         document_revision: document_revision.0,
-        ..ViemExFrontendRequestV1::default()
+        ..ViemExFrontendRequest::default()
     };
     if matches!(request, ExFrontendRequest::StartupApplication(_)) {
         output.flags |= VIEM_EX_FRONTEND_STARTUP_APPLICATION;
@@ -3988,8 +3705,7 @@ fn export_ex_frontend_request(
                 };
                 output.first_payload = checked_export_count(marks.len())?;
                 for mark in resolved {
-                    marks.push(ViemExMarkV1 {
-                        struct_size: VIEM_EX_MARK_V1_SIZE,
+                    marks.push(ViemExMark {
                         name: u32::from(mark.name),
                         utf8_offset: checked_export_count(mark.point.utf8_offset)?,
                         hard_line_index: checked_export_count(mark.point.hard_line_index)?,
@@ -4020,11 +3736,9 @@ fn export_ex_frontend_request(
                             .iter()
                             .map(|offset| *offset as u64),
                     );
-                    registers.push(ViemExRegisterV1 {
-                        struct_size: VIEM_EX_REGISTER_V1_SIZE,
+                    registers.push(ViemExRegister {
                         name: u32::from(register.name),
                         register_kind: register_kind_to_ffi(register.value.kind),
-                        reserved: 0,
                         text: push_effect_text(strings, &register.value.text)?,
                         first_hard_break,
                         hard_break_count: checked_export_count(hard_breaks.len())?
@@ -4043,8 +3757,7 @@ fn export_ex_frontend_request(
                 };
                 output.first_payload = checked_export_count(jumps.len())?;
                 for jump in resolved {
-                    jumps.push(ViemExJumpV1 {
-                        struct_size: VIEM_EX_JUMP_V1_SIZE,
+                    jumps.push(ViemExJump {
                         flags: u32::from(jump.current) * VIEM_EX_JUMP_CURRENT,
                         list_index: checked_export_count(jump.list_index)?,
                         utf8_offset: checked_export_count(jump.point.utf8_offset)?,
@@ -4083,9 +3796,7 @@ fn export_ex_frontend_request(
                 };
                 output.first_payload = checked_export_count(text_lines.len())?;
                 for line in resolved {
-                    text_lines.push(ViemExTextLineV1 {
-                        struct_size: VIEM_EX_TEXT_LINE_V1_SIZE,
-                        reserved: 0,
+                    text_lines.push(ViemExTextLine {
                         hard_line_index: checked_export_count(line.hard_line_index)?,
                         utf8_start: checked_export_count(line.utf8_range.start)?,
                         utf8_end: checked_export_count(line.utf8_range.end)?,
@@ -4142,8 +3853,7 @@ fn export_effect_batch(
                     .map(|offset| *offset as u64),
             );
         }
-        clipboard_writes.push(ViemClipboardWriteV1 {
-            struct_size: VIEM_CLIPBOARD_WRITE_V1_SIZE,
+        clipboard_writes.push(ViemClipboardWrite {
             flags: write_flags,
             target: clipboard_target_to_ffi(request.target()),
             register_kind,
@@ -4193,8 +3903,7 @@ fn export_effect_batch(
     }
 
     Ok(EffectBatchExport {
-        info: ViemEffectBatchInfoV1 {
-            struct_size: VIEM_EFFECT_BATCH_INFO_V1_SIZE,
+        info: ViemEffectBatchInfo {
             flags,
             batch_handle: handle,
             document_id: batch.document_id.0,
@@ -4552,9 +4261,8 @@ fn execution_context_permits(
     }
 }
 
-fn parse_key(input: ViemKeyInputV1) -> Result<Key, ViemStatus> {
-    if input.struct_size < VIEM_KEY_INPUT_V1_SIZE
-        || input.modifiers & !15 != 0
+fn parse_key(input: ViemKeyInput) -> Result<Key, ViemStatus> {
+    if input.modifiers & !15 != 0
         || (input.kind != VIEM_KEY_FUNCTION && input.kind != VIEM_KEY_KEYPAD && input.modifiers != 0 && !matches!(input.kind, VIEM_KEY_LEFT | VIEM_KEY_RIGHT | VIEM_KEY_WORD_LEFT | VIEM_KEY_WORD_RIGHT | VIEM_KEY_PARAGRAPH_START | VIEM_KEY_PARAGRAPH_END | VIEM_KEY_NEXT_PARAGRAPH | VIEM_KEY_UP | VIEM_KEY_DOWN | VIEM_KEY_HOME | VIEM_KEY_END | VIEM_KEY_DOCUMENT_START | VIEM_KEY_DOCUMENT_END | VIEM_KEY_PAGE_UP | VIEM_KEY_PAGE_DOWN))
     {
         return Err(ViemStatus::InvalidArgument);
@@ -4786,7 +4494,7 @@ fn summarize_core_outcome(
     core: &Core<CTextMeasurementProvider>,
     view_id: ViewId,
     outcome: Option<&CoreOutcome>,
-) -> Result<ViemCoreOutcomeV1, ViemStatus> {
+) -> Result<ViemCoreOutcome, ViemStatus> {
     let command_state = core.command_state(view_id).ok_or(ViemStatus::InvalidView)?;
     let layout = core
         .presentation_layout(view_id)
@@ -4843,8 +4551,7 @@ fn summarize_core_outcome(
                 requirements.metrics_generation.0,
             )
         };
-    Ok(ViemCoreOutcomeV1 {
-        struct_size: VIEM_CORE_OUTCOME_V1_SIZE,
+    Ok(ViemCoreOutcome {
         command_status,
         mode: mode_to_ffi(command_state.mode(), command_state.is_select_mode(), command_state.is_native_selection()),
         flags,
@@ -4861,7 +4568,7 @@ fn summarize_core_outcome(
 fn summarize_viewport_state(
     core: &Core<CTextMeasurementProvider>,
     view_id: ViewId,
-) -> Result<ViemViewportStateV1, ViemStatus> {
+) -> Result<ViemViewportState, ViemStatus> {
     let state = core.viewport_state(view_id).map_err(core_status)?;
     let mut flags = 0;
     if state.wrap() {
@@ -4890,8 +4597,7 @@ fn summarize_viewport_state(
     } else {
         0
     };
-    Ok(ViemViewportStateV1 {
-        struct_size: VIEM_VIEWPORT_STATE_V1_SIZE,
+    Ok(ViemViewportState {
         flags,
         left: state.left(),
         top: state.top(),
@@ -4907,7 +4613,7 @@ fn summarize_viewport_state(
     })
 }
 
-fn summarize_document_state(document: &Document) -> ViemDocumentStateV1 {
+fn summarize_document_state(document: &Document) -> ViemDocumentState {
     let history = document.history_status();
     let mut flags = 0;
     if document.has_bom() {
@@ -4929,8 +4635,7 @@ fn summarize_document_state(document: &Document) -> ViemDocumentStateV1 {
         flags |= VIEM_DOCUMENT_STATE_RECOVERED;
     }
 
-    ViemDocumentStateV1 {
-        struct_size: VIEM_DOCUMENT_STATE_V1_SIZE,
+    ViemDocumentState {
         flags,
         document_id: document.id().0,
         document_revision: document.revision().0,
@@ -4942,7 +4647,6 @@ fn summarize_document_state(document: &Document) -> ViemDocumentStateV1 {
         file_format_origin: file_format_origin_to_ffi(document.file_format_origin()),
         undo_action_category: history_action_category(history.undo_summary.as_ref()),
         redo_action_category: history_action_category(history.redo_summary.as_ref()),
-        reserved: [0; 2],
     }
 }
 
@@ -4971,10 +4675,8 @@ fn current_ffi_layout_snapshot(
 fn composition_overlay_identity(
     overlay: &crate::command::composition::CompositionOverlay,
     view_id: ViewId,
-) -> ViemCompositionOverlayIdentityV1 {
-    ViemCompositionOverlayIdentityV1 {
-        struct_size: VIEM_COMPOSITION_OVERLAY_IDENTITY_V1_SIZE,
-        reserved: 0,
+) -> ViemCompositionOverlayIdentity {
+    ViemCompositionOverlayIdentity {
         view_id: view_id.0,
         document_id: overlay.document_id().0,
         document_revision: overlay.revision().0,
@@ -4985,12 +4687,11 @@ fn composition_overlay_identity(
 fn composition_overlay_info(
     overlay: &crate::command::composition::CompositionOverlay,
     view_id: ViewId,
-) -> Result<ViemCompositionOverlayInfoV1, ViemStatus> {
+) -> Result<ViemCompositionOverlayInfo, ViemStatus> {
     let replacement = overlay.replacement_range();
     let marked = overlay.marked_range();
     let selected = overlay.selected_range_in_overlay();
-    Ok(ViemCompositionOverlayInfoV1 {
-        struct_size: VIEM_COMPOSITION_OVERLAY_INFO_V1_SIZE,
+    Ok(ViemCompositionOverlayInfo {
         flags: VIEM_COMPOSITION_OVERLAY_ACTIVE,
         identity: composition_overlay_identity(overlay, view_id),
         utf8_length: checked_export_count(overlay.utf8_len())?,
@@ -5004,13 +4705,10 @@ fn composition_overlay_info(
 }
 
 fn validate_composition_overlay_identity(
-    expected: ViemCompositionOverlayIdentityV1,
+    expected: ViemCompositionOverlayIdentity,
     overlay: &crate::command::composition::CompositionOverlay,
     view_id: ViewId,
 ) -> Result<(), ViemStatus> {
-    if expected.struct_size < VIEM_COMPOSITION_OVERLAY_IDENTITY_V1_SIZE || expected.reserved != 0 {
-        return Err(ViemStatus::InvalidArgument);
-    }
     let actual = composition_overlay_identity(overlay, view_id);
     (expected.view_id == actual.view_id
         && expected.document_id == actual.document_id
@@ -5020,10 +4718,8 @@ fn validate_composition_overlay_identity(
         .ok_or(ViemStatus::StaleRevision)
 }
 
-fn snapshot_identity(snapshot: &LayoutSnapshot, view_id: ViewId) -> ViemLayoutSnapshotIdentityV1 {
-    ViemLayoutSnapshotIdentityV1 {
-        struct_size: VIEM_LAYOUT_SNAPSHOT_IDENTITY_V1_SIZE,
-        reserved: 0,
+fn snapshot_identity(snapshot: &LayoutSnapshot, view_id: ViewId) -> ViemLayoutSnapshotIdentity {
+    ViemLayoutSnapshotIdentity {
         view_id: view_id.0,
         document_id: snapshot.document_id.0,
         document_revision: snapshot.document_revision.0,
@@ -5041,7 +4737,7 @@ fn checked_export_count(value: usize) -> Result<u64, ViemStatus> {
 fn layout_snapshot_info(
     snapshot: &LayoutSnapshot,
     view_id: ViewId,
-) -> Result<ViemLayoutSnapshotInfoV1, ViemStatus> {
+) -> Result<ViemLayoutSnapshotInfo, ViemStatus> {
     let mut flags = 0;
     if snapshot.coverage.is_full_document() {
         flags |= VIEM_LAYOUT_SNAPSHOT_FULL_DOCUMENT;
@@ -5068,8 +4764,7 @@ fn layout_snapshot_info(
         .rows
         .iter()
         .try_fold(0usize, |total, row| total.checked_add(row.carets.len()));
-    Ok(ViemLayoutSnapshotInfoV1 {
-        struct_size: VIEM_LAYOUT_SNAPSHOT_INFO_V1_SIZE,
+    Ok(ViemLayoutSnapshotInfo {
         flags,
         identity: snapshot_identity(snapshot, view_id),
         viewport_width: snapshot.viewport_width,
@@ -5077,7 +4772,7 @@ fn layout_snapshot_info(
         usable_width: snapshot.usable_width,
         content_width: snapshot.content_width,
         total_height: snapshot.total_height,
-        content_insets: ViemLayoutInsetsV1 {
+        content_insets: ViemLayoutInsets {
             top: snapshot.content_insets.top,
             left: snapshot.content_insets.left,
             bottom: snapshot.content_insets.bottom,
@@ -5097,13 +4792,10 @@ fn layout_snapshot_info(
 }
 
 fn validate_snapshot_identity(
-    expected: ViemLayoutSnapshotIdentityV1,
+    expected: ViemLayoutSnapshotIdentity,
     snapshot: &LayoutSnapshot,
     view_id: ViewId,
 ) -> Result<(), ViemStatus> {
-    if expected.struct_size < VIEM_LAYOUT_SNAPSHOT_IDENTITY_V1_SIZE || expected.reserved != 0 {
-        return Err(ViemStatus::InvalidArgument);
-    }
     let actual = snapshot_identity(snapshot, view_id);
     (expected.view_id == actual.view_id
         && expected.document_id == actual.document_id
@@ -5119,7 +4811,7 @@ fn validate_snapshot_identity(
 fn validate_viewport_origin_identity(
     core: &Core<CTextMeasurementProvider>,
     view_id: ViewId,
-    request: ViemViewportOriginV1,
+    request: ViemViewportOrigin,
 ) -> Result<(), ViemStatus> {
     let snapshot = current_ffi_layout_snapshot(core, view_id)?;
     (request.expected_document_id == snapshot.document_id.0
@@ -5147,8 +4839,8 @@ fn parse_layout_affinity(raw: u32) -> Result<BoundaryAffinity, ViemStatus> {
     }
 }
 
-fn layout_rect_to_ffi(rect: LayoutRect) -> ViemLayoutRectV1 {
-    ViemLayoutRectV1 {
+fn layout_rect_to_ffi(rect: LayoutRect) -> ViemLayoutRect {
+    ViemLayoutRect {
         x: rect.x,
         y: rect.y,
         width: rect.width,
@@ -5156,8 +4848,8 @@ fn layout_rect_to_ffi(rect: LayoutRect) -> ViemLayoutRectV1 {
     }
 }
 
-fn color_to_ffi(color: Color) -> ViemRgbaV1 {
-    ViemRgbaV1 {
+fn color_to_ffi(color: Color) -> ViemRgba {
+    ViemRgba {
         red: color.red,
         green: color.green,
         blue: color.blue,
@@ -5165,13 +4857,13 @@ fn color_to_ffi(color: Color) -> ViemRgbaV1 {
     }
 }
 
-fn text_paint_to_ffi(paint: &ResolvedTextPaint) -> ViemTextPaintV1 {
+fn text_paint_to_ffi(paint: &ResolvedTextPaint) -> ViemTextPaint {
     let mut flags = if paint.foreground_is_default {
         VIEM_TEXT_PAINT_DEFAULT_FOREGROUND
     } else {
         0
     };
-    let background = paint.background.map_or_else(ViemRgbaV1::default, |color| {
+    let background = paint.background.map_or_else(ViemRgba::default, |color| {
         flags |= VIEM_TEXT_PAINT_HAS_BACKGROUND;
         color_to_ffi(color)
     });
@@ -5181,8 +4873,7 @@ fn text_paint_to_ffi(paint: &ResolvedTextPaint) -> ViemTextPaintV1 {
     if paint.strikethrough {
         flags |= VIEM_TEXT_PAINT_STRIKETHROUGH;
     }
-    ViemTextPaintV1 {
-        struct_size: VIEM_TEXT_PAINT_V1_SIZE,
+    ViemTextPaint {
         flags,
         foreground: color_to_ffi(paint.foreground),
         background,
@@ -5198,19 +4889,17 @@ fn render_threading_to_ffi(threading: RenderRunThreading) -> u32 {
     }
 }
 
-fn render_run_to_ffi(render_run: &RenderRunHandle) -> ViemRenderRunHandleV1 {
-    ViemRenderRunHandleV1 {
+fn render_run_to_ffi(render_run: &RenderRunHandle) -> ViemRenderRunHandle {
+    ViemRenderRunHandle {
         owner: render_run.owner.0,
         identifier: render_run.identifier,
         metrics_generation: render_run.metrics_generation.0,
         threading: render_threading_to_ffi(render_run.threading),
-        reserved: 0,
     }
 }
 
-fn caret_point_to_ffi(point: CaretPoint) -> Result<ViemLayoutCaretPointV1, ViemStatus> {
-    Ok(ViemLayoutCaretPointV1 {
-        struct_size: VIEM_LAYOUT_CARET_POINT_V1_SIZE,
+fn caret_point_to_ffi(point: CaretPoint) -> Result<ViemLayoutCaretPoint, ViemStatus> {
+    Ok(ViemLayoutCaretPoint {
         affinity: affinity_to_ffi(point.affinity),
         document_id: point.document_id.0,
         document_revision: point.document_revision.0,
@@ -5237,41 +4926,38 @@ fn layout_query_status(error: LayoutError) -> ViemStatus {
 }
 
 struct LayoutSnapshotExport {
-    info: ViemLayoutSnapshotInfoV1,
-    rows: Vec<ViemVisualRowV1>,
-    clusters: Vec<ViemPositionedClusterV1>,
-    carets: Vec<ViemPositionedCaretV1>,
+    info: ViemLayoutSnapshotInfo,
+    rows: Vec<ViemVisualRow>,
+    clusters: Vec<ViemPositionedCluster>,
+    carets: Vec<ViemPositionedCaret>,
 }
 
 struct LayoutPaintExport {
-    info: ViemLayoutPaintInfoV1,
-    runs: Vec<ViemPaintStyleRunV1>,
+    info: ViemLayoutPaintInfo,
+    runs: Vec<ViemPaintStyleRun>,
 }
 
 struct StyleSheetExport {
-    info: ViemStyleSheetInfoV1,
-    definitions: Vec<ViemStyleDefinitionV1>,
-    properties: Vec<ViemStylePropertyV1>,
-    value_items: Vec<ViemStyleValueItemV1>,
-    dependencies: Vec<ViemStyleDependencyV1>,
+    info: ViemStyleSheetInfo,
+    definitions: Vec<ViemStyleDefinition>,
+    properties: Vec<ViemStyleProperty>,
+    value_items: Vec<ViemStyleValueItem>,
+    dependencies: Vec<ViemStyleDependency>,
     strings: Vec<u8>,
 }
 
-fn style_sheet_identity(document: &Document) -> ViemStyleSheetIdentityV1 {
-    ViemStyleSheetIdentityV1 {
-        struct_size: VIEM_STYLE_SHEET_IDENTITY_V1_SIZE,
-        reserved: 0,
+fn style_sheet_identity(document: &Document) -> ViemStyleSheetIdentity {
+    ViemStyleSheetIdentity {
         document_id: document.id().0,
         document_revision: document.revision().0,
         style_sheet_revision: document.projection().style_sheet().revision.0,
     }
 }
 
-fn code_style_identity(sheet: &crate::document::StyleSheet) -> ViemStyleSheetIdentityV1 {
-    ViemStyleSheetIdentityV1 { struct_size: VIEM_STYLE_SHEET_IDENTITY_V1_SIZE, reserved:0, document_id:0, document_revision:0, style_sheet_revision:sheet.revision.0 }
+fn code_style_identity(sheet: &crate::document::StyleSheet) -> ViemStyleSheetIdentity {
+    ViemStyleSheetIdentity { document_id:0, document_revision:0, style_sheet_revision:sheet.revision.0 }
 }
-fn validate_code_style_identity(expected: ViemStyleSheetIdentityV1, sheet: &crate::document::StyleSheet) -> Result<(), ViemStatus> {
-    if expected.struct_size < VIEM_STYLE_SHEET_IDENTITY_V1_SIZE || expected.reserved != 0 { return Err(ViemStatus::InvalidArgument); }
+fn validate_code_style_identity(expected: ViemStyleSheetIdentity, sheet: &crate::document::StyleSheet) -> Result<(), ViemStatus> {
     if expected.document_id != 0 || expected.document_revision != 0 || expected.style_sheet_revision != sheet.revision.0 { return Err(ViemStatus::StaleRevision); }
     Ok(())
 }
@@ -5282,21 +4968,21 @@ fn export_code_style_snapshot(sheet: &crate::document::StyleSheet) -> Result<Sty
 /// # Safety
 /// Output must be one writable aligned style-info record.
 #[no_mangle]
-pub unsafe extern "C" fn viem_code_style_sheet_info(output: *mut ViemStyleSheetInfoV1) -> ViemStatus {
+pub unsafe extern "C" fn viem_code_style_sheet_info(output: *mut ViemStyleSheetInfo) -> ViemStatus {
     unsafe { viem_core_style_sheet_info(0, 0, output) }
 }
 
 /// # Safety
 /// Same bounded, disjoint output-array contract as viem_core_copy_style_sheet.
 #[no_mangle]
-pub unsafe extern "C" fn viem_code_copy_style_sheet(expected: *const ViemStyleSheetIdentityV1, definitions: *mut ViemStyleDefinitionV1, definition_capacity:u64, properties:*mut ViemStylePropertyV1, property_capacity:u64, value_items:*mut ViemStyleValueItemV1, value_item_capacity:u64, dependencies:*mut ViemStyleDependencyV1, dependency_capacity:u64, string_bytes:*mut u8, string_capacity:u64, out_info:*mut ViemStyleSheetInfoV1) -> ViemStatus {
+pub unsafe extern "C" fn viem_code_copy_style_sheet(expected: *const ViemStyleSheetIdentity, definitions: *mut ViemStyleDefinition, definition_capacity:u64, properties:*mut ViemStyleProperty, property_capacity:u64, value_items:*mut ViemStyleValueItem, value_item_capacity:u64, dependencies:*mut ViemStyleDependency, dependency_capacity:u64, string_bytes:*mut u8, string_capacity:u64, out_info:*mut ViemStyleSheetInfo) -> ViemStatus {
     unsafe { viem_core_copy_style_sheet(0, 0,expected,definitions,definition_capacity,properties,property_capacity,value_items,value_item_capacity,dependencies,dependency_capacity,string_bytes,string_capacity,out_info) }
 }
 
 /// # Safety
 /// Request and nested slices must be valid and disjoint from the output.
 #[no_mangle]
-pub unsafe extern "C" fn viem_code_edit_style(request:*const ViemStyleEditV1, output:*mut ViemStyleSheetInfoV1) -> ViemStatus {
+pub unsafe extern "C" fn viem_code_edit_style(request:*const ViemStyleEdit, output:*mut ViemStyleSheetInfo) -> ViemStatus {
     ffi_boundary(|| {
         let request = unsafe { parse_style_edit_request(request, output)? };
         let sheet = crate::document::code_style::snapshot();
@@ -5311,10 +4997,10 @@ pub unsafe extern "C" fn viem_code_edit_style(request:*const ViemStyleEditV1, ou
 /// # Safety
 /// Request and all nested slices must be readable and disjoint from output.
 #[no_mangle]
-pub unsafe extern "C" fn viem_code_create_style(request:*const ViemCreateStyleV1, output:*mut ViemStyleSheetInfoV1) -> ViemStatus {
+pub unsafe extern "C" fn viem_code_create_style(request:*const ViemCreateStyle, output:*mut ViemStyleSheetInfo) -> ViemStatus {
     ffi_boundary(|| {
         let request = unsafe { read_core_request(request,output)? };
-        if request.struct_size < VIEM_CREATE_STYLE_V1_SIZE || request.namespace != VIEM_STYLE_NAMESPACE_CHARACTER || request.next_style_id.length != 0 { return Err(ViemStatus::InvalidArgument); }
+        if request.namespace != VIEM_STYLE_NAMESPACE_CHARACTER || request.next_style_id.length != 0 { return Err(ViemStatus::InvalidArgument); }
         let id = unsafe { composition_utf8(request.style_id,output)? };
         let name = unsafe { composition_utf8(request.display_name,output)? };
         let parent = unsafe { composition_utf8(request.parent_id,output)? };
@@ -5333,10 +5019,10 @@ pub unsafe extern "C" fn viem_code_create_style(request:*const ViemCreateStyleV1
 /// # Safety
 /// Request and nested slices must be readable and disjoint from output.
 #[no_mangle]
-pub unsafe extern "C" fn viem_code_delete_style(request:*const ViemDeleteStyleV1, output:*mut ViemStyleSheetInfoV1) -> ViemStatus {
+pub unsafe extern "C" fn viem_code_delete_style(request:*const ViemDeleteStyle, output:*mut ViemStyleSheetInfo) -> ViemStatus {
     ffi_boundary(|| {
         let request = unsafe { read_core_request(request,output)? };
-        if request.struct_size < VIEM_DELETE_STYLE_V1_SIZE || request.namespace != VIEM_STYLE_NAMESPACE_CHARACTER { return Err(ViemStatus::InvalidArgument); }
+        if request.namespace != VIEM_STYLE_NAMESPACE_CHARACTER { return Err(ViemStatus::InvalidArgument); }
         let id = unsafe { composition_utf8(request.style_id,output)? };
         let sheet = crate::document::code_style::snapshot();
         validate_code_style_identity(request.identity,&sheet)?;
@@ -5353,7 +5039,7 @@ pub unsafe extern "C" fn viem_code_delete_style(request:*const ViemDeleteStyleV1
 pub unsafe extern "C" fn viem_code_materialize_style(
     name: *const u8,
     length: u64,
-    output: *mut ViemStyleSheetInfoV1,
+    output: *mut ViemStyleSheetInfo,
 ) -> ViemStatus {
     ffi_boundary(|| {
         validate_disjoint_regions(&[
@@ -5399,12 +5085,9 @@ pub unsafe extern "C" fn viem_code_export_style_json(output:*mut u8, capacity:u6
 }
 
 fn validate_style_sheet_identity(
-    expected: ViemStyleSheetIdentityV1,
+    expected: ViemStyleSheetIdentity,
     document: &Document,
 ) -> Result<(), ViemStatus> {
-    if expected.struct_size < VIEM_STYLE_SHEET_IDENTITY_V1_SIZE || expected.reserved != 0 {
-        return Err(ViemStatus::InvalidArgument);
-    }
     let actual = style_sheet_identity(document);
     (expected.document_id == actual.document_id
         && expected.document_revision == actual.document_revision
@@ -5503,28 +5186,27 @@ style_property_ids! {
 fn push_style_string(
     strings: &mut Vec<u8>,
     value: &str,
-) -> Result<ViemStyleStringRefV1, ViemStatus> {
+) -> Result<ViemStyleStringRef, ViemStatus> {
     let offset = checked_export_count(strings.len())?;
     let length = checked_export_count(value.len())?;
     strings
         .try_reserve(value.len())
         .map_err(|_| ViemStatus::ResourceExhausted)?;
     strings.extend_from_slice(value.as_bytes());
-    Ok(ViemStyleStringRefV1 { offset, length })
+    Ok(ViemStyleStringRef { offset, length })
 }
 
-fn empty_style_value() -> ViemStyleValueV1 {
-    ViemStyleValueV1 {
-        struct_size: VIEM_STYLE_VALUE_V1_SIZE,
-        ..ViemStyleValueV1::default()
+fn empty_style_value() -> ViemStyleValue {
+    ViemStyleValue {
+        ..ViemStyleValue::default()
     }
 }
 
 fn style_value_to_ffi(
     value: &StylePropertyValue,
-    items: &mut Vec<ViemStyleValueItemV1>,
+    items: &mut Vec<ViemStyleValueItem>,
     strings: &mut Vec<u8>,
-) -> Result<ViemStyleValueV1, ViemStatus> {
+) -> Result<ViemStyleValue, ViemStatus> {
     let mut output = empty_style_value();
     match value {
         StylePropertyValue::Float(value) => {
@@ -5565,12 +5247,10 @@ fn style_value_to_ffi(
                 .try_reserve(values.len())
                 .map_err(|_| ViemStatus::ResourceExhausted)?;
             for value in values {
-                items.push(ViemStyleValueItemV1 {
-                    struct_size: VIEM_STYLE_VALUE_ITEM_V1_SIZE,
+                items.push(ViemStyleValueItem {
                     kind: VIEM_STYLE_VALUE_ITEM_STRING,
                     string: push_style_string(strings, value)?,
                     unsigned_value: 0,
-                    reserved: 0,
                 });
             }
             output.item_count = checked_export_count(values.len())?;
@@ -5598,12 +5278,10 @@ fn style_value_to_ffi(
                 .try_reserve(values.len())
                 .map_err(|_| ViemStatus::ResourceExhausted)?;
             for (tag, value) in values {
-                items.push(ViemStyleValueItemV1 {
-                    struct_size: VIEM_STYLE_VALUE_ITEM_V1_SIZE,
+                items.push(ViemStyleValueItem {
                     kind: VIEM_STYLE_VALUE_ITEM_OPEN_TYPE_FEATURE,
                     string: push_style_string(strings, tag)?,
                     unsigned_value: *value,
-                    reserved: 0,
                 });
             }
             output.item_count = checked_export_count(values.len())?;
@@ -5853,8 +5531,8 @@ fn effective_paragraph_property(
 fn style_contributor_to_ffi(
     origin: &StyleContributionOrigin,
     strings: &mut Vec<u8>,
-) -> Result<(u32, u32, ViemStyleStringRefV1), ViemStatus> {
-    let none = ViemStyleStringRefV1::default();
+) -> Result<(u32, u32, ViemStyleStringRef), ViemStatus> {
+    let none = ViemStyleStringRef::default();
     Ok(match origin {
         StyleContributionOrigin::EngineEmergency => {
             (VIEM_STYLE_CONTRIBUTOR_ENGINE_EMERGENCY, 0, none)
@@ -5889,9 +5567,9 @@ fn style_contributor_to_ffi(
 
 #[allow(clippy::too_many_arguments)]
 fn push_style_property(
-    properties: &mut Vec<ViemStylePropertyV1>,
-    value_items: &mut Vec<ViemStyleValueItemV1>,
-    dependencies: &mut Vec<ViemStyleDependencyV1>,
+    properties: &mut Vec<ViemStyleProperty>,
+    value_items: &mut Vec<ViemStyleValueItem>,
+    dependencies: &mut Vec<ViemStyleDependency>,
     strings: &mut Vec<u8>,
     property: StyleProperty,
     declared: Option<StylePropertyValue>,
@@ -5925,19 +5603,16 @@ fn push_style_property(
             StyleDependency::Block(id) => (VIEM_STYLE_NAMESPACE_BLOCK, id),
             StyleDependency::Character(id) => (VIEM_STYLE_NAMESPACE_CHARACTER, id),
         };
-        dependencies.push(ViemStyleDependencyV1 {
-            struct_size: VIEM_STYLE_DEPENDENCY_V1_SIZE,
+        dependencies.push(ViemStyleDependency {
             namespace,
             style_id: push_style_string(strings, &id.0)?,
         });
     }
-    properties.push(ViemStylePropertyV1 {
-        struct_size: VIEM_STYLE_PROPERTY_V1_SIZE,
+    properties.push(ViemStyleProperty {
         flags,
         property: style_property_to_ffi(property),
         contributor_kind,
         contributor_namespace,
-        reserved: 0,
         declared,
         effective,
         contributor_style_id,
@@ -5966,7 +5641,7 @@ fn generated_style_capabilities(
     capabilities
 }
 
-fn style_sheet_export_for(handle: ViemCoreHandle, expected: Option<ViemStyleSheetIdentityV1>, gutter: u32) -> Result<StyleSheetExport, ViemStatus> {
+fn style_sheet_export_for(handle: ViemCoreHandle, expected: Option<ViemStyleSheetIdentity>, gutter: u32) -> Result<StyleSheetExport, ViemStatus> {
     let underlay = match gutter {
         0 => None,
         VIEM_LINE_NUMBER_DIFF_ADDED => Some(StyleId::diff_added_line()),
@@ -5991,7 +5666,7 @@ fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, ViemStatu
     export_style_sheet_snapshot(document.projection().style_sheet(), style_sheet_identity(document), document.format(), None)
 }
 
-fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: ViemStyleSheetIdentityV1, format: Format, underlay: Option<&StyleId>) -> Result<StyleSheetExport, ViemStatus> {
+fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: ViemStyleSheetIdentity, format: Format, underlay: Option<&StyleId>) -> Result<StyleSheetExport, ViemStatus> {
     let assignment = DocumentStyleAssignment::new(sheet.base_paragraph.clone());
     let mut definitions = Vec::new();
     let mut properties = Vec::new();
@@ -6085,13 +5760,13 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
             flags |= VIEM_STYLE_DEFINITION_HAS_PARENT;
             push_style_string(&mut strings, &parent.0)?
         } else {
-            ViemStyleStringRefV1::default()
+            ViemStyleStringRef::default()
         };
         let next_style_id = if let Some(next) = &style.next_paragraph_style {
             flags |= VIEM_STYLE_DEFINITION_HAS_NEXT_STYLE;
             push_style_string(&mut strings, &next.0)?
         } else {
-            ViemStyleStringRefV1::default()
+            ViemStyleStringRef::default()
         };
         if style.id.is_internal_in(StyleNamespace::Block) { flags |= VIEM_STYLE_DEFINITION_INTERNAL; }
         if let Some(current) = sheet.builtin_line_number_kind(style) {
@@ -6101,10 +5776,8 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
         if is_base_paragraph {
             flags |= VIEM_STYLE_DEFINITION_BASE_PARAGRAPH;
         }
-        definitions.push(ViemStyleDefinitionV1 {
-            struct_size: VIEM_STYLE_DEFINITION_V1_SIZE,
+        definitions.push(ViemStyleDefinition {
             parent_variant: sheet.parent_variant(StyleNamespace::Block, &style.id).map_or(0, |v| v.abi_value()),
-            reserved: 0,
             flags,
             namespace: VIEM_STYLE_NAMESPACE_BLOCK,
             role: style_role_to_ffi(style.role),
@@ -6170,12 +5843,10 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
             flags |= VIEM_STYLE_DEFINITION_HAS_PARENT;
             push_style_string(&mut strings, &parent.0)?
         } else {
-            ViemStyleStringRefV1::default()
+            ViemStyleStringRef::default()
         };
-        definitions.push(ViemStyleDefinitionV1 {
-            struct_size: VIEM_STYLE_DEFINITION_V1_SIZE,
+        definitions.push(ViemStyleDefinition {
             parent_variant: sheet.parent_variant(StyleNamespace::Character, &style.id).map_or(0, |v| v.abi_value()),
-            reserved: 0,
             flags,
             namespace: VIEM_STYLE_NAMESPACE_CHARACTER,
             role: VIEM_STYLE_ROLE_NONE,
@@ -6197,15 +5868,13 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
             stable_id: push_style_string(&mut strings, &style.id.0)?,
             display_name: push_style_string(&mut strings, &metadata.display_name)?,
             parent_id,
-            next_style_id: ViemStyleStringRefV1::default(),
+            next_style_id: ViemStyleStringRef::default(),
             first_property,
             property_count: checked_export_count(CHARACTER_STYLE_PROPERTIES.len())?,
         });
     }
 
-    let info = ViemStyleSheetInfoV1 {
-        struct_size: VIEM_STYLE_SHEET_INFO_V1_SIZE,
-        reserved: 0,
+    let info = ViemStyleSheetInfo {
         identity,
         definition_count: checked_export_count(definitions.len())?,
         property_count: checked_export_count(properties.len())?,
@@ -6226,9 +5895,8 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
 fn layout_paint_info(
     snapshot: &LayoutSnapshot,
     view_id: ViewId,
-) -> Result<ViemLayoutPaintInfoV1, ViemStatus> {
-    Ok(ViemLayoutPaintInfoV1 {
-        struct_size: VIEM_LAYOUT_PAINT_INFO_V1_SIZE,
+) -> Result<ViemLayoutPaintInfo, ViemStatus> {
+    Ok(ViemLayoutPaintInfo {
         flags: if snapshot.canvas_background_is_default {
             VIEM_LAYOUT_PAINT_DEFAULT_CANVAS
         } else {
@@ -6257,9 +5925,7 @@ fn export_layout_paint(
                 return Err(ViemStatus::CoreFailure);
             }
             previous_end = Some(run.text_range.end);
-            Ok(ViemPaintStyleRunV1 {
-                struct_size: VIEM_PAINT_STYLE_RUN_V1_SIZE,
-                reserved: 0,
+            Ok(ViemPaintStyleRun {
                 text_start: checked_export_count(run.text_range.start)?,
                 text_end: checked_export_count(run.text_range.end)?,
                 paint: text_paint_to_ffi(&run.paint),
@@ -6271,14 +5937,14 @@ fn export_layout_paint(
 }
 
 struct CommandLineExport {
-    info: ViemCommandLineInfoV1,
+    info: ViemCommandLineInfo,
     bytes: Vec<u8>,
 }
 
 struct VisualSelectionExport {
-    info: ViemVisualSelectionInfoV1,
-    segments: Vec<ViemVisualSelectionSegmentV1>,
-    rectangles: Vec<ViemVisualSelectionRectangleV1>,
+    info: ViemVisualSelectionInfo,
+    segments: Vec<ViemVisualSelectionSegment>,
+    rectangles: Vec<ViemVisualSelectionRectangle>,
 }
 
 fn command_line_kind_to_ffi(kind: Option<CommandLineKind>) -> u32 {
@@ -6350,8 +6016,7 @@ fn export_command_line(
         .map_or(cursor, |snapshot| snapshot.anchor);
     material.extend_from_slice(&(anchor as u64).to_le_bytes());
     material.extend_from_slice(&bytes);
-    let identity = ViemCommandLineIdentityV1 {
-        struct_size: VIEM_COMMAND_LINE_IDENTITY_V1_SIZE,
+    let identity = ViemCommandLineIdentity {
         kind,
         view_id: view_id.0,
         document_id: core.document().id().0,
@@ -6359,9 +6024,7 @@ fn export_command_line(
         state_identity: opaque_state_identity(&material),
     };
     Ok(CommandLineExport {
-        info: ViemCommandLineInfoV1 {
-            struct_size: VIEM_COMMAND_LINE_INFO_V1_SIZE,
-            reserved: 0,
+        info: ViemCommandLineInfo {
             identity,
             utf8_length,
             cursor_utf8_offset,
@@ -6371,11 +6034,10 @@ fn export_command_line(
 }
 
 fn validate_command_line_identity(
-    expected: ViemCommandLineIdentityV1,
-    actual: ViemCommandLineIdentityV1,
+    expected: ViemCommandLineIdentity,
+    actual: ViemCommandLineIdentity,
 ) -> Result<(), ViemStatus> {
-    if expected.struct_size < VIEM_COMMAND_LINE_IDENTITY_V1_SIZE
-        || !command_line_kind_is_valid(expected.kind)
+    if !command_line_kind_is_valid(expected.kind)
     {
         return Err(ViemStatus::InvalidArgument);
     }
@@ -6440,7 +6102,7 @@ fn push_selection_rectangles(
     segment_index: usize,
     expected_row: Option<usize>,
     whole_tables: &[u64],
-    rectangles: &mut Vec<ViemVisualSelectionRectangleV1>,
+    rectangles: &mut Vec<ViemVisualSelectionRectangle>,
 ) -> Result<(), ViemStatus> {
     let resolved = if expected_row.is_some() {
         // Block rows are explicitly resolved against this exact layout.
@@ -6458,9 +6120,7 @@ fn push_selection_rectangles(
             continue;
         }
         matched = true;
-        rectangles.push(ViemVisualSelectionRectangleV1 {
-            struct_size: VIEM_VISUAL_SELECTION_RECTANGLE_V1_SIZE,
-            reserved: 0,
+        rectangles.push(ViemVisualSelectionRectangle {
             row_index: checked_export_count(rectangle.row_index)?,
             segment_index: checked_export_count(segment_index)?,
             rect: layout_rect_to_ffi(rectangle.rect),
@@ -6474,8 +6134,8 @@ fn push_selection_rectangles(
 
 fn visual_selection_state_identity(
     kind: u32,
-    segments: &[ViemVisualSelectionSegmentV1],
-    rectangles: &[ViemVisualSelectionRectangleV1],
+    segments: &[ViemVisualSelectionSegment],
+    rectangles: &[ViemVisualSelectionRectangle],
 ) -> [u8; 32] {
     let mut material = Vec::with_capacity(
         40usize
@@ -6535,8 +6195,7 @@ fn export_visual_selection(
                 .line_selection_range(document, Some(snapshot))
                 .ok_or(ViemStatus::CoreFailure)?;
             let checked = checked_selection_range(document, range.start, range.end)?;
-            segments.push(ViemVisualSelectionSegmentV1 {
-                struct_size: VIEM_VISUAL_SELECTION_SEGMENT_V1_SIZE,
+            segments.push(ViemVisualSelectionSegment {
                 flags: 0,
                 text_start: checked_export_count(range.start)?,
                 text_end: checked_export_count(range.end)?,
@@ -6567,8 +6226,7 @@ fn export_visual_selection(
             for (segment_index, segment) in resolved.range_set.segments.iter().enumerate() {
                 let checked =
                     checked_selection_range(document, segment.range.start, segment.range.end)?;
-                segments.push(ViemVisualSelectionSegmentV1 {
-                    struct_size: VIEM_VISUAL_SELECTION_SEGMENT_V1_SIZE,
+                segments.push(ViemVisualSelectionSegment {
                     flags: VIEM_VISUAL_SELECTION_SEGMENT_HAS_VISUAL_ROW
                         | VIEM_VISUAL_SELECTION_SEGMENT_HAS_HARD_LINE
                         | VIEM_VISUAL_SELECTION_SEGMENT_HAS_EDGE_AFFINITIES,
@@ -6601,16 +6259,13 @@ fn export_visual_selection(
             VIEM_VISUAL_SELECTION_KIND_NONE
         }
     };
-    let identity = ViemVisualSelectionIdentityV1 {
-        struct_size: VIEM_VISUAL_SELECTION_IDENTITY_V1_SIZE,
+    let identity = ViemVisualSelectionIdentity {
         kind,
         layout: snapshot_identity(snapshot, view_id),
         state_identity: visual_selection_state_identity(kind, &segments, &rectangles),
     };
     Ok(VisualSelectionExport {
-        info: ViemVisualSelectionInfoV1 {
-            struct_size: VIEM_VISUAL_SELECTION_INFO_V1_SIZE,
-            reserved: 0,
+        info: ViemVisualSelectionInfo {
             identity,
             segment_count: checked_export_count(segments.len())?,
             rectangle_count: checked_export_count(rectangles.len())?,
@@ -6648,13 +6303,12 @@ fn visual_selection_text(
 }
 
 fn validate_visual_selection_identity(
-    expected: ViemVisualSelectionIdentityV1,
-    actual: ViemVisualSelectionIdentityV1,
+    expected: ViemVisualSelectionIdentity,
+    actual: ViemVisualSelectionIdentity,
     snapshot: &LayoutSnapshot,
     view_id: ViewId,
 ) -> Result<(), ViemStatus> {
-    if expected.struct_size < VIEM_VISUAL_SELECTION_IDENTITY_V1_SIZE
-        || !visual_selection_kind_is_valid(expected.kind)
+    if !visual_selection_kind_is_valid(expected.kind)
     {
         return Err(ViemStatus::InvalidArgument);
     }
@@ -6727,10 +6381,9 @@ fn logical_selection_state_identity(selection: &LogicalSelectionIdentity) -> [u8
 
 fn logical_selection_identity_to_ffi(
     selection: &LogicalSelectionIdentity,
-) -> Result<ViemLogicalSelectionIdentityV1, ViemStatus> {
+) -> Result<ViemLogicalSelectionIdentity, ViemStatus> {
     let range = selection.range();
-    Ok(ViemLogicalSelectionIdentityV1 {
-        struct_size: VIEM_LOGICAL_SELECTION_IDENTITY_V1_SIZE,
+    Ok(ViemLogicalSelectionIdentity {
         kind: logical_selection_kind_to_ffi(selection.kind()),
         view_id: selection.view().0,
         document_id: selection.document().0,
@@ -6745,19 +6398,18 @@ fn export_semantic_style_presentation(
     core: &Core<CTextMeasurementProvider>,
     view_id: ViewId,
     style: SemanticInlineStyle,
-) -> Result<(ViemSemanticStylePresentationV1, SemanticStylePresentation), ViemStatus> {
+) -> Result<(ViemSemanticStylePresentation, SemanticStylePresentation), ViemStatus> {
     let presentation = core
         .selection_semantic_style_presentation(view_id, style)
         .map_err(core_status)?;
     let selection = match presentation.selection() {
         Some(selection) => logical_selection_identity_to_ffi(selection)?,
-        None => ViemLogicalSelectionIdentityV1 {
-            struct_size: VIEM_LOGICAL_SELECTION_IDENTITY_V1_SIZE,
+        None => ViemLogicalSelectionIdentity {
             kind: logical_selection_kind_to_ffi(presentation.selection_kind()),
             view_id: view_id.0,
             document_id: core.document().id().0,
             document_revision: core.document().revision().0,
-            ..ViemLogicalSelectionIdentityV1::default()
+            ..ViemLogicalSelectionIdentity::default()
         },
     };
     let mut flags = 0;
@@ -6780,8 +6432,7 @@ fn export_semantic_style_presentation(
         flags |= VIEM_SEMANTIC_STYLE_CAN_CLEAR;
     }
     Ok((
-        ViemSemanticStylePresentationV1 {
-            struct_size: VIEM_SEMANTIC_STYLE_PRESENTATION_V1_SIZE,
+        ViemSemanticStylePresentation {
             style: semantic_style_to_ffi(style)?,
             state: semantic_style_state_to_ffi(presentation.state()),
             flags,
@@ -6792,11 +6443,10 @@ fn export_semantic_style_presentation(
 }
 
 fn validate_logical_selection_identity(
-    expected: ViemLogicalSelectionIdentityV1,
-    actual: ViemLogicalSelectionIdentityV1,
+    expected: ViemLogicalSelectionIdentity,
+    actual: ViemLogicalSelectionIdentity,
 ) -> Result<(), ViemStatus> {
-    if expected.struct_size < VIEM_LOGICAL_SELECTION_IDENTITY_V1_SIZE
-        || !logical_selection_kind_is_valid(expected.kind)
+    if !logical_selection_kind_is_valid(expected.kind)
     {
         return Err(ViemStatus::InvalidArgument);
     }
@@ -6829,7 +6479,7 @@ fn export_layout_snapshot(
         let first_caret = checked_export_count(carets.len())?;
         for cluster in &row.clusters {
             let (flags, render_run) = cluster.render_run.as_ref().map_or_else(
-                || (0, ViemRenderRunHandleV1::default()),
+                || (0, ViemRenderRunHandle::default()),
                 |render_run| {
                     (
                         VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN,
@@ -6837,8 +6487,7 @@ fn export_layout_snapshot(
                     )
                 },
             );
-            clusters.push(ViemPositionedClusterV1 {
-                struct_size: VIEM_POSITIONED_CLUSTER_V1_SIZE,
+            clusters.push(ViemPositionedCluster {
                 flags,
                 row_index: checked_export_count(row_index)?,
                 text_start: checked_export_count(cluster.text_range.start)?,
@@ -6848,18 +6497,15 @@ fn export_layout_snapshot(
                 typographic_bounds: layout_rect_to_ffi(cluster.typographic_bounds),
                 ink_bounds: layout_rect_to_ffi(cluster.ink_bounds),
                 bidi_level: u32::from(cluster.bidi_level),
-                reserved: 0,
                 render_run,
             });
         }
         for caret in &row.carets {
-            carets.push(ViemPositionedCaretV1 {
-                struct_size: VIEM_POSITIONED_CARET_V1_SIZE,
+            carets.push(ViemPositionedCaret {
                 affinity: affinity_to_ffi(caret.point.affinity),
                 row_index: checked_export_count(row_index)?,
                 text_offset: checked_export_count(caret.point.text_offset)?,
                 x: caret.x,
-                reserved: 0.0,
             });
         }
         let mut flags = 0;
@@ -6873,8 +6519,7 @@ fn export_layout_snapshot(
         if row.wraps_to_next {
             flags |= VIEM_VISUAL_ROW_WRAPS_TO_NEXT;
         }
-        rows.push(ViemVisualRowV1 {
-            struct_size: VIEM_VISUAL_ROW_V1_SIZE,
+        rows.push(ViemVisualRow {
             flags,
             row_index: checked_export_count(row_index)?,
             paragraph_id,
@@ -6912,7 +6557,7 @@ fn export_layout_snapshot(
 fn summarize_view_presentation(
     core: &Core<CTextMeasurementProvider>,
     view_id: ViewId,
-) -> Result<ViemViewPresentationV1, ViemStatus> {
+) -> Result<ViemViewPresentation, ViemStatus> {
     let state = core.command_state(view_id).ok_or(ViemStatus::InvalidView)?;
     // One authority decides what the caret occupies. The offset and affinity
     // below are exported from the same target, so they cannot disagree with
@@ -6965,12 +6610,11 @@ fn summarize_view_presentation(
     let pending = state.pending_command_text();
     let mut pending_command = [0; 32];
     pending_command[..pending.len()].copy_from_slice(pending.as_bytes());
-    Ok(ViemViewPresentationV1 {
+    Ok(ViemViewPresentation {
         recording_register: state.recording_register().map_or(0, u32::from),
         pending_command_length: pending.len() as u32,
         active_count: state.active_count().unwrap_or(0) as u64,
         pending_command,
-        struct_size: VIEM_VIEW_PRESENTATION_V1_SIZE,
         flags,
         mode: mode_to_ffi(state.mode(), state.is_select_mode(), state.is_native_selection()),
         cursor_affinity: affinity_to_ffi(cursor_affinity),
@@ -6982,7 +6626,6 @@ fn summarize_view_presentation(
         visual_block_left_x: block_left_x,
         visual_block_right_x: block_right_x,
         desired_x,
-        reserved_float: 0.0,
         command_line_utf8_length: command_line_length,
         command_line_cursor_utf8_offset: command_line_cursor,
         caret_shape: if caret.is_cell() {
@@ -7051,47 +6694,37 @@ fn parse_clipboard_target(value: u32) -> Result<ClipboardTarget, ViemStatus> {
 }
 
 unsafe fn read_layout_identity(
-    pointer: *const ViemLayoutSnapshotIdentityV1,
-) -> Result<ViemLayoutSnapshotIdentityV1, ViemStatus> {
+    pointer: *const ViemLayoutSnapshotIdentity,
+) -> Result<ViemLayoutSnapshotIdentity, ViemStatus> {
     typed_pointer_region(pointer, 1)?;
     // SAFETY: The pointer is non-null, aligned, and caller-owned for this call.
     let identity = unsafe { pointer.read() };
-    if identity.struct_size < VIEM_LAYOUT_SNAPSHOT_IDENTITY_V1_SIZE || identity.reserved != 0 {
-        return Err(ViemStatus::InvalidArgument);
-    }
     Ok(identity)
 }
 
 unsafe fn read_formatted_snapshot_identity(
-    pointer: *const ViemFormattedSnapshotIdentityV1,
-) -> Result<ViemFormattedSnapshotIdentityV1, ViemStatus> {
+    pointer: *const ViemFormattedSnapshotIdentity,
+) -> Result<ViemFormattedSnapshotIdentity, ViemStatus> {
     typed_pointer_region(pointer, 1)?;
     // SAFETY: The pointer is non-null, aligned, and caller-owned for this call.
     let identity = unsafe { pointer.read() };
-    if identity.struct_size < VIEM_FORMATTED_SNAPSHOT_IDENTITY_V1_SIZE || identity.reserved != 0 {
-        return Err(ViemStatus::InvalidArgument);
-    }
     Ok(identity)
 }
 
 unsafe fn read_style_sheet_identity(
-    pointer: *const ViemStyleSheetIdentityV1,
-) -> Result<ViemStyleSheetIdentityV1, ViemStatus> {
+    pointer: *const ViemStyleSheetIdentity,
+) -> Result<ViemStyleSheetIdentity, ViemStatus> {
     typed_pointer_region(pointer, 1)?;
     let identity = unsafe { pointer.read() };
-    if identity.struct_size < VIEM_STYLE_SHEET_IDENTITY_V1_SIZE || identity.reserved != 0 {
-        return Err(ViemStatus::InvalidArgument);
-    }
     Ok(identity)
 }
 
 unsafe fn read_style_edit_group(
-    pointer: *const ViemStyleEditGroupV1,
-) -> Result<ViemStyleEditGroupV1, ViemStatus> {
+    pointer: *const ViemStyleEditGroup,
+) -> Result<ViemStyleEditGroup, ViemStatus> {
     typed_pointer_region(pointer, 1)?;
     let group = unsafe { pointer.read() };
-    if group.struct_size < VIEM_STYLE_EDIT_GROUP_V1_SIZE
-        || group.flags != 0
+    if group.flags != 0
         || group.token == 0
         || group.view_id == 0
         || group.document_id == 0
@@ -7102,13 +6735,12 @@ unsafe fn read_style_edit_group(
 }
 
 unsafe fn read_command_line_identity(
-    pointer: *const ViemCommandLineIdentityV1,
-) -> Result<ViemCommandLineIdentityV1, ViemStatus> {
+    pointer: *const ViemCommandLineIdentity,
+) -> Result<ViemCommandLineIdentity, ViemStatus> {
     typed_pointer_region(pointer, 1)?;
     // SAFETY: The pointer is non-null, aligned, and caller-owned for this call.
     let identity = unsafe { pointer.read() };
-    if identity.struct_size < VIEM_COMMAND_LINE_IDENTITY_V1_SIZE
-        || !command_line_kind_is_valid(identity.kind)
+    if !command_line_kind_is_valid(identity.kind)
     {
         return Err(ViemStatus::InvalidArgument);
     }
@@ -7116,31 +6748,28 @@ unsafe fn read_command_line_identity(
 }
 
 unsafe fn read_visual_selection_identity(
-    pointer: *const ViemVisualSelectionIdentityV1,
-) -> Result<ViemVisualSelectionIdentityV1, ViemStatus> {
+    pointer: *const ViemVisualSelectionIdentity,
+) -> Result<ViemVisualSelectionIdentity, ViemStatus> {
     typed_pointer_region(pointer, 1)?;
     // SAFETY: The pointer is non-null, aligned, and caller-owned for this call.
     let identity = unsafe { pointer.read() };
-    if identity.struct_size < VIEM_VISUAL_SELECTION_IDENTITY_V1_SIZE
-        || !visual_selection_kind_is_valid(identity.kind)
-        || identity.layout.struct_size < VIEM_LAYOUT_SNAPSHOT_IDENTITY_V1_SIZE
-        || identity.layout.reserved != 0
+    if !visual_selection_kind_is_valid(identity.kind)
     {
         return Err(ViemStatus::InvalidArgument);
     }
     Ok(identity)
 }
 
-unsafe fn clear_outcome(output: *mut ViemCoreOutcomeV1) -> Result<(), ViemStatus> {
+unsafe fn clear_outcome(output: *mut ViemCoreOutcome) -> Result<(), ViemStatus> {
     if output.is_null() {
         return Err(ViemStatus::NullPointer);
     }
-    if (output as usize) % align_of::<ViemCoreOutcomeV1>() != 0 {
+    if (output as usize) % align_of::<ViemCoreOutcome>() != 0 {
         return Err(ViemStatus::InvalidArgument);
     }
     // SAFETY: Null and alignment were checked; the public function contract
     // requires one writable output value.
-    unsafe { output.write(ViemCoreOutcomeV1::default()) };
+    unsafe { output.write(ViemCoreOutcome::default()) };
     Ok(())
 }
 
@@ -7203,7 +6832,7 @@ unsafe fn composition_utf8<O>(
 
 #[derive(Debug)]
 struct ParsedStyleEdit {
-    identity: ViemStyleSheetIdentityV1,
+    identity: ViemStyleSheetIdentity,
     namespace: StyleNamespace,
     style: StyleId,
     edit: StyleDefinitionFieldEdit,
@@ -7217,7 +6846,7 @@ fn parse_style_namespace(raw: u32) -> Result<StyleNamespace, ViemStatus> {
     }
 }
 
-fn style_edit_value_has_no_array(value: &ViemStyleEditValueV1) -> Result<(), ViemStatus> {
+fn style_edit_value_has_no_array(value: &ViemStyleEditValue) -> Result<(), ViemStatus> {
     if value.item_count == 0 {
         Ok(())
     } else {
@@ -7225,7 +6854,7 @@ fn style_edit_value_has_no_array(value: &ViemStyleEditValueV1) -> Result<(), Vie
     }
 }
 
-fn style_edit_value_has_no_text(value: &ViemStyleEditValueV1) -> Result<(), ViemStatus> {
+fn style_edit_value_has_no_text(value: &ViemStyleEditValue) -> Result<(), ViemStatus> {
     if value.text.length == 0 {
         Ok(())
     } else {
@@ -7234,7 +6863,7 @@ fn style_edit_value_has_no_text(value: &ViemStyleEditValueV1) -> Result<(), Viem
 }
 
 unsafe fn parse_style_edit_items<O>(
-    value: &ViemStyleEditValueV1,
+    value: &ViemStyleEditValue,
     out_outcome: *mut O,
 ) -> Result<Vec<(u32, String, u32)>, ViemStatus> {
     let region = typed_pointer_region(value.items, value.item_count)?;
@@ -7252,9 +6881,6 @@ unsafe fn parse_style_edit_items<O>(
         .try_reserve(count)
         .map_err(|_| ViemStatus::ResourceExhausted)?;
     for item in raw_items {
-        if item.struct_size < VIEM_STYLE_EDIT_VALUE_ITEM_V1_SIZE || item.reserved != 0 {
-            return Err(ViemStatus::InvalidArgument);
-        }
         parsed.push((
             item.kind,
             unsafe { composition_utf8(item.text, out_outcome)? },
@@ -7266,15 +6892,9 @@ unsafe fn parse_style_edit_items<O>(
 
 unsafe fn parse_style_property_value<O>(
     property: StyleProperty,
-    value: &ViemStyleEditValueV1,
+    value: &ViemStyleEditValue,
     out_outcome: *mut O,
 ) -> Result<StylePropertyValue, ViemStatus> {
-    if value.struct_size < VIEM_STYLE_EDIT_VALUE_V1_SIZE
-        || value.reserved != 0
-        || value.number_reserved != 0.0
-    {
-        return Err(ViemStatus::InvalidArgument);
-    }
     let invalid = || ViemStatus::InvalidStyleValue;
     match property {
         StyleProperty::BlockMarginRight
@@ -7471,15 +7091,11 @@ unsafe fn parse_style_property_value<O>(
 }
 
 unsafe fn parse_style_edit_request<O>(
-    request: *const ViemStyleEditV1,
+    request: *const ViemStyleEdit,
     out_outcome: *mut O,
 ) -> Result<ParsedStyleEdit, ViemStatus> {
     let request = unsafe { read_core_request(request, out_outcome)? };
-    if request.struct_size < VIEM_STYLE_EDIT_V1_SIZE
-        || request.flags != 0
-        || request.reserved != 0
-        || request.identity.struct_size < VIEM_STYLE_SHEET_IDENTITY_V1_SIZE
-        || request.identity.reserved != 0
+    if request.flags != 0
     {
         return Err(ViemStatus::InvalidArgument);
     }
@@ -7490,9 +7106,7 @@ unsafe fn parse_style_edit_request<O>(
     }
     let relationship_value = || unsafe { composition_utf8(request.value.text, out_outcome) };
     let require_empty_value = || {
-        if request.value.struct_size < VIEM_STYLE_EDIT_VALUE_V1_SIZE
-            || request.value.kind != VIEM_STYLE_VALUE_NONE
-            || request.value.reserved != 0
+        if request.value.kind != VIEM_STYLE_VALUE_NONE
             || request.value.item_count != 0
             || request.value.text.length != 0
         {
@@ -7521,9 +7135,7 @@ unsafe fn parse_style_edit_request<O>(
         | VIEM_STYLE_EDIT_SET_NEXT_STYLE
         | VIEM_STYLE_EDIT_SET_DISPLAY_NAME => {
             if request.property != 0
-                || request.value.struct_size < VIEM_STYLE_EDIT_VALUE_V1_SIZE
                 || request.value.kind != VIEM_STYLE_VALUE_STRING
-                || request.value.reserved != 0
                 || request.value.item_count != 0
             {
                 return Err(ViemStatus::InvalidStyleValue);
@@ -7585,7 +7197,7 @@ fn dispatch_event(
     core: &mut Core<CTextMeasurementProvider>,
     view: ViemViewId,
     event: CoreEvent,
-) -> Result<ViemCoreOutcomeV1, ViemStatus> {
+) -> Result<ViemCoreOutcome, ViemStatus> {
     let view = ViewId(view);
     let outcome = core.handle_with_layout(view, event).map_err(core_status)?;
     summarize_core_outcome(core, view, Some(&outcome))
@@ -7596,7 +7208,7 @@ fn dispatch_input_with_effects(
     view: ViemViewId,
     input: InputEvent,
     clipboard: ClipboardCommandContext,
-) -> Result<(ViemCoreOutcomeV1, Option<OwnedEffectBatch>), ViemStatus> {
+) -> Result<(ViemCoreOutcome, Option<OwnedEffectBatch>), ViemStatus> {
     dispatch_event_with_effects(core, view,
         CoreEvent::InputWithClipboard { input, clipboard: clipboard.clone() }, clipboard)
 }
@@ -7606,7 +7218,7 @@ fn dispatch_event_with_effects(
     view: ViemViewId,
     event: CoreEvent,
     clipboard: ClipboardCommandContext,
-) -> Result<(ViemCoreOutcomeV1, Option<OwnedEffectBatch>), ViemStatus> {
+) -> Result<(ViemCoreOutcome, Option<OwnedEffectBatch>), ViemStatus> {
     let view_id = ViewId(view);
     let effect_clipboard = clipboard.clone();
     let outcome = core
@@ -7631,7 +7243,7 @@ fn publish_input_turn(
     input: InputEvent,
     clipboard: ClipboardCommandContext,
     reservation: EffectBatchReservation,
-) -> Result<(ViemCoreOutcomeV1, ViemEffectBatchHandle), ViemStatus> {
+) -> Result<(ViemCoreOutcome, ViemEffectBatchHandle), ViemStatus> {
     let (outcome, effects) = with_core_mut(handle, |core| {
         if matches!(&input, InputEvent::Key(Key::NativeAction(_)))
             && core.composition_overlay(ViewId(view)).map_err(core_status)?.is_some() {
@@ -7789,11 +7401,11 @@ pub unsafe extern "C" fn viem_core_revision(
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_document_state(
     handle: ViemCoreHandle,
-    out_state: *mut ViemDocumentStateV1,
+    out_state: *mut ViemDocumentState,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_state, 1)?;
-        unsafe { out_state.write(ViemDocumentStateV1::default()) };
+        unsafe { out_state.write(ViemDocumentState::default()) };
         let state = with_core(handle, |core| {
             let mut state = summarize_document_state(core.document());
             if core.is_markdown_source() { state.flags |= VIEM_DOCUMENT_STATE_MARKDOWN_SOURCE; }
@@ -7813,11 +7425,11 @@ pub unsafe extern "C" fn viem_core_document_state(
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_formatted_snapshot_info(
     handle: ViemCoreHandle,
-    out_info: *mut ViemFormattedSnapshotInfoV1,
+    out_info: *mut ViemFormattedSnapshotInfo,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_info, 1)?;
-        unsafe { out_info.write(ViemFormattedSnapshotInfoV1::default()) };
+        unsafe { out_info.write(ViemFormattedSnapshotInfo::default()) };
         let info = with_core(handle, |core| formatted_snapshot_info(core.document()))?;
         unsafe { out_info.write(info) };
         Ok(())
@@ -7839,7 +7451,7 @@ pub unsafe extern "C" fn viem_core_formatted_snapshot_info(
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_copy_formatted_utf8_range(
     handle: ViemCoreHandle,
-    request: *const ViemFormattedUtf8RangeV1,
+    request: *const ViemFormattedUtf8Range,
     output: *mut u8,
     output_capacity: u64,
     out_required: *mut u64,
@@ -7855,13 +7467,6 @@ pub unsafe extern "C" fn viem_core_copy_formatted_utf8_range(
             return Err(ViemStatus::InvalidArgument);
         }
         let request = unsafe { request.read() };
-        if request.struct_size < VIEM_FORMATTED_UTF8_RANGE_V1_SIZE
-            || request.reserved != 0
-            || request.identity.struct_size < VIEM_FORMATTED_SNAPSHOT_IDENTITY_V1_SIZE
-            || request.identity.reserved != 0
-        {
-            return Err(ViemStatus::InvalidArgument);
-        }
         unsafe { out_required.write(0) };
         let start = usize::try_from(request.utf8_start).map_err(|_| ViemStatus::LengthOverflow)?;
         let end = usize::try_from(request.utf8_end).map_err(|_| ViemStatus::LengthOverflow)?;
@@ -7896,7 +7501,7 @@ enum FormattedOffsetMapping {
 
 #[derive(Clone, Copy)]
 struct FormattedOffsetMappingBuffers {
-    identity: *const ViemFormattedSnapshotIdentityV1,
+    identity: *const ViemFormattedSnapshotIdentity,
     input_offsets: *const u64,
     input_count: u64,
     output_offsets: *mut u64,
@@ -7987,7 +7592,7 @@ unsafe fn map_formatted_offsets(
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_map_formatted_utf8_to_utf16(
     handle: ViemCoreHandle,
-    identity: *const ViemFormattedSnapshotIdentityV1,
+    identity: *const ViemFormattedSnapshotIdentity,
     utf8_offsets: *const u64,
     offset_count: u64,
     utf16_offsets: *mut u64,
@@ -8021,7 +7626,7 @@ pub unsafe extern "C" fn viem_core_map_formatted_utf8_to_utf16(
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_map_formatted_utf16_to_utf8(
     handle: ViemCoreHandle,
-    identity: *const ViemFormattedSnapshotIdentityV1,
+    identity: *const ViemFormattedSnapshotIdentity,
     utf16_offsets: *const u64,
     offset_count: u64,
     utf8_offsets: *mut u64,
@@ -8055,9 +7660,9 @@ pub unsafe extern "C" fn viem_core_map_formatted_utf16_to_utf8(
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_formatted_point_info(
     handle: ViemCoreHandle,
-    identity: *const ViemFormattedSnapshotIdentityV1,
+    identity: *const ViemFormattedSnapshotIdentity,
     utf8_offset: u64,
-    out_info: *mut ViemFormattedPointInfoV1,
+    out_info: *mut ViemFormattedPointInfo,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let identity_region = typed_pointer_region(identity, 1)?;
@@ -8066,7 +7671,7 @@ pub unsafe extern "C" fn viem_core_formatted_point_info(
             return Err(ViemStatus::InvalidArgument);
         }
         let identity = unsafe { read_formatted_snapshot_identity(identity)? };
-        unsafe { out_info.write(ViemFormattedPointInfoV1::default()) };
+        unsafe { out_info.write(ViemFormattedPointInfo::default()) };
         let utf8_offset = usize::try_from(utf8_offset).map_err(|_| ViemStatus::LengthOverflow)?;
         let info = with_core(handle, |core| {
             validate_formatted_snapshot_identity(identity, core.document())?;
@@ -8081,9 +7686,7 @@ pub unsafe extern "C" fn viem_core_formatted_point_info(
             let grapheme_column = snapshot
                 .grapheme_count(line_range.start..utf8_offset)
                 .ok_or(ViemStatus::CoreFailure)?;
-            Ok(ViemFormattedPointInfoV1 {
-                struct_size: VIEM_FORMATTED_POINT_INFO_V1_SIZE,
-                reserved: 0,
+            Ok(ViemFormattedPointInfo {
                 identity: formatted_snapshot_identity(core.document()),
                 utf8_offset: checked_export_count(utf8_offset)?,
                 utf16_offset: checked_export_count(
@@ -8110,14 +7713,11 @@ pub unsafe extern "C" fn viem_core_formatted_point_info(
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_mark_saved(
     handle: ViemCoreHandle,
-    request: *const ViemMarkSavedV1,
+    request: *const ViemMarkSaved,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(request, 1)?;
         let request = unsafe { request.read() };
-        if request.struct_size < VIEM_MARK_SAVED_V1_SIZE || request.reserved != 0 {
-            return Err(ViemStatus::InvalidArgument);
-        }
         with_core_mut(handle, |core| {
             core.mark_saved(
                 DocumentId(request.document_id),
@@ -8138,50 +7738,50 @@ pub unsafe extern "C" fn viem_core_mark_saved(
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_view_add(
     handle: ViemCoreHandle,
-    options: *const ViemViewOptionsV1,
-    provider: *const ViemTextMeasurementProviderV1,
+    options: *const ViemViewOptions,
+    provider: *const ViemTextMeasurementProvider,
     out_view: *mut ViemViewId,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         if out_view.is_null() || out_outcome.is_null() {
             return Err(ViemStatus::NullPointer);
         }
         if (out_view as usize) % align_of::<ViemViewId>() != 0
-            || (out_outcome as usize) % align_of::<ViemCoreOutcomeV1>() != 0
+            || (out_outcome as usize) % align_of::<ViemCoreOutcome>() != 0
             || pointer_ranges_overlap(
                 out_view.cast(),
                 size_of::<ViemViewId>(),
                 out_outcome.cast(),
-                size_of::<ViemCoreOutcomeV1>(),
+                size_of::<ViemCoreOutcome>(),
             )
             || (!options.is_null()
-                && ((options as usize) % align_of::<ViemViewOptionsV1>() != 0
+                && ((options as usize) % align_of::<ViemViewOptions>() != 0
                     || pointer_ranges_overlap(
                         out_view.cast(),
                         size_of::<ViemViewId>(),
                         options.cast(),
-                        size_of::<ViemViewOptionsV1>(),
+                        size_of::<ViemViewOptions>(),
                     )
                     || pointer_ranges_overlap(
                         out_outcome.cast(),
-                        size_of::<ViemCoreOutcomeV1>(),
+                        size_of::<ViemCoreOutcome>(),
                         options.cast(),
-                        size_of::<ViemViewOptionsV1>(),
+                        size_of::<ViemViewOptions>(),
                     )))
             || (!provider.is_null()
-                && ((provider as usize) % align_of::<ViemTextMeasurementProviderV1>() != 0
+                && ((provider as usize) % align_of::<ViemTextMeasurementProvider>() != 0
                     || pointer_ranges_overlap(
                         out_view.cast(),
                         size_of::<ViemViewId>(),
                         provider.cast(),
-                        size_of::<ViemTextMeasurementProviderV1>(),
+                        size_of::<ViemTextMeasurementProvider>(),
                     )
                     || pointer_ranges_overlap(
                         out_outcome.cast(),
-                        size_of::<ViemCoreOutcomeV1>(),
+                        size_of::<ViemCoreOutcome>(),
                         provider.cast(),
-                        size_of::<ViemTextMeasurementProviderV1>(),
+                        size_of::<ViemTextMeasurementProvider>(),
                     )))
         {
             return Err(ViemStatus::InvalidArgument);
@@ -8194,8 +7794,7 @@ pub unsafe extern "C" fn viem_core_view_add(
             return Err(ViemStatus::NullPointer);
         }
         let options = unsafe { options.read() };
-        if options.struct_size < VIEM_VIEW_OPTIONS_V1_SIZE
-            || !options.width.is_finite()
+        if !options.width.is_finite()
             || options.width < 0.0
             || !options.height.is_finite()
             || options.height < 0.0
@@ -8266,7 +7865,7 @@ pub extern "C" fn viem_core_view_remove(handle: ViemCoreHandle, view: ViemViewId
 pub unsafe extern "C" fn viem_core_view_state(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         unsafe { clear_outcome(out_outcome)? };
@@ -8286,11 +7885,11 @@ pub unsafe extern "C" fn viem_core_view_state(
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_style_sheet_identity(
     handle: ViemCoreHandle,
-    out_identity: *mut ViemStyleSheetIdentityV1,
+    out_identity: *mut ViemStyleSheetIdentity,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_identity, 1)?;
-        unsafe { out_identity.write(ViemStyleSheetIdentityV1::default()) };
+        unsafe { out_identity.write(ViemStyleSheetIdentity::default()) };
         let identity = if handle == 0 {
             code_style_identity(&crate::document::code_style::snapshot())
         } else { with_core(handle, |core| Ok(style_sheet_identity(core.document())))? };
@@ -8307,11 +7906,11 @@ pub unsafe extern "C" fn viem_core_style_sheet_identity(
 pub unsafe extern "C" fn viem_core_style_sheet_info(
     handle: ViemCoreHandle,
     gutter_underlay: u32,
-    out_info: *mut ViemStyleSheetInfoV1,
+    out_info: *mut ViemStyleSheetInfo,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_info, 1)?;
-        unsafe { out_info.write(ViemStyleSheetInfoV1::default()) };
+        unsafe { out_info.write(ViemStyleSheetInfo::default()) };
         let info = style_sheet_export_for(handle, None, gutter_underlay)?.info;
         unsafe { out_info.write(info) };
         Ok(())
@@ -8333,18 +7932,18 @@ pub unsafe extern "C" fn viem_core_style_sheet_info(
 pub unsafe extern "C" fn viem_core_copy_style_sheet(
     handle: ViemCoreHandle,
     gutter_underlay: u32,
-    expected: *const ViemStyleSheetIdentityV1,
-    definitions: *mut ViemStyleDefinitionV1,
+    expected: *const ViemStyleSheetIdentity,
+    definitions: *mut ViemStyleDefinition,
     definition_capacity: u64,
-    properties: *mut ViemStylePropertyV1,
+    properties: *mut ViemStyleProperty,
     property_capacity: u64,
-    value_items: *mut ViemStyleValueItemV1,
+    value_items: *mut ViemStyleValueItem,
     value_item_capacity: u64,
-    dependencies: *mut ViemStyleDependencyV1,
+    dependencies: *mut ViemStyleDependency,
     dependency_capacity: u64,
     string_bytes: *mut u8,
     string_capacity: u64,
-    out_info: *mut ViemStyleSheetInfoV1,
+    out_info: *mut ViemStyleSheetInfo,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let regions = [
@@ -8358,7 +7957,7 @@ pub unsafe extern "C" fn viem_core_copy_style_sheet(
         ];
         validate_disjoint_regions(&regions)?;
         let expected = unsafe { read_style_sheet_identity(expected)? };
-        unsafe { out_info.write(ViemStyleSheetInfoV1::default()) };
+        unsafe { out_info.write(ViemStyleSheetInfo::default()) };
         let export = style_sheet_export_for(handle, Some(expected), gutter_underlay)?;
         unsafe { out_info.write(export.info) };
         let fits = definition_capacity >= export.info.definition_count
@@ -8389,16 +7988,16 @@ pub unsafe extern "C" fn viem_core_copy_style_sheet(
 pub unsafe extern "C" fn viem_core_view_viewport_state(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    out_state: *mut ViemViewportStateV1,
+    out_state: *mut ViemViewportState,
 ) -> ViemStatus {
     ffi_boundary(|| {
         if out_state.is_null() {
             return Err(ViemStatus::NullPointer);
         }
-        if (out_state as usize) % align_of::<ViemViewportStateV1>() != 0 {
+        if (out_state as usize) % align_of::<ViemViewportState>() != 0 {
             return Err(ViemStatus::InvalidArgument);
         }
-        unsafe { out_state.write(ViemViewportStateV1::default()) };
+        unsafe { out_state.write(ViemViewportState::default()) };
         let state = with_core(handle, |core| summarize_viewport_state(core, ViewId(view)))?;
         unsafe { out_state.write(state) };
         Ok(())
@@ -8414,11 +8013,11 @@ pub unsafe extern "C" fn viem_core_view_viewport_state(
 pub unsafe extern "C" fn viem_core_view_layout_snapshot_info(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    out_info: *mut ViemLayoutSnapshotInfoV1,
+    out_info: *mut ViemLayoutSnapshotInfo,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_info, 1)?;
-        unsafe { out_info.write(ViemLayoutSnapshotInfoV1::default()) };
+        unsafe { out_info.write(ViemLayoutSnapshotInfo::default()) };
         let info = with_core(handle, |core| {
             let view_id = ViewId(view);
             layout_snapshot_info(current_ffi_layout_snapshot(core, view_id)?, view_id)
@@ -8438,11 +8037,11 @@ pub unsafe extern "C" fn viem_core_view_layout_snapshot_info(
 pub unsafe extern "C" fn viem_core_view_layout_paint_info(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    out_info: *mut ViemLayoutPaintInfoV1,
+    out_info: *mut ViemLayoutPaintInfo,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_info, 1)?;
-        unsafe { out_info.write(ViemLayoutPaintInfoV1::default()) };
+        unsafe { out_info.write(ViemLayoutPaintInfo::default()) };
         let info = with_core(handle, |core| {
             let view_id = ViewId(view);
             layout_paint_info(current_ffi_layout_snapshot(core, view_id)?, view_id)
@@ -8465,10 +8064,10 @@ pub unsafe extern "C" fn viem_core_view_layout_paint_info(
 pub unsafe extern "C" fn viem_core_view_copy_layout_paint(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemLayoutSnapshotIdentityV1,
-    runs: *mut ViemPaintStyleRunV1,
+    expected: *const ViemLayoutSnapshotIdentity,
+    runs: *mut ViemPaintStyleRun,
     run_capacity: u64,
-    out_info: *mut ViemLayoutPaintInfoV1,
+    out_info: *mut ViemLayoutPaintInfo,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let regions = [
@@ -8478,7 +8077,7 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_paint(
         ];
         validate_disjoint_regions(&regions)?;
         let expected = unsafe { read_layout_identity(expected)? };
-        unsafe { out_info.write(ViemLayoutPaintInfoV1::default()) };
+        unsafe { out_info.write(ViemLayoutPaintInfo::default()) };
         let (info, export) = with_core(handle, |core| {
             let view_id = ViewId(view);
             let snapshot = current_ffi_layout_snapshot(core, view_id)?;
@@ -8510,12 +8109,12 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_paint(
 pub unsafe extern "C" fn viem_core_view_copy_layout_decorations(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemLayoutSnapshotIdentityV1,
-    decorations: *mut ViemLayoutDecorationV1,
+    expected: *const ViemLayoutSnapshotIdentity,
+    decorations: *mut ViemLayoutDecoration,
     decoration_capacity: u64,
     labels: *mut u8,
     label_capacity: u64,
-    out_info: *mut ViemLayoutDecorationsInfoV1,
+    out_info: *mut ViemLayoutDecorationsInfo,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let regions = [
@@ -8526,7 +8125,7 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_decorations(
         ];
         validate_disjoint_regions(&regions)?;
         let expected = unsafe { read_layout_identity(expected)? };
-        unsafe { out_info.write(ViemLayoutDecorationsInfoV1::default()) };
+        unsafe { out_info.write(ViemLayoutDecorationsInfo::default()) };
         let (info, values, bytes) = with_core(handle, |core| {
             let view_id = ViewId(view);
             let snapshot = current_ffi_layout_snapshot(core, view_id)?;
@@ -8538,9 +8137,7 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_decorations(
                 .flat_map(|row| &row.decorations)
                 .map(|item| item.text.len())
                 .sum();
-            let info = ViemLayoutDecorationsInfoV1 {
-                struct_size: VIEM_LAYOUT_DECORATIONS_INFO_V1_SIZE,
-                reserved: 0,
+            let info = ViemLayoutDecorationsInfo {
                 identity: snapshot_identity(snapshot, view_id),
                 decoration_count: checked_export_count(count)?,
                 label_bytes: checked_export_count(length)?,
@@ -8551,9 +8148,8 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_decorations(
                 values.reserve(count);
                 bytes.reserve(length);
                 for (row_index, item) in snapshot.decorations_in_paint_order() {
-                        values.push(ViemLayoutDecorationV1 {
+                        values.push(ViemLayoutDecoration {
                             paragraph_id: match item.owner { Some(crate::layout::DecorationOwner::Paragraph(id)) => id, _ => 0 },
-                            struct_size: VIEM_LAYOUT_DECORATION_V1_SIZE,
                             flags: (if item.render_run.is_some() {
                                 VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN
                             } else {
@@ -8616,14 +8212,14 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_decorations(
 pub unsafe extern "C" fn viem_core_view_copy_layout_snapshot(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemLayoutSnapshotIdentityV1,
-    rows: *mut ViemVisualRowV1,
+    expected: *const ViemLayoutSnapshotIdentity,
+    rows: *mut ViemVisualRow,
     row_capacity: u64,
-    clusters: *mut ViemPositionedClusterV1,
+    clusters: *mut ViemPositionedCluster,
     cluster_capacity: u64,
-    carets: *mut ViemPositionedCaretV1,
+    carets: *mut ViemPositionedCaret,
     caret_capacity: u64,
-    out_info: *mut ViemLayoutSnapshotInfoV1,
+    out_info: *mut ViemLayoutSnapshotInfo,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let expected_region = typed_pointer_region(expected, 1)?;
@@ -8640,7 +8236,7 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_snapshot(
         ];
         validate_disjoint_regions(&regions)?;
         let expected = unsafe { read_layout_identity(expected)? };
-        unsafe { out_info.write(ViemLayoutSnapshotInfoV1::default()) };
+        unsafe { out_info.write(ViemLayoutSnapshotInfo::default()) };
         let (info, export) = with_core(handle, |core| {
             let view_id = ViewId(view);
             let snapshot = current_ffi_layout_snapshot(core, view_id)?;
@@ -8678,8 +8274,8 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_snapshot(
 pub unsafe extern "C" fn viem_core_view_caret_geometry(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemLayoutCaretRequestV1,
-    out_geometry: *mut ViemLayoutCaretGeometryV1,
+    request: *const ViemLayoutCaretRequest,
+    out_geometry: *mut ViemLayoutCaretGeometry,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let request_region = typed_pointer_region(request, 1)?;
@@ -8688,18 +8284,10 @@ pub unsafe extern "C" fn viem_core_view_caret_geometry(
             return Err(ViemStatus::InvalidArgument);
         }
         let request = unsafe { request.read() };
-        if request.struct_size < VIEM_LAYOUT_CARET_REQUEST_V1_SIZE {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        if request.identity.struct_size < VIEM_LAYOUT_SNAPSHOT_IDENTITY_V1_SIZE
-            || request.identity.reserved != 0
-        {
-            return Err(ViemStatus::InvalidArgument);
-        }
         let affinity = parse_layout_affinity(request.affinity)?;
         let text_offset =
             usize::try_from(request.text_offset).map_err(|_| ViemStatus::LengthOverflow)?;
-        unsafe { out_geometry.write(ViemLayoutCaretGeometryV1::default()) };
+        unsafe { out_geometry.write(ViemLayoutCaretGeometry::default()) };
         let geometry = with_core(handle, |core| {
             let view_id = ViewId(view);
             let snapshot = current_ffi_layout_snapshot(core, view_id)?;
@@ -8712,8 +8300,7 @@ pub unsafe extern "C" fn viem_core_view_caret_geometry(
         if geometry.is_cluster_fallback {
             flags |= VIEM_CARET_GEOMETRY_CLUSTER_FALLBACK;
         }
-        let geometry = ViemLayoutCaretGeometryV1 {
-            struct_size: VIEM_LAYOUT_CARET_GEOMETRY_V1_SIZE,
+        let geometry = ViemLayoutCaretGeometry {
             flags,
             point: caret_point_to_ffi(geometry.point)?,
             rect: layout_rect_to_ffi(geometry.rect),
@@ -8735,8 +8322,8 @@ pub unsafe extern "C" fn viem_core_view_caret_geometry(
 pub unsafe extern "C" fn viem_core_view_layout_hit_test(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemLayoutHitTestRequestV1,
-    out_point: *mut ViemLayoutCaretPointV1,
+    request: *const ViemLayoutHitTestRequest,
+    out_point: *mut ViemLayoutCaretPoint,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let request_region = typed_pointer_region(request, 1)?;
@@ -8745,14 +8332,11 @@ pub unsafe extern "C" fn viem_core_view_layout_hit_test(
             return Err(ViemStatus::InvalidArgument);
         }
         let request = unsafe { request.read() };
-        if request.struct_size < VIEM_LAYOUT_HIT_TEST_REQUEST_V1_SIZE
-            || request.flags & !VIEM_LAYOUT_HIT_TEST_POINTER_DOWN != 0
-            || request.identity.struct_size < VIEM_LAYOUT_SNAPSHOT_IDENTITY_V1_SIZE
-            || request.identity.reserved != 0
+        if request.flags & !VIEM_LAYOUT_HIT_TEST_POINTER_DOWN != 0
         {
             return Err(ViemStatus::InvalidArgument);
         }
-        unsafe { out_point.write(ViemLayoutCaretPointV1::default()) };
+        unsafe { out_point.write(ViemLayoutCaretPoint::default()) };
         let point = with_core(handle, |core| {
             let view_id = ViewId(view);
             let snapshot = current_ffi_layout_snapshot(core, view_id)?;
@@ -8776,18 +8360,17 @@ pub unsafe extern "C" fn viem_core_view_layout_hit_test(
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_view_pointer_caret(
     handle: ViemCoreHandle, view: ViemViewId,
-    request: *const ViemLayoutHitTestRequestV1, out_caret: *mut ViemPointerCaretV1,
+    request: *const ViemLayoutHitTestRequest, out_caret: *mut ViemPointerCaret,
 ) -> ViemStatus {
     ffi_boundary(|| {
         if regions_overlap(typed_pointer_region(request, 1)?, typed_pointer_region(out_caret, 1)?) {
             return Err(ViemStatus::InvalidArgument);
         }
         let request = unsafe { request.read() };
-        if request.struct_size < VIEM_LAYOUT_HIT_TEST_REQUEST_V1_SIZE || request.flags != 0
-            || request.identity.struct_size < VIEM_LAYOUT_SNAPSHOT_IDENTITY_V1_SIZE || request.identity.reserved != 0 {
+        if request.flags != 0 {
             return Err(ViemStatus::InvalidArgument);
         }
-        unsafe { out_caret.write(ViemPointerCaretV1::default()) };
+        unsafe { out_caret.write(ViemPointerCaret::default()) };
         let caret = with_core(handle, |core| {
             let view = ViewId(view);
             let snapshot = current_ffi_layout_snapshot(core, view)?;
@@ -8805,8 +8388,7 @@ pub unsafe extern "C" fn viem_core_view_pointer_caret(
                 && snapshot.logical_endpoint_geometry(target.offset(), target.affinity()).ok()
                     .zip(snapshot.logical_endpoint_geometry(current.offset(), current.affinity()).ok())
                     .is_some_and(|(left, right)| left.rect == right.rect && left.row_index == right.row_index);
-            Ok(ViemPointerCaretV1 {
-                struct_size: VIEM_POINTER_CARET_V1_SIZE,
+            Ok(ViemPointerCaret {
                 flags: if target == current || same_boundary { VIEM_POINTER_CARET_CURRENT } else { 0 },
                 mode: mode_to_ffi(mode, false, false),
                 caret_shape: if target.is_cell() { VIEM_CARET_SHAPE_CELL } else { VIEM_CARET_SHAPE_BOUNDARY },
@@ -8832,11 +8414,11 @@ pub unsafe extern "C" fn viem_core_view_pointer_caret(
 pub unsafe extern "C" fn viem_core_view_presentation(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    out_presentation: *mut ViemViewPresentationV1,
+    out_presentation: *mut ViemViewPresentation,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_presentation, 1)?;
-        unsafe { out_presentation.write(ViemViewPresentationV1::default()) };
+        unsafe { out_presentation.write(ViemViewPresentation::default()) };
         let presentation = with_core(handle, |core| {
             summarize_view_presentation(core, ViewId(view))
         })?;
@@ -8856,11 +8438,11 @@ pub unsafe extern "C" fn viem_core_view_presentation(
 pub unsafe extern "C" fn viem_core_view_command_line_info(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    out_info: *mut ViemCommandLineInfoV1,
+    out_info: *mut ViemCommandLineInfo,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_info, 1)?;
-        unsafe { out_info.write(ViemCommandLineInfoV1::default()) };
+        unsafe { out_info.write(ViemCommandLineInfo::default()) };
         let export = with_core(handle, |core| export_command_line(core, ViewId(view)))?;
         unsafe { out_info.write(export.info) };
         Ok(())
@@ -8880,10 +8462,10 @@ pub unsafe extern "C" fn viem_core_view_command_line_info(
 pub unsafe extern "C" fn viem_core_view_copy_command_line(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemCommandLineIdentityV1,
+    expected: *const ViemCommandLineIdentity,
     utf8: *mut u8,
     utf8_capacity: u64,
-    out_info: *mut ViemCommandLineInfoV1,
+    out_info: *mut ViemCommandLineInfo,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let regions = [
@@ -8893,7 +8475,7 @@ pub unsafe extern "C" fn viem_core_view_copy_command_line(
         ];
         validate_disjoint_regions(&regions)?;
         let expected = unsafe { read_command_line_identity(expected)? };
-        unsafe { out_info.write(ViemCommandLineInfoV1::default()) };
+        unsafe { out_info.write(ViemCommandLineInfo::default()) };
         let export = with_core(handle, |core| {
             let export = export_command_line(core, ViewId(view))?;
             validate_command_line_identity(expected, export.info.identity)?;
@@ -8923,11 +8505,11 @@ pub unsafe extern "C" fn viem_core_view_copy_command_line(
 pub unsafe extern "C" fn viem_core_view_visual_selection_info(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    out_info: *mut ViemVisualSelectionInfoV1,
+    out_info: *mut ViemVisualSelectionInfo,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_info, 1)?;
-        unsafe { out_info.write(ViemVisualSelectionInfoV1::default()) };
+        unsafe { out_info.write(ViemVisualSelectionInfo::default()) };
         let export = with_core(handle, |core| export_visual_selection(core, ViewId(view)))?;
         unsafe { out_info.write(export.info) };
         Ok(())
@@ -8948,12 +8530,12 @@ pub unsafe extern "C" fn viem_core_view_visual_selection_info(
 pub unsafe extern "C" fn viem_core_view_copy_visual_selection(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemVisualSelectionIdentityV1,
-    segments: *mut ViemVisualSelectionSegmentV1,
+    expected: *const ViemVisualSelectionIdentity,
+    segments: *mut ViemVisualSelectionSegment,
     segment_capacity: u64,
-    rectangles: *mut ViemVisualSelectionRectangleV1,
+    rectangles: *mut ViemVisualSelectionRectangle,
     rectangle_capacity: u64,
-    out_info: *mut ViemVisualSelectionInfoV1,
+    out_info: *mut ViemVisualSelectionInfo,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let expected_region = typed_pointer_region(expected, 1)?;
@@ -8968,7 +8550,7 @@ pub unsafe extern "C" fn viem_core_view_copy_visual_selection(
         ];
         validate_disjoint_regions(&regions)?;
         let expected = unsafe { read_visual_selection_identity(expected)? };
-        unsafe { out_info.write(ViemVisualSelectionInfoV1::default()) };
+        unsafe { out_info.write(ViemVisualSelectionInfo::default()) };
         let export = with_core(handle, |core| {
             let view_id = ViewId(view);
             let snapshot = current_ffi_layout_snapshot(core, view_id)?;
@@ -9004,11 +8586,11 @@ pub unsafe extern "C" fn viem_core_view_semantic_style_presentation(
     handle: ViemCoreHandle,
     view: ViemViewId,
     style: u32,
-    out_presentation: *mut ViemSemanticStylePresentationV1,
+    out_presentation: *mut ViemSemanticStylePresentation,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_presentation, 1)?;
-        unsafe { out_presentation.write(ViemSemanticStylePresentationV1::default()) };
+        unsafe { out_presentation.write(ViemSemanticStylePresentation::default()) };
         let style = semantic_style_from_ffi(style)?;
         let (presentation, _) = with_core(handle, |core| {
             export_semantic_style_presentation(core, ViewId(view), style)
@@ -9030,16 +8612,12 @@ pub unsafe extern "C" fn viem_core_view_semantic_style_presentation(
 pub unsafe extern "C" fn viem_core_view_set_semantic_style(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemSetSemanticStyleV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    request: *const ViemSetSemanticStyle,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let request = unsafe { read_core_request(request, out_outcome)? };
-        if request.struct_size < VIEM_SET_SEMANTIC_STYLE_V1_SIZE || request.reserved != 0 {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        if request.expected_selection.struct_size < VIEM_LOGICAL_SELECTION_IDENTITY_V1_SIZE
-            || !matches!(
+        if !matches!(
                 request.expected_selection.kind,
                 VIEM_LOGICAL_SELECTION_KIND_NONE
                     | VIEM_LOGICAL_SELECTION_KIND_CHARACTER
@@ -9087,8 +8665,8 @@ pub unsafe extern "C" fn viem_core_view_set_semantic_style(
 pub unsafe extern "C" fn viem_core_view_use_selection_for_find(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemVisualSelectionIdentityV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    expected: *const ViemVisualSelectionIdentity,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let expected_region = typed_pointer_region(expected, 1)?;
@@ -9122,7 +8700,7 @@ pub unsafe extern "C" fn viem_core_view_use_selection_for_find(
 pub unsafe extern "C" fn viem_core_view_reveal_selection(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         unsafe { clear_outcome(out_outcome)? };
@@ -9147,12 +8725,12 @@ pub unsafe extern "C" fn viem_core_view_reveal_selection(
 /// readable for this call. The two aligned writable outputs must be distinct
 /// from all inputs and from each other.
 #[no_mangle]
-pub unsafe extern "C" fn viem_core_view_send_key_with_host_context_v2(
+pub unsafe extern "C" fn viem_core_view_send_key_with_host_context(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    input: *const ViemKeyInputV1,
-    context: *const ViemCommandTurnContextV2,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    input: *const ViemKeyInput,
+    context: *const ViemCommandTurnContext,
+    out_outcome: *mut ViemCoreOutcome,
     out_effect_batch: *mut ViemEffectBatchHandle,
 ) -> ViemStatus {
     ffi_boundary(|| {
@@ -9198,13 +8776,13 @@ pub unsafe extern "C" fn viem_core_view_send_key_with_host_context_v2(
 /// The two aligned writable outputs must be distinct from all inputs and from
 /// each other. A successful nonzero effect handle is caller-owned.
 #[no_mangle]
-pub unsafe extern "C" fn viem_core_view_send_text_with_host_context_v2(
+pub unsafe extern "C" fn viem_core_view_send_text_with_host_context(
     handle: ViemCoreHandle,
     view: ViemViewId,
     text: *const u8,
     text_length: u64,
-    context: *const ViemCommandTurnContextV2,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    context: *const ViemCommandTurnContext,
+    out_outcome: *mut ViemCoreOutcome,
     out_effect_batch: *mut ViemEffectBatchHandle,
 ) -> ViemStatus {
     ffi_boundary(|| {
@@ -9255,11 +8833,11 @@ pub unsafe extern "C" fn viem_core_view_send_text_with_host_context_v2(
 #[no_mangle]
 pub unsafe extern "C" fn viem_effect_batch_info(
     handle: ViemEffectBatchHandle,
-    out_info: *mut ViemEffectBatchInfoV1,
+    out_info: *mut ViemEffectBatchInfo,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_info, 1)?;
-        unsafe { out_info.write(ViemEffectBatchInfoV1::default()) };
+        unsafe { out_info.write(ViemEffectBatchInfo::default()) };
         let batch = owned_effect_batch(handle)?;
         let export = batch.export.get_or_init(|| export_effect_batch(handle, &batch))
             .as_ref().map_err(|error| *error)?;
@@ -9276,15 +8854,15 @@ pub unsafe extern "C" fn viem_effect_batch_info(
 /// reading them. Empty arrays have zero counts and must not be dereferenced.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct ViemEffectBatchViewV1 {
-    pub info: ViemEffectBatchInfoV1,
-    pub clipboard_writes: *const ViemClipboardWriteV1,
-    pub ex_requests: *const ViemExFrontendRequestV1,
-    pub ex_options: *const ViemExOptionDisplayV1,
-    pub ex_marks: *const ViemExMarkV1,
-    pub ex_registers: *const ViemExRegisterV1,
-    pub ex_jumps: *const ViemExJumpV1,
-    pub ex_text_lines: *const ViemExTextLineV1,
+pub struct ViemEffectBatchView {
+    pub info: ViemEffectBatchInfo,
+    pub clipboard_writes: *const ViemClipboardWrite,
+    pub ex_requests: *const ViemExFrontendRequest,
+    pub ex_options: *const ViemExOptionDisplay,
+    pub ex_marks: *const ViemExMark,
+    pub ex_registers: *const ViemExRegister,
+    pub ex_jumps: *const ViemExJump,
+    pub ex_text_lines: *const ViemExTextLine,
     pub file_formats: *const u32,
     pub hard_breaks: *const u64,
     pub strings: *const u8,
@@ -9292,15 +8870,15 @@ pub struct ViemEffectBatchViewV1 {
 
 #[no_mangle]
 pub unsafe extern "C" fn viem_effect_batch_read(
-    handle: ViemEffectBatchHandle, out_batch: *mut ViemEffectBatchViewV1,
+    handle: ViemEffectBatchHandle, out_batch: *mut ViemEffectBatchView,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_batch, 1)?;
-        unsafe { out_batch.write(ViemEffectBatchViewV1::default()) };
+        unsafe { out_batch.write(ViemEffectBatchView::default()) };
         let batch = owned_effect_batch(handle)?;
         let export = batch.export.get_or_init(|| export_effect_batch(handle, &batch))
             .as_ref().map_err(|error| *error)?;
-        unsafe { out_batch.write(ViemEffectBatchViewV1 {
+        unsafe { out_batch.write(ViemEffectBatchView {
             info: export.info,
             clipboard_writes: export.clipboard_writes.as_ptr(),
             ex_requests: export.ex_requests.as_ptr(),
@@ -9362,16 +8940,14 @@ pub extern "C" fn viem_effect_batch_release(handle: ViemEffectBatchHandle) -> Vi
 pub unsafe extern "C" fn viem_core_view_place_cursor(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemPlaceCursorV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    request: *const ViemPlaceCursor,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let request = unsafe { read_core_request(request, out_outcome)? };
-        if request.struct_size < VIEM_PLACE_CURSOR_V1_SIZE
-            || request.flags & !(VIEM_PLACE_CURSOR_EXTEND_SELECTION | VIEM_PLACE_CURSOR_WORD_SELECTION | VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE) != 0
+        if request.flags & !(VIEM_PLACE_CURSOR_EXTEND_SELECTION | VIEM_PLACE_CURSOR_WORD_SELECTION | VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE) != 0
             || request.flags & VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE != 0
                 && request.flags & (VIEM_PLACE_CURSOR_EXTEND_SELECTION | VIEM_PLACE_CURSOR_WORD_SELECTION) != 0
-            || request.reserved != 0
         {
             return Err(ViemStatus::InvalidArgument);
         }
@@ -9413,7 +8989,7 @@ pub unsafe extern "C" fn viem_core_view_select_all(
     view: ViemViewId,
     document: u64,
     revision: u64,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         unsafe { clear_outcome(out_outcome)? };
@@ -9471,7 +9047,7 @@ pub unsafe extern "C" fn viem_core_set_selection_option(handle: ViemCoreHandle, 
 /// # Safety
 /// `out_outcome` must be aligned and writable.
 #[no_mangle]
-pub unsafe extern "C" fn viem_core_view_set_selection_origin(handle: ViemCoreHandle, view: ViemViewId, origin: u32, return_mode: u32, out_outcome: *mut ViemCoreOutcomeV1) -> ViemStatus {
+pub unsafe extern "C" fn viem_core_view_set_selection_origin(handle: ViemCoreHandle, view: ViemViewId, origin: u32, return_mode: u32, out_outcome: *mut ViemCoreOutcome) -> ViemStatus {
     ffi_boundary(|| {
         let origin = match origin { 1 => crate::command::SelectionOrigin::Mouse, 2 => crate::command::SelectionOrigin::Key, 3 => crate::command::SelectionOrigin::Command, _ => return Err(ViemStatus::InvalidArgument) };
         unsafe { clear_outcome(out_outcome)? };
@@ -9499,7 +9075,7 @@ pub unsafe extern "C" fn viem_core_view_go_to_line(
     document: u64,
     revision: u64,
     line: u64,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         unsafe { clear_outcome(out_outcome)? };
@@ -9523,7 +9099,7 @@ unsafe fn core_view_navigate_history(
     handle: ViemCoreHandle,
     view: ViemViewId,
     navigation: crate::document::HistoryNavigationRequest,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         unsafe { clear_outcome(out_outcome)? };
@@ -9544,7 +9120,7 @@ unsafe fn core_view_navigate_history(
 pub unsafe extern "C" fn viem_core_view_undo(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     unsafe {
         core_view_navigate_history(
@@ -9565,7 +9141,7 @@ pub unsafe extern "C" fn viem_core_view_undo(
 pub unsafe extern "C" fn viem_core_view_redo(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     unsafe {
         core_view_navigate_history(
@@ -9588,14 +9164,11 @@ pub unsafe extern "C" fn viem_core_view_redo(
 pub unsafe extern "C" fn viem_core_view_composition_begin(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemCompositionBeginV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    request: *const ViemCompositionBegin,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let request = unsafe { read_core_request(request, out_outcome)? };
-        if request.struct_size < VIEM_COMPOSITION_BEGIN_V1_SIZE || request.reserved != 0 {
-            return Err(ViemStatus::InvalidArgument);
-        }
         let start = checked_length(request.replacement_start)?;
         let end = checked_length(request.replacement_end)?;
         unsafe { clear_outcome(out_outcome)? };
@@ -9625,14 +9198,11 @@ pub unsafe extern "C" fn viem_core_view_composition_begin(
 pub unsafe extern "C" fn viem_core_view_composition_update(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemCompositionUpdateV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    request: *const ViemCompositionUpdate,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let request = unsafe { read_core_request(request, out_outcome)? };
-        if request.struct_size < VIEM_COMPOSITION_UPDATE_V1_SIZE || request.reserved != 0 {
-            return Err(ViemStatus::InvalidArgument);
-        }
         let marked_text = unsafe { composition_utf8(request.marked_text, out_outcome)? };
         let selected_start = checked_length(request.selected_start)?;
         let selected_end = checked_length(request.selected_end)?;
@@ -9664,17 +9234,15 @@ pub unsafe extern "C" fn viem_core_view_composition_update(
 pub unsafe extern "C" fn viem_core_view_composition_overlay_info(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    out_info: *mut ViemCompositionOverlayInfoV1,
+    out_info: *mut ViemCompositionOverlayInfo,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_info, 1)?;
-        let inactive = ViemCompositionOverlayInfoV1 {
-            struct_size: VIEM_COMPOSITION_OVERLAY_INFO_V1_SIZE,
-            identity: ViemCompositionOverlayIdentityV1 {
-                struct_size: VIEM_COMPOSITION_OVERLAY_IDENTITY_V1_SIZE,
-                ..ViemCompositionOverlayIdentityV1::default()
+        let inactive = ViemCompositionOverlayInfo {
+            identity: ViemCompositionOverlayIdentity {
+                ..ViemCompositionOverlayIdentity::default()
             },
-            ..ViemCompositionOverlayInfoV1::default()
+            ..ViemCompositionOverlayInfo::default()
         };
         unsafe { out_info.write(inactive) };
         let info = with_core(handle, |core| {
@@ -9704,7 +9272,7 @@ pub unsafe extern "C" fn viem_core_view_composition_overlay_info(
 pub unsafe extern "C" fn viem_core_view_copy_composition_utf8_range(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemCompositionOverlayUtf8RangeV1,
+    request: *const ViemCompositionOverlayUtf8Range,
     output: *mut u8,
     output_capacity: u64,
     out_required: *mut u64,
@@ -9720,13 +9288,6 @@ pub unsafe extern "C" fn viem_core_view_copy_composition_utf8_range(
             return Err(ViemStatus::InvalidArgument);
         }
         let request = unsafe { request.read() };
-        if request.struct_size < VIEM_COMPOSITION_OVERLAY_UTF8_RANGE_V1_SIZE
-            || request.reserved != 0
-            || request.identity.struct_size < VIEM_COMPOSITION_OVERLAY_IDENTITY_V1_SIZE
-            || request.identity.reserved != 0
-        {
-            return Err(ViemStatus::InvalidArgument);
-        }
         unsafe { out_required.write(0) };
         let start = checked_length(request.start)?;
         let end = checked_length(request.end)?;
@@ -9771,14 +9332,11 @@ pub unsafe extern "C" fn viem_core_view_copy_composition_utf8_range(
 pub unsafe extern "C" fn viem_core_view_composition_commit(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemCompositionCommitV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    request: *const ViemCompositionCommit,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let request = unsafe { read_core_request(request, out_outcome)? };
-        if request.struct_size < VIEM_COMPOSITION_COMMIT_V1_SIZE || request.reserved != 0 {
-            return Err(ViemStatus::InvalidArgument);
-        }
         let committed_text = unsafe { composition_utf8(request.committed_text, out_outcome)? };
         let caret = committed_text.len();
         unsafe { clear_outcome(out_outcome)? };
@@ -9813,14 +9371,11 @@ pub unsafe extern "C" fn viem_core_view_composition_commit(
 pub unsafe extern "C" fn viem_core_view_composition_cancel(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemCompositionCancelV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    request: *const ViemCompositionCancel,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let request = unsafe { read_core_request(request, out_outcome)? };
-        if request.struct_size < VIEM_COMPOSITION_CANCEL_V1_SIZE || request.reserved != 0 {
-            return Err(ViemStatus::InvalidArgument);
-        }
         unsafe { clear_outcome(out_outcome)? };
         let outcome = with_core_mut(handle, |core| {
             validate_composition_turn(core, view, request.document_revision)?;
@@ -9844,13 +9399,12 @@ pub unsafe extern "C" fn viem_core_view_composition_cancel(
 pub unsafe extern "C" fn viem_core_view_set_viewport_origin(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemViewportOriginV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    request: *const ViemViewportOrigin,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let request = unsafe { read_core_request(request, out_outcome)? };
-        if request.struct_size < VIEM_VIEWPORT_ORIGIN_V1_SIZE
-            || request.flags & !VIEM_VIEWPORT_ORIGIN_HAS_TOP != 0
+        if request.flags & !VIEM_VIEWPORT_ORIGIN_HAS_TOP != 0
             || !request.left.is_finite()
             || (request.flags & VIEM_VIEWPORT_ORIGIN_HAS_TOP != 0 && !request.top.is_finite())
         {
@@ -9887,7 +9441,7 @@ pub unsafe extern "C" fn viem_core_view_resize(
     view: ViemViewId,
     width: f32,
     height: f32,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         unsafe { clear_outcome(out_outcome)? };
@@ -9971,7 +9525,7 @@ pub unsafe extern "C" fn viem_core_view_set_scale(
     handle: ViemCoreHandle,
     view: ViemViewId,
     scale: f32,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         unsafe { clear_outcome(out_outcome)? };
@@ -9996,7 +9550,7 @@ pub unsafe extern "C" fn viem_core_view_set_wrap(
     handle: ViemCoreHandle,
     view: ViemViewId,
     wrap: u32,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         unsafe { clear_outcome(out_outcome)? };
@@ -10020,14 +9574,11 @@ pub unsafe extern "C" fn viem_core_view_set_wrap(
 pub unsafe extern "C" fn viem_core_view_set_file_format(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemSetFileFormatV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    request: *const ViemSetFileFormat,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let request = unsafe { read_core_request(request, out_outcome)? };
-        if request.struct_size < VIEM_SET_FILE_FORMAT_V1_SIZE {
-            return Err(ViemStatus::InvalidArgument);
-        }
         unsafe { clear_outcome(out_outcome)? };
         let target = parse_concrete_file_format(request.file_format)?;
         let outcome = with_core_mut(handle, |core| {
@@ -10054,11 +9605,11 @@ pub unsafe extern "C" fn viem_core_view_set_file_format(
 pub unsafe extern "C" fn viem_core_view_list_selection(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    out_selection: *mut ViemLogicalSelectionIdentityV1,
+    out_selection: *mut ViemLogicalSelectionIdentity,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_selection, 1)?;
-        unsafe { out_selection.write(ViemLogicalSelectionIdentityV1::default()) };
+        unsafe { out_selection.write(ViemLogicalSelectionIdentity::default()) };
         let selection = with_core(handle, |core| {
             logical_selection_identity_to_ffi(
                 &core
@@ -10078,7 +9629,7 @@ pub unsafe extern "C" fn viem_core_view_list_selection(
 pub unsafe extern "C" fn viem_core_view_list_indent_capabilities(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemLogicalSelectionIdentityV1,
+    expected: *const ViemLogicalSelectionIdentity,
     out_flags: *mut u32,
 ) -> ViemStatus {
     ffi_boundary(|| {
@@ -10114,8 +9665,8 @@ pub unsafe extern "C" fn viem_core_view_list_indent_capabilities(
 pub unsafe extern "C" fn viem_core_view_insert_list_paragraph(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemLogicalSelectionIdentityV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    expected: *const ViemLogicalSelectionIdentity,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let request = unsafe { read_core_request(expected, out_outcome)? };
@@ -10137,12 +9688,12 @@ pub unsafe extern "C" fn viem_core_view_insert_list_paragraph(
 pub unsafe extern "C" fn viem_core_view_indent_list(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemListIndentV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    request: *const ViemListIndent,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let request = unsafe { read_core_request(request, out_outcome)? };
-        if request.struct_size < VIEM_LIST_INDENT_V1_SIZE || request.unindent > 1 {
+        if request.unindent > 1 {
             return Err(ViemStatus::InvalidArgument);
         }
         unsafe { clear_outcome(out_outcome)? };
@@ -10176,14 +9727,11 @@ pub unsafe extern "C" fn viem_core_view_indent_list(
 pub unsafe extern "C" fn viem_core_view_set_list_style(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemSetListStyleV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    request: *const ViemSetListStyle,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let request = unsafe { read_core_request(request, out_outcome)? };
-        if request.struct_size < VIEM_SET_LIST_STYLE_V1_SIZE {
-            return Err(ViemStatus::InvalidArgument);
-        }
         let style = match request.style {
             VIEM_LIST_STYLE_NONE => None,
             VIEM_LIST_STYLE_BULLET => Some(crate::document::ListStyle::Bullet),
@@ -10215,12 +9763,12 @@ pub unsafe extern "C" fn viem_core_view_set_list_style(
 pub unsafe extern "C" fn viem_core_view_set_paragraph_style(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemSetParagraphStyleV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    request: *const ViemSetParagraphStyle,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let request = unsafe { read_core_request(request, out_outcome)? };
-        if request.struct_size < VIEM_SET_PARAGRAPH_STYLE_V1_SIZE || request.level > 6 {
+        if request.level > 6 {
             return Err(ViemStatus::InvalidArgument);
         }
         unsafe { clear_outcome(out_outcome)? };
@@ -10255,14 +9803,11 @@ pub unsafe extern "C" fn viem_core_view_set_paragraph_style(
 pub unsafe extern "C" fn viem_core_view_assign_style(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemAssignStyleV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    request: *const ViemAssignStyle,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let request = unsafe { read_core_request(request, out_outcome)? };
-        if request.struct_size < VIEM_ASSIGN_STYLE_V1_SIZE {
-            return Err(ViemStatus::InvalidArgument);
-        }
         let namespace = parse_style_namespace(request.namespace)?;
         let style = unsafe { composition_utf8(request.style_id, out_outcome)? };
         if (style.is_empty() && namespace != StyleNamespace::Character) || style.contains('\0') {
@@ -10300,8 +9845,8 @@ pub unsafe extern "C" fn viem_core_view_assign_style(
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_view_set_inline_property(
     handle: ViemCoreHandle, view: ViemViewId,
-    expected_selection: *const ViemLogicalSelectionIdentityV1,
-    property: u32, enabled: u8, out_outcome: *mut ViemCoreOutcomeV1,
+    expected_selection: *const ViemLogicalSelectionIdentity,
+    property: u32, enabled: u8, out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let selection = unsafe { read_core_request(expected_selection, out_outcome)? };
@@ -10340,9 +9885,9 @@ pub unsafe extern "C" fn viem_core_view_inline_property_state(
 pub unsafe extern "C" fn viem_core_view_set_strikethrough(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected_selection: *const ViemLogicalSelectionIdentityV1,
+    expected_selection: *const ViemLogicalSelectionIdentity,
     enabled: u8,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let expected_selection = unsafe { read_core_request(expected_selection, out_outcome)? };
@@ -10429,8 +9974,8 @@ pub unsafe extern "C" fn viem_core_view_font_en_width(
 pub unsafe extern "C" fn viem_core_view_begin_style_edit_group(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemStyleSheetIdentityV1,
-    out_group: *mut ViemStyleEditGroupV1,
+    expected: *const ViemStyleSheetIdentity,
+    out_group: *mut ViemStyleEditGroup,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let expected_region = typed_pointer_region(expected, 1)?;
@@ -10439,7 +9984,7 @@ pub unsafe extern "C" fn viem_core_view_begin_style_edit_group(
             return Err(ViemStatus::InvalidArgument);
         }
         let expected = unsafe { read_style_sheet_identity(expected)? };
-        unsafe { out_group.write(ViemStyleEditGroupV1::default()) };
+        unsafe { out_group.write(ViemStyleEditGroup::default()) };
         let group = with_core_mut(handle, |core| {
             core.begin_style_edit_group(
                 ViewId(view),
@@ -10449,7 +9994,7 @@ pub unsafe extern "C" fn viem_core_view_begin_style_edit_group(
             )
             .map_err(core_status)
         })?;
-        unsafe { out_group.write(ViemStyleEditGroupV1::from_core(group)) };
+        unsafe { out_group.write(ViemStyleEditGroup::from_core(group)) };
         Ok(())
     })
 }
@@ -10468,8 +10013,8 @@ pub unsafe extern "C" fn viem_core_view_begin_style_edit_group(
 pub unsafe extern "C" fn viem_core_view_edit_style(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemStyleEditV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    request: *const ViemStyleEdit,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let request = unsafe { parse_style_edit_request(request, out_outcome)? };
@@ -10511,9 +10056,9 @@ pub unsafe extern "C" fn viem_core_view_edit_style(
 pub unsafe extern "C" fn viem_core_view_edit_style_in_group(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    group: *const ViemStyleEditGroupV1,
-    request: *const ViemStyleEditV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    group: *const ViemStyleEditGroup,
+    request: *const ViemStyleEdit,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let regions = [
@@ -10558,7 +10103,7 @@ pub unsafe extern "C" fn viem_core_view_edit_style_in_group(
 pub unsafe extern "C" fn viem_core_view_end_style_edit_group(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    group: *const ViemStyleEditGroupV1,
+    group: *const ViemStyleEditGroup,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let group = unsafe { read_style_edit_group(group)? }.into_core();
@@ -10694,20 +10239,17 @@ mod tests {
         viem_core_map_formatted_utf8_to_utf16, viem_core_style_sheet_info,
         viem_core_view_copy_layout_paint, viem_core_view_layout_paint_info,
         export_style_sheet, ffi_boundary, register_core,
-        summarize_document_state, CTextMeasurementProvider, ViemClusterCaretStopV1,
-        ViemCoreOutcomeV1, ViemFormattedPointInfoV1, ViemFormattedSnapshotInfoV1,
-        ViemFormattedUtf8RangeV1, ViemLayoutPaintInfoV1, ViemPaintStyleRunV1,
-        ViemRenderRunHandleV1, ViemShapeRequestV1, ViemShapeResponseV1, ViemShapedBoundsV1,
-        ViemShapedClusterV1, ViemStatus, ViemStyleDefinitionV1, ViemStyleDependencyV1,
-        ViemStyleEditV1, ViemStylePropertyV1, ViemStyleSheetInfoV1, ViemStyleStringRefV1,
-        ViemStyleValueItemV1, ViemTextMetricsV1, ViemUtf8Slice, MarshalledRequest,
+        summarize_document_state, CTextMeasurementProvider, ViemClusterCaretStop,
+        ViemCoreOutcome, ViemFormattedPointInfo, ViemFormattedSnapshotInfo,
+        ViemFormattedUtf8Range, ViemLayoutPaintInfo, ViemPaintStyleRun,
+        ViemRenderRunHandle, ViemShapeRequest, ViemShapeResponse, ViemShapedBounds,
+        ViemShapedCluster, ViemStatus, ViemStyleDefinition, ViemStyleDependency,
+        ViemStyleEdit, ViemStyleProperty, ViemStyleSheetInfo, ViemStyleStringRef,
+        ViemStyleValueItem, ViemTextMetrics, ViemUtf8Slice, MarshalledRequest,
         VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, VIEM_BOUNDARY_AFFINITY_UPSTREAM,
-        VIEM_HISTORY_ACTION_CATEGORY_MIXED, VIEM_LAYOUT_PAINT_INFO_V1_SIZE,
-        VIEM_PAINT_STYLE_RUN_V1_SIZE, VIEM_SHAPED_CLUSTER_V1_SIZE,
-        VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA,
+        VIEM_HISTORY_ACTION_CATEGORY_MIXED, VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA,
         VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT, VIEM_TEXT_PAINT_HAS_BACKGROUND,
-        VIEM_TEXT_PAINT_STRIKETHROUGH, VIEM_TEXT_PAINT_UNDERLINE, VIEM_TEXT_PAINT_V1_SIZE,
-    };
+        VIEM_TEXT_PAINT_STRIKETHROUGH, VIEM_TEXT_PAINT_UNDERLINE, };
     use crate::command::{InputEvent, Key};
     use crate::document::{
         BlockProperties, CharacterProperties, Color, ConfigurationStyleIntent, Document, Encoding,
@@ -10760,7 +10302,7 @@ mod tests {
         use crate::command::{RegisterKind, RegisterValue};
         use crate::document::{DocumentId, Revision};
 
-        fn referenced_text(arena: &[u8], reference: super::ViemEffectBytesRefV1) -> &str {
+        fn referenced_text(arena: &[u8], reference: super::ViemEffectBytesRef) -> &str {
             let start = usize::try_from(reference.offset).unwrap();
             let length = usize::try_from(reference.length).unwrap();
             std::str::from_utf8(&arena[start..start + length]).unwrap()
@@ -10929,7 +10471,7 @@ mod tests {
             .commit(batch)
             .unwrap();
 
-        let mut info = super::ViemEffectBatchInfoV1::default();
+        let mut info = super::ViemEffectBatchInfo::default();
         assert_eq!(
             unsafe { super::viem_effect_batch_info(handle, &mut info) },
             ViemStatus::Ok
@@ -10955,10 +10497,10 @@ mod tests {
                 | super::VIEM_EFFECT_BATCH_EX_HAS_NAVIGATION
         );
 
-        let mut borrowed = super::ViemEffectBatchViewV1::default();
+        let mut borrowed = super::ViemEffectBatchView::default();
         assert_eq!(unsafe { super::viem_effect_batch_read(handle, &mut borrowed) }, ViemStatus::Ok);
         assert_eq!(borrowed.info, info);
-        let mut second = super::ViemEffectBatchViewV1::default();
+        let mut second = super::ViemEffectBatchView::default();
         assert_eq!(unsafe { super::viem_effect_batch_read(handle, &mut second) }, ViemStatus::Ok);
         assert_eq!(borrowed.strings, second.strings, "immutable storage survives repeated reads");
         assert_eq!(unsafe { super::viem_effect_batch_read(handle, std::ptr::null_mut()) }, ViemStatus::NullPointer);
@@ -11123,7 +10665,7 @@ mod tests {
             unsafe { super::viem_effect_batch_info(handle, &mut info) },
             ViemStatus::InvalidHandle
         );
-        assert_eq!(info, super::ViemEffectBatchInfoV1::default());
+        assert_eq!(info, super::ViemEffectBatchInfo::default());
         assert_eq!(
             super::viem_effect_batch_release(handle),
             ViemStatus::InvalidHandle
@@ -11139,7 +10681,7 @@ mod tests {
         let text = "Aé👩‍💻e\u{301}\nlast";
         let handle = register_core(Core::new(Document::new(text))).unwrap();
 
-        let mut info = ViemFormattedSnapshotInfoV1::default();
+        let mut info = ViemFormattedSnapshotInfo::default();
         assert_eq!(
             unsafe { viem_core_formatted_snapshot_info(handle, &mut info) },
             ViemStatus::Ok
@@ -11148,9 +10690,7 @@ mod tests {
         assert_eq!(info.utf16_length, text.encode_utf16().count() as u64);
         assert_eq!(info.hard_line_count, 2);
 
-        let range = ViemFormattedUtf8RangeV1 {
-            struct_size: super::VIEM_FORMATTED_UTF8_RANGE_V1_SIZE,
-            reserved: 0,
+        let range = ViemFormattedUtf8Range {
             identity: info.identity,
             utf8_start: 3,
             utf8_end: 17,
@@ -11309,7 +10849,7 @@ mod tests {
         assert_eq!(untouched, [77, 88]);
         assert_eq!(required, 0);
 
-        let mut point = ViemFormattedPointInfoV1::default();
+        let mut point = ViemFormattedPointInfo::default();
         assert_eq!(
             unsafe { viem_core_formatted_point_info(handle, &info.identity, 17, &mut point) },
             ViemStatus::Ok
@@ -11324,9 +10864,9 @@ mod tests {
             unsafe { viem_core_formatted_point_info(handle, &info.identity, 15, &mut point) },
             ViemStatus::NotGraphemeBoundary
         );
-        assert_eq!(point, ViemFormattedPointInfoV1::default());
+        assert_eq!(point, ViemFormattedPointInfo::default());
 
-        let invalid_range = ViemFormattedUtf8RangeV1 {
+        let invalid_range = ViemFormattedUtf8Range {
             utf8_start: 2,
             utf8_end: 3,
             ..range
@@ -11350,7 +10890,7 @@ mod tests {
 
         let mut stale = info.identity;
         stale.document_revision += 1;
-        let stale_range = ViemFormattedUtf8RangeV1 {
+        let stale_range = ViemFormattedUtf8Range {
             identity: stale,
             ..range
         };
@@ -11379,17 +10919,16 @@ mod tests {
         assert!(!document.projection().compatibility_text_is_materialized());
         let handle = register_core(Core::new(document)).unwrap();
 
-        let mut info = ViemFormattedSnapshotInfoV1::default();
+        let mut info = ViemFormattedSnapshotInfo::default();
         assert_eq!(
             unsafe { viem_core_formatted_snapshot_info(handle, &mut info) },
             ViemStatus::Ok
         );
-        let request = ViemFormattedUtf8RangeV1 {
-            struct_size: super::VIEM_FORMATTED_UTF8_RANGE_V1_SIZE,
+        let request = ViemFormattedUtf8Range {
             identity: info.identity,
             utf8_start: 49_996,
             utf8_end: 50_008,
-            ..ViemFormattedUtf8RangeV1::default()
+            ..ViemFormattedUtf8Range::default()
         };
         let mut output = [0_u8; 12];
         let mut required = 0;
@@ -11422,7 +10961,7 @@ mod tests {
             },
             ViemStatus::Ok
         );
-        let mut point = ViemFormattedPointInfoV1::default();
+        let mut point = ViemFormattedPointInfo::default();
         assert_eq!(
             unsafe { viem_core_formatted_point_info(handle, &info.identity, 50_000, &mut point) },
             ViemStatus::Ok
@@ -11438,7 +10977,7 @@ mod tests {
         assert_eq!(viem_core_destroy(handle), ViemStatus::Ok);
     }
 
-    fn style_arena_text(arena: &[u8], range: ViemStyleStringRefV1) -> &str {
+    fn style_arena_text(arena: &[u8], range: ViemStyleStringRef) -> &str {
         let start = usize::try_from(range.offset).unwrap();
         let length = usize::try_from(range.length).unwrap();
         std::str::from_utf8(&arena[start..start + length]).unwrap()
@@ -11456,7 +10995,7 @@ mod tests {
             let diagnostics = unsafe { &mut *context.cast::<Diagnostics>() };
             let bytes = unsafe { std::slice::from_raw_parts(message, length as usize) };
             diagnostics.messages.push(String::from_utf8_lossy(bytes).into_owned());
-            let mut state = ViemDocumentStateV1::default();
+            let mut state = ViemDocumentState::default();
             diagnostics.read_statuses.push(unsafe {
                 viem_core_document_state(diagnostics.handle, &mut state)
             });
@@ -11548,7 +11087,7 @@ mod tests {
             &crate::document::DocumentStyleAssignment::new(sheet.base_paragraph.clone())).unwrap();
         document.initialize_style_defaults(&configuration).unwrap();
         let handle = register_core(Core::new(document)).unwrap();
-        let mut info = ViemStyleSheetInfoV1::default();
+        let mut info = ViemStyleSheetInfo::default();
         assert_eq!(
             unsafe { viem_core_style_sheet_info(handle, 0, &mut info) },
             ViemStatus::Ok
@@ -11557,7 +11096,7 @@ mod tests {
         assert_eq!(info.property_count, 1114);
         assert_ne!(info.string_bytes, 0);
 
-        let mut count_info = ViemStyleSheetInfoV1::default();
+        let mut count_info = ViemStyleSheetInfo::default();
         assert_eq!(
             unsafe {
                 viem_core_copy_style_sheet(
@@ -11581,13 +11120,13 @@ mod tests {
         assert_eq!(count_info, info);
 
         let mut definitions =
-            vec![ViemStyleDefinitionV1::default(); info.definition_count as usize];
-        let mut properties = vec![ViemStylePropertyV1::default(); info.property_count as usize];
-        let mut value_items = vec![ViemStyleValueItemV1::default(); info.value_item_count as usize];
+            vec![ViemStyleDefinition::default(); info.definition_count as usize];
+        let mut properties = vec![ViemStyleProperty::default(); info.property_count as usize];
+        let mut value_items = vec![ViemStyleValueItem::default(); info.value_item_count as usize];
         let mut dependencies =
-            vec![ViemStyleDependencyV1::default(); info.dependency_count as usize];
+            vec![ViemStyleDependency::default(); info.dependency_count as usize];
         let mut strings = vec![0_u8; info.string_bytes as usize];
-        let mut copied = ViemStyleSheetInfoV1::default();
+        let mut copied = ViemStyleSheetInfo::default();
         assert_eq!(
             unsafe {
                 viem_core_copy_style_sheet(
@@ -11699,13 +11238,13 @@ mod tests {
         assert!(inherited_family.dependency_count >= 2);
 
         // Every output remains untouched when just one capacity is short.
-        let sentinel_definition = ViemStyleDefinitionV1 {
+        let sentinel_definition = ViemStyleDefinition {
             role: u32::MAX,
-            ..ViemStyleDefinitionV1::default()
+            ..ViemStyleDefinition::default()
         };
-        let sentinel_property = ViemStylePropertyV1 {
+        let sentinel_property = ViemStyleProperty {
             property: u32::MAX,
-            ..ViemStylePropertyV1::default()
+            ..ViemStyleProperty::default()
         };
         definitions.fill(sentinel_definition);
         properties.fill(sentinel_property);
@@ -11845,8 +11384,8 @@ mod tests {
     }
 
     struct PaintTestResponse {
-        _carets: Box<[ViemClusterCaretStopV1]>,
-        clusters: Box<[ViemShapedClusterV1]>,
+        _carets: Box<[ViemClusterCaretStop]>,
+        clusters: Box<[ViemShapedCluster]>,
         visual_order: Box<[u64]>,
     }
 
@@ -11861,9 +11400,9 @@ mod tests {
 
     unsafe extern "C" fn paint_test_shape_batch(
         context: *mut c_void,
-        requests: *const ViemShapeRequestV1,
+        requests: *const ViemShapeRequest,
         request_count: u64,
-        responses: *mut ViemShapeResponseV1,
+        responses: *mut ViemShapeResponse,
         response_capacity: u64,
     ) -> u32 {
         let Ok(count) = usize::try_from(request_count) else {
@@ -11884,7 +11423,7 @@ mod tests {
         storage.responses.clear();
         storage.responses.reserve(count);
         for (index, (request, response)) in requests.iter().zip(responses).enumerate() {
-            let metrics = ViemTextMetricsV1 {
+            let metrics = ViemTextMetrics {
                 cap_height: 0.0,
                 ascent: 10.0,
                 descent: 3.0,
@@ -11899,12 +11438,12 @@ mod tests {
             } else {
                 let advance = 8.0;
                 let carets = vec![
-                    ViemClusterCaretStopV1 {
+                    ViemClusterCaretStop {
                         text_offset: request.text_start,
                         inline_offset: 0.0,
                         affinity: VIEM_BOUNDARY_AFFINITY_DOWNSTREAM,
                     },
-                    ViemClusterCaretStopV1 {
+                    ViemClusterCaretStop {
                         text_offset: request.text_end,
                         inline_offset: advance,
                         affinity: VIEM_BOUNDARY_AFFINITY_UPSTREAM,
@@ -11912,20 +11451,18 @@ mod tests {
                 ]
                 .into_boxed_slice();
                 let has_render_run = request.purpose == VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA;
-                let cluster = ViemShapedClusterV1 {
-                    struct_size: VIEM_SHAPED_CLUSTER_V1_SIZE,
-                    reserved: 0,
+                let cluster = ViemShapedCluster {
                     text_start: request.text_start,
                     text_end: request.text_end,
                     advance,
                     metrics,
-                    typographic_bounds: ViemShapedBoundsV1 {
+                    typographic_bounds: ViemShapedBounds {
                         x: 0.0,
                         y: -10.0,
                         width: advance,
                         height: 13.0,
                     },
-                    ink_bounds: ViemShapedBoundsV1 {
+                    ink_bounds: ViemShapedBounds {
                         x: 0.0,
                         y: -10.0,
                         width: advance,
@@ -11940,15 +11477,14 @@ mod tests {
                     caret_stops: carets.as_ptr(),
                     caret_stop_count: carets.len() as u64,
                     render_run: if has_render_run {
-                        ViemRenderRunHandleV1 {
+                        ViemRenderRunHandle {
                             owner: request.render_run_owner,
                             identifier: index as u64 + 1,
                             metrics_generation: request.metrics_generation,
                             threading: request.render_run_threading,
-                            reserved: 0,
                         }
                     } else {
-                        ViemRenderRunHandleV1::default()
+                        ViemRenderRunHandle::default()
                     },
                 };
                 PaintTestResponse {
@@ -11959,7 +11495,7 @@ mod tests {
             };
             storage.responses.push(owned);
             let owned = storage.responses.last().expect("response was just pushed");
-            *response = ViemShapeResponseV1 {
+            *response = ViemShapeResponse {
                 document_id: request.document_id,
                 document_revision: request.document_revision,
                 measurement_environment_id: request.measurement_environment_id,
@@ -11979,20 +11515,20 @@ mod tests {
                 },
                 visual_order_count: owned.visual_order.len() as u64,
                 default_metrics: metrics,
-                ..ViemShapeResponseV1::default()
+                ..ViemShapeResponse::default()
             };
         }
         ViemStatus::Ok as u32
     }
 
     unsafe extern "C" fn paint_test_retain_render_runs(
-        _context: *mut c_void, _handles: *const ViemRenderRunHandleV1, _count: u64,
+        _context: *mut c_void, _handles: *const ViemRenderRunHandle, _count: u64,
     ) -> *mut c_void { std::ptr::NonNull::<u8>::dangling().as_ptr().cast() }
     unsafe extern "C" fn paint_test_release_render_runs(_lease: *mut c_void) {}
 
     #[test]
     fn shaping_response_requires_a_boolean_native_monospace_trait() {
-        let mut response = ViemShapeResponseV1::default();
+        let mut response = ViemShapeResponse::default();
         assert!(!unsafe { super::shaped_fragment_from_ffi(&response) }.unwrap().default_font_is_monospaced);
         response.default_font_is_monospaced = 1;
         assert!(unsafe { super::shaped_fragment_from_ffi(&response) }.unwrap().default_font_is_monospaced);
@@ -12044,12 +11580,12 @@ mod tests {
     }
 
     fn style_float_request(
-        identity: super::ViemStyleSheetIdentityV1,
+        identity: super::ViemStyleSheetIdentity,
         style_id: &[u8],
         property: u32,
         value: f32,
-    ) -> ViemStyleEditV1 {
-        ViemStyleEditV1 {
+    ) -> ViemStyleEdit {
+        ViemStyleEdit {
             identity,
             namespace: super::VIEM_STYLE_NAMESPACE_BLOCK,
             operation: super::VIEM_STYLE_EDIT_SET_DECLARATION,
@@ -12058,17 +11594,17 @@ mod tests {
                 data: style_id.as_ptr(),
                 length: style_id.len() as u64,
             },
-            value: super::ViemStyleEditValueV1 {
+            value: super::ViemStyleEditValue {
                 kind: super::VIEM_STYLE_VALUE_FLOAT,
                 number: value,
-                ..super::ViemStyleEditValueV1::default()
+                ..super::ViemStyleEditValue::default()
             },
-            ..ViemStyleEditV1::default()
+            ..ViemStyleEdit::default()
         }
     }
 
-    fn current_style_identity(handle: super::ViemCoreHandle) -> super::ViemStyleSheetIdentityV1 {
-        let mut info = ViemStyleSheetInfoV1::default();
+    fn current_style_identity(handle: super::ViemCoreHandle) -> super::ViemStyleSheetIdentity {
+        let mut info = ViemStyleSheetInfo::default();
         assert_eq!(
             unsafe { viem_core_style_sheet_info(handle, 0, &mut info) },
             ViemStatus::Ok
@@ -12089,7 +11625,7 @@ mod tests {
         let mut core = Core::new(document);
         let view = core.add_view(paint_test_provider(&mut storage, 911, 912), 400.0, 200.0);
         let handle = register_core(core).unwrap();
-        let mut outcome = ViemCoreOutcomeV1::default();
+        let mut outcome = ViemCoreOutcome::default();
         for (id, namespace, percent) in [
             (b"Heading1".as_slice(), VIEM_STYLE_NAMESPACE_BLOCK, 200),
             (b"Code".as_slice(), VIEM_STYLE_NAMESPACE_CHARACTER, 90),
@@ -12171,7 +11707,7 @@ mod tests {
         let document = core.document().id().0;
         let revision = core.document().revision().0;
         let handle = register_core(core).unwrap();
-        let mut outcome = ViemCoreOutcomeV1::default();
+        let mut outcome = ViemCoreOutcome::default();
         for (requested_document, requested_revision, expected) in [
             (document + 1, revision, ViemStatus::InvalidArgument),
             (document, revision - 1, ViemStatus::StaleRevision),
@@ -12184,7 +11720,7 @@ mod tests {
                 },
                 expected
             );
-            assert_eq!(outcome, ViemCoreOutcomeV1::default());
+            assert_eq!(outcome, ViemCoreOutcome::default());
             let lease = checkout_core(handle).unwrap();
             assert_eq!(lease.core().command_state(view).unwrap().mode(), crate::command::Mode::Insert);
             assert_eq!(lease.core().document().text(), "Xfirst\n  second\nthird");
@@ -12234,7 +11770,7 @@ mod tests {
         }
         let handle = register_core(core).unwrap();
 
-        let mut presentation = super::ViemSemanticStylePresentationV1::default();
+        let mut presentation = super::ViemSemanticStylePresentation::default();
         assert_eq!(
             unsafe {
                 super::viem_core_view_semantic_style_presentation(
@@ -12261,16 +11797,14 @@ mod tests {
 
         let mut stale_selection = presentation.selection;
         stale_selection.state_identity[0] ^= 0xff;
-        let stale_request = super::ViemSetSemanticStyleV1 {
-            struct_size: super::VIEM_SET_SEMANTIC_STYLE_V1_SIZE,
+        let stale_request = super::ViemSetSemanticStyle {
             style: super::VIEM_SEMANTIC_STYLE_STRONG,
             enabled: 1,
-            reserved: 0,
             expected_selection: stale_selection,
         };
-        let mut outcome = ViemCoreOutcomeV1 {
+        let mut outcome = ViemCoreOutcome {
             document_revision: u64::MAX,
-            ..ViemCoreOutcomeV1::default()
+            ..ViemCoreOutcome::default()
         };
         assert_eq!(
             unsafe {
@@ -12283,9 +11817,9 @@ mod tests {
             },
             ViemStatus::StaleRevision
         );
-        assert_eq!(outcome, ViemCoreOutcomeV1::default());
+        assert_eq!(outcome, ViemCoreOutcome::default());
 
-        let set_strong = super::ViemSetSemanticStyleV1 {
+        let set_strong = super::ViemSetSemanticStyle {
             expected_selection: presentation.selection,
             ..stale_request
         };
@@ -12315,11 +11849,9 @@ mod tests {
         );
         assert_eq!(presentation.state, super::VIEM_SEMANTIC_STYLE_STATE_ON);
         assert_ne!(presentation.flags & super::VIEM_SEMANTIC_STYLE_CAN_CLEAR, 0);
-        let clear_strong = super::ViemSetSemanticStyleV1 {
-            struct_size: super::VIEM_SET_SEMANTIC_STYLE_V1_SIZE,
+        let clear_strong = super::ViemSetSemanticStyle {
             style: super::VIEM_SEMANTIC_STYLE_STRONG,
             enabled: 0,
-            reserved: 0,
             expected_selection: presentation.selection,
         };
         assert_eq!(
@@ -12347,11 +11879,9 @@ mod tests {
         );
         assert_eq!(presentation.state, super::VIEM_SEMANTIC_STYLE_STATE_OFF);
         assert_ne!(presentation.flags & super::VIEM_SEMANTIC_STYLE_CAN_SET, 0);
-        let set_emphasis = super::ViemSetSemanticStyleV1 {
-            struct_size: super::VIEM_SET_SEMANTIC_STYLE_V1_SIZE,
+        let set_emphasis = super::ViemSetSemanticStyle {
             style: super::VIEM_SEMANTIC_STYLE_EMPHASIS,
             enabled: 1,
-            reserved: 0,
             expected_selection: presentation.selection,
         };
         assert_eq!(
@@ -12414,7 +11944,7 @@ mod tests {
         let handle = register_core(core).unwrap();
 
         let initial_identity = current_style_identity(handle);
-        let mut group = super::ViemStyleEditGroupV1::default();
+        let mut group = super::ViemStyleEditGroup::default();
         assert_eq!(
             unsafe {
                 super::viem_core_view_begin_style_edit_group(
@@ -12445,7 +11975,7 @@ mod tests {
             super::VIEM_STYLE_PROPERTY_CHARACTER_SIZE,
             31.0,
         );
-        let mut outcome = ViemCoreOutcomeV1::default();
+        let mut outcome = ViemCoreOutcome::default();
         assert_eq!(
             unsafe {
                 super::viem_core_view_edit_style_in_group(
@@ -12533,7 +12063,7 @@ mod tests {
             ViemStatus::IncompatibleStyleRole
         );
 
-        let underline = ViemStyleEditV1 {
+        let underline = ViemStyleEdit {
             identity: current_identity,
             namespace: super::VIEM_STYLE_NAMESPACE_BLOCK,
             operation: super::VIEM_STYLE_EDIT_SET_DECLARATION,
@@ -12542,12 +12072,12 @@ mod tests {
                 data: heading.as_ptr(),
                 length: heading.len() as u64,
             },
-            value: super::ViemStyleEditValueV1 {
+            value: super::ViemStyleEditValue {
                 kind: super::VIEM_STYLE_VALUE_BOOLEAN,
                 enum_value: 1,
-                ..super::ViemStyleEditValueV1::default()
+                ..super::ViemStyleEditValue::default()
             },
-            ..ViemStyleEditV1::default()
+            ..ViemStyleEdit::default()
         };
         assert_eq!(
             unsafe {
@@ -12605,7 +12135,7 @@ mod tests {
             unsafe { super::viem_core_view_end_style_edit_group(handle, first.0, &forged) },
             ViemStatus::InvalidArgument
         );
-        let mut second_group = super::ViemStyleEditGroupV1::default();
+        let mut second_group = super::ViemStyleEditGroup::default();
         let latest_identity = current_style_identity(handle);
         assert_eq!(
             unsafe {
@@ -12709,10 +12239,10 @@ mod tests {
         );
         let initial_nodes = core.document().history_status().node_count;
         let handle = register_core(core).unwrap();
-        let mut outcome = ViemCoreOutcomeV1::default();
+        let mut outcome = ViemCoreOutcome::default();
 
         let identity = current_style_identity(handle);
-        let mut empty = super::ViemStyleEditGroupV1::default();
+        let mut empty = super::ViemStyleEditGroup::default();
         assert_eq!(
             unsafe {
                 super::viem_core_view_begin_style_edit_group(handle, first.0, &identity, &mut empty)
@@ -12735,7 +12265,7 @@ mod tests {
 
         let heading = b"Heading1";
         let identity = current_style_identity(handle);
-        let mut first_group = super::ViemStyleEditGroupV1::default();
+        let mut first_group = super::ViemStyleEditGroup::default();
         assert_eq!(
             unsafe {
                 super::viem_core_view_begin_style_edit_group(
@@ -12771,7 +12301,7 @@ mod tests {
         );
 
         let identity = current_style_identity(handle);
-        let mut second_group = super::ViemStyleEditGroupV1::default();
+        let mut second_group = super::ViemStyleEditGroup::default();
         assert_eq!(
             unsafe {
                 super::viem_core_view_begin_style_edit_group(
@@ -12851,7 +12381,7 @@ mod tests {
         // Owner removal closes a committed group before dropping its
         // restoration state. The surviving view can undo the preserved unit.
         let identity = current_style_identity(handle);
-        let mut removed_owner_group = super::ViemStyleEditGroupV1::default();
+        let mut removed_owner_group = super::ViemStyleEditGroup::default();
         assert_eq!(
             unsafe {
                 super::viem_core_view_begin_style_edit_group(
@@ -12912,7 +12442,7 @@ mod tests {
         // Core destruction owns final cleanup. The capability cannot be used
         // after the core handle is destroyed.
         let identity = current_style_identity(handle);
-        let mut destroy_group = super::ViemStyleEditGroupV1::default();
+        let mut destroy_group = super::ViemStyleEditGroup::default();
         assert_eq!(
             unsafe {
                 super::viem_core_view_begin_style_edit_group(
@@ -12958,7 +12488,7 @@ mod tests {
         let second_layout_before = core.layout(second).unwrap().snapshot().unwrap().revision;
         let handle = register_core(core).unwrap();
 
-        let mut info = ViemStyleSheetInfoV1::default();
+        let mut info = ViemStyleSheetInfo::default();
         assert_eq!(
             unsafe { viem_core_style_sheet_info(handle, 0, &mut info) },
             ViemStatus::Ok
@@ -12970,7 +12500,7 @@ mod tests {
             super::VIEM_STYLE_PROPERTY_CHARACTER_SIZE,
             30.0,
         );
-        let mut outcome = ViemCoreOutcomeV1::default();
+        let mut outcome = ViemCoreOutcome::default();
         assert_eq!(
             unsafe {
                 super::viem_core_view_edit_style(handle, first.0, &first_request, &mut outcome)
@@ -13043,7 +12573,7 @@ mod tests {
             first_revision
         );
 
-        let self_parent = ViemStyleEditV1 {
+        let self_parent = ViemStyleEdit {
             identity: info.identity,
             namespace: super::VIEM_STYLE_NAMESPACE_BLOCK,
             operation: super::VIEM_STYLE_EDIT_SET_PARENT,
@@ -13051,15 +12581,15 @@ mod tests {
                 data: heading.as_ptr(),
                 length: heading.len() as u64,
             },
-            value: super::ViemStyleEditValueV1 {
+            value: super::ViemStyleEditValue {
                 kind: super::VIEM_STYLE_VALUE_STRING,
                 text: ViemUtf8Slice {
                     data: heading.as_ptr(),
                     length: heading.len() as u64,
                 },
-                ..super::ViemStyleEditValueV1::default()
+                ..super::ViemStyleEditValue::default()
             },
-            ..ViemStyleEditV1::default()
+            ..ViemStyleEdit::default()
         };
         assert_eq!(
             unsafe {
@@ -13078,7 +12608,7 @@ mod tests {
         );
 
         // A second successful field is a distinct undo unit.
-        let underline = ViemStyleEditV1 {
+        let underline = ViemStyleEdit {
             identity: info.identity,
             namespace: super::VIEM_STYLE_NAMESPACE_BLOCK,
             operation: super::VIEM_STYLE_EDIT_SET_DECLARATION,
@@ -13087,12 +12617,12 @@ mod tests {
                 data: heading.as_ptr(),
                 length: heading.len() as u64,
             },
-            value: super::ViemStyleEditValueV1 {
+            value: super::ViemStyleEditValue {
                 kind: super::VIEM_STYLE_VALUE_BOOLEAN,
                 enum_value: 1,
-                ..super::ViemStyleEditValueV1::default()
+                ..super::ViemStyleEditValue::default()
             },
-            ..ViemStyleEditV1::default()
+            ..ViemStyleEdit::default()
         };
         assert_eq!(
             unsafe { super::viem_core_view_edit_style(handle, second.0, &underline, &mut outcome) },
@@ -13153,9 +12683,7 @@ mod tests {
             unsafe { viem_core_style_sheet_info(handle, 0, &mut info) },
             ViemStatus::Ok
         );
-        let begin_composition = super::ViemCompositionBeginV1 {
-            struct_size: super::VIEM_COMPOSITION_BEGIN_V1_SIZE,
-            reserved: 0,
+        let begin_composition = super::ViemCompositionBegin {
             document_revision: info.identity.document_revision,
             replacement_start: 0,
             replacement_end: 0,
@@ -13172,7 +12700,7 @@ mod tests {
             ViemStatus::Ok
         );
         let display_name = b"Chapter Heading";
-        let rename = ViemStyleEditV1 {
+        let rename = ViemStyleEdit {
             identity: info.identity,
             namespace: super::VIEM_STYLE_NAMESPACE_BLOCK,
             operation: super::VIEM_STYLE_EDIT_SET_DISPLAY_NAME,
@@ -13180,15 +12708,15 @@ mod tests {
                 data: heading.as_ptr(),
                 length: heading.len() as u64,
             },
-            value: super::ViemStyleEditValueV1 {
+            value: super::ViemStyleEditValue {
                 kind: super::VIEM_STYLE_VALUE_STRING,
                 text: ViemUtf8Slice {
                     data: display_name.as_ptr(),
                     length: display_name.len() as u64,
                 },
-                ..super::ViemStyleEditValueV1::default()
+                ..super::ViemStyleEditValue::default()
             },
-            ..ViemStyleEditV1::default()
+            ..ViemStyleEdit::default()
         };
         assert_eq!(
             unsafe { super::viem_core_view_edit_style(handle, first.0, &rename, &mut outcome) },
@@ -13374,22 +12902,20 @@ mod tests {
         assert!(core.layout(view).unwrap().snapshot().is_some());
         let handle = register_core(core).unwrap();
 
-        let mut info = ViemLayoutPaintInfoV1::default();
+        let mut info = ViemLayoutPaintInfo::default();
         assert_eq!(
             unsafe { viem_core_view_layout_paint_info(handle, view.0, &mut info) },
             ViemStatus::Ok
         );
-        assert_eq!(info.struct_size, VIEM_LAYOUT_PAINT_INFO_V1_SIZE);
         assert_eq!(
             info.canvas_background,
-            super::ViemRgbaV1 {
+            super::ViemRgba {
                 red: canvas.red,
                 green: canvas.green,
                 blue: canvas.blue,
                 alpha: canvas.alpha,
             }
         );
-        assert_eq!(info.default_paint.struct_size, VIEM_TEXT_PAINT_V1_SIZE);
         assert_eq!(
             info.default_paint.flags,
             VIEM_TEXT_PAINT_HAS_BACKGROUND | VIEM_TEXT_PAINT_UNDERLINE
@@ -13401,7 +12927,7 @@ mod tests {
         );
         assert!(info.paint_run_count > 0);
 
-        let mut copied = ViemLayoutPaintInfoV1::default();
+        let mut copied = ViemLayoutPaintInfo::default();
         assert_eq!(
             unsafe {
                 viem_core_view_copy_layout_paint(
@@ -13417,7 +12943,7 @@ mod tests {
         );
         assert_eq!(copied, info);
 
-        let mut runs = vec![ViemPaintStyleRunV1::default(); info.paint_run_count as usize];
+        let mut runs = vec![ViemPaintStyleRun::default(); info.paint_run_count as usize];
         runs[0].text_start = u64::MAX;
         assert_eq!(
             unsafe {
@@ -13452,9 +12978,7 @@ mod tests {
             .windows(2)
             .all(|pair| pair[0].text_end <= pair[1].text_start));
         for run in &runs {
-            assert_eq!(run.struct_size, VIEM_PAINT_STYLE_RUN_V1_SIZE);
             assert!(run.text_start < run.text_end);
-            assert_eq!(run.paint.struct_size, VIEM_TEXT_PAINT_V1_SIZE);
             assert_eq!(
                 run.paint.flags,
                 VIEM_TEXT_PAINT_HAS_BACKGROUND | VIEM_TEXT_PAINT_STRIKETHROUGH
@@ -13566,7 +13090,7 @@ pub unsafe extern "C" fn viem_core_view_set_line_mode(
     handle: ViemCoreHandle,
     view: ViemViewId,
     mode: u32,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         unsafe {
@@ -13636,18 +13160,14 @@ pub const VIEM_LINE_LOCATION_GLOBAL_LINE_EXACT: u32 = 1;
 pub const VIEM_LINE_LOCATION_FRAGMENT_EXACT: u32 = 2;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ViemViewLineLocationV1 {
-    pub struct_size: u32,
+pub struct ViemViewLineLocation {
     pub mode: u32,
     pub flags: u32,
-    pub reserved: u32,
     pub line: u64,
     pub column: u64,
     pub hard_line: u64,
     pub fragment: u64,
 }
-pub const VIEM_VIEW_LINE_LOCATION_V1_SIZE: u32 =
-    std::mem::size_of::<ViemViewLineLocationV1>() as u32;
 /// Report exact one-based physical source line/column, independent of line mode.
 /// This query never materializes layout; mode is always physical source.
 /// # Safety
@@ -13656,19 +13176,18 @@ pub const VIEM_VIEW_LINE_LOCATION_V1_SIZE: u32 =
 pub unsafe extern "C" fn viem_core_view_line_location(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    out_location: *mut ViemViewLineLocationV1,
+    out_location: *mut ViemViewLineLocation,
 ) -> ViemStatus {
     ffi_boundary(|| {
         if out_location.is_null()
-            || (out_location as usize) % std::mem::align_of::<ViemViewLineLocationV1>() != 0
+            || (out_location as usize) % std::mem::align_of::<ViemViewLineLocation>() != 0
         {
             return Err(ViemStatus::InvalidArgument);
         }
         let location = with_core_mut(handle, |core| {
             core.physical_line_location(ViewId(view)).map_err(core_status)
         })?;
-        let result = ViemViewLineLocationV1 {
-            struct_size: VIEM_VIEW_LINE_LOCATION_V1_SIZE,
+        let result = ViemViewLineLocation {
             mode: location.mode as u32,
             flags: VIEM_LINE_LOCATION_FRAGMENT_EXACT
                 | if location.line.is_some() {
@@ -13676,7 +13195,6 @@ pub unsafe extern "C" fn viem_core_view_line_location(
                 } else {
                     0
                 },
-            reserved: 0,
             line: location.line.unwrap_or(0) as u64,
             column: location.column as u64,
             hard_line: location.hard_line as u64,
@@ -13730,8 +13248,7 @@ pub extern "C" fn viem_core_mark_recovered(
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct ViemSelectedStylesInfoV1 {
-    pub struct_size: u32,
+pub struct ViemSelectedStylesInfo {
     pub flags: u32,
     pub document_id: u64,
     pub document_revision: u64,
@@ -13750,7 +13267,7 @@ pub unsafe extern "C" fn viem_core_view_selected_styles_export(
     handle: ViemCoreHandle,
     view: ViemViewId,
     expected_revision: u64,
-    out_info: *mut ViemSelectedStylesInfoV1,
+    out_info: *mut ViemSelectedStylesInfo,
     out_utf8: *mut u8,
     capacity: u64,
 ) -> ViemStatus {
@@ -13761,7 +13278,7 @@ pub unsafe extern "C" fn viem_core_view_selected_styles_export(
             return Err(ViemStatus::InvalidArgument);
         }
         unsafe {
-            out_info.write(ViemSelectedStylesInfoV1::default());
+            out_info.write(ViemSelectedStylesInfo::default());
         }
         let (info, bytes) = with_core(handle, |core| {
             if core.document().revision().0 != expected_revision {
@@ -13772,8 +13289,7 @@ pub unsafe extern "C" fn viem_core_view_selected_styles_export(
                 .map_err(core_status)?;
             let paragraph = selected.paragraph.map(|id| id.0).unwrap_or_default();
             let character = selected.character.map(|id| id.0).unwrap_or_default();
-            let info = ViemSelectedStylesInfoV1 {
-                struct_size: size_of::<ViemSelectedStylesInfoV1>() as u32,
+            let info = ViemSelectedStylesInfo {
                 flags: if selected.paragraph_mixed { VIEM_SELECTED_STYLE_PARAGRAPH_MIXED } else { 0 }
                     | if selected.character_mixed { VIEM_SELECTED_STYLE_CHARACTER_MIXED } else { 0 }
                     | if selected.has_table { VIEM_SELECTED_STYLE_HAS_TABLE } else { 0 },
@@ -14136,7 +13652,7 @@ pub unsafe extern "C" fn viem_core_copy_syntax_diagnostics(handle:ViemCoreHandle
 /// Standard disjoint two-pass UTF-8 output and a valid expected identity.
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_view_copy_layout_diagnostics(
-    handle: ViemCoreHandle, view: ViemViewId, expected: *const ViemLayoutSnapshotIdentityV1,
+    handle: ViemCoreHandle, view: ViemViewId, expected: *const ViemLayoutSnapshotIdentity,
     output: *mut u8, capacity: u64, required: *mut u64,
 ) -> ViemStatus {
     ffi_boundary(|| {
@@ -14297,9 +13813,7 @@ pub unsafe extern "C" fn viem_core_export_style_defaults(
 /// Directed, revision-checked command prompt selection (offsets exclude the prompt).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct ViemCommandLineSelectionV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
+pub struct ViemCommandLineSelection {
     pub anchor_utf8_offset: u64,
     pub active_utf8_offset: u64,
 }
@@ -14310,8 +13824,8 @@ pub struct ViemCommandLineSelectionV1 {
 pub unsafe extern "C" fn viem_core_view_command_line_selection(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemCommandLineIdentityV1,
-    out_selection: *mut ViemCommandLineSelectionV1,
+    expected: *const ViemCommandLineIdentity,
+    out_selection: *mut ViemCommandLineSelection,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let a = typed_pointer_region(expected, 1)?;
@@ -14321,7 +13835,7 @@ pub unsafe extern "C" fn viem_core_view_command_line_selection(
         }
         let expected = unsafe { read_command_line_identity(expected)? };
         unsafe {
-            out_selection.write(ViemCommandLineSelectionV1::default());
+            out_selection.write(ViemCommandLineSelection::default());
         }
         let selection = with_core(handle, |core| {
             validate_command_line_identity(
@@ -14331,9 +13845,7 @@ pub unsafe extern "C" fn viem_core_view_command_line_selection(
             let snapshot = core
                 .command_state(ViewId(view))
                 .and_then(|s| s.command_line_snapshot());
-            Ok(ViemCommandLineSelectionV1 {
-                struct_size: size_of::<ViemCommandLineSelectionV1>() as u32,
-                reserved: 0,
+            Ok(ViemCommandLineSelection {
                 anchor_utf8_offset: snapshot.as_ref().map_or(0, |s| s.anchor as u64),
                 active_utf8_offset: snapshot.as_ref().map_or(0, |s| s.active as u64),
             })
@@ -14354,13 +13866,13 @@ pub unsafe extern "C" fn viem_core_view_command_line_selection(
 pub unsafe extern "C" fn viem_core_view_edit_command_line(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemCommandLineIdentityV1,
+    expected: *const ViemCommandLineIdentity,
     operation: u32,
     start: u64,
     end: u64,
     text: *const u8,
     length: u64,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let a = typed_pointer_region(expected, 1)?;
@@ -14421,8 +13933,8 @@ pub unsafe extern "C" fn viem_core_view_edit_command_line(
 pub unsafe extern "C" fn viem_core_view_set_encoding_with_effects(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemSetEncodingV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    request: *const ViemSetEncoding,
+    out_outcome: *mut ViemCoreOutcome,
     out_effects: *mut ViemEffectBatchHandle,
 ) -> ViemStatus {
     ffi_boundary(|| {
@@ -14433,9 +13945,6 @@ pub unsafe extern "C" fn viem_core_view_set_encoding_with_effects(
         ];
         validate_disjoint_regions(&regions)?;
         let request = unsafe { request.read() };
-        if request.struct_size < VIEM_SET_ENCODING_V1_SIZE {
-            return Err(ViemStatus::InvalidArgument);
-        }
         unsafe {
             clear_outcome(out_outcome)?;
             out_effects.write(0);
@@ -14535,13 +14044,13 @@ pub unsafe extern "C" fn viem_core_copy_source_range_bytes(
 }
 
 unsafe fn read_command_turn_context(
-    pointer: *const ViemCommandTurnContextV2,
+    pointer: *const ViemCommandTurnContext,
     forbidden_outputs: &[(usize, usize)],
 ) -> Result<ClipboardCommandContext, ViemStatus> {
     let region = typed_pointer_region(pointer, 1)?;
     if forbidden_outputs.iter().any(|output| regions_overlap(region, *output)) { return Err(ViemStatus::InvalidArgument); }
     let context = unsafe { pointer.read() };
-    if context.struct_size < VIEM_COMMAND_TURN_CONTEXT_V2_SIZE || context.reserved != 0 || context.clipboard_count > 2 { return Err(ViemStatus::InvalidArgument); }
+    if context.clipboard_count > 2 { return Err(ViemStatus::InvalidArgument); }
     let entries_region = typed_pointer_region(context.clipboards, context.clipboard_count)?;
     if forbidden_outputs.iter().any(|output| regions_overlap(entries_region, *output)) { return Err(ViemStatus::InvalidArgument); }
     let entries = if context.clipboard_count == 0 { Vec::new() } else {
@@ -14550,8 +14059,7 @@ unsafe fn read_command_turn_context(
     let mut result = ClipboardCommandContext::new();
     let mut seen = std::collections::BTreeSet::new();
     for entry in entries {
-        if entry.struct_size < VIEM_CLIPBOARD_TURN_ENTRY_V2_SIZE || entry.reserved != 0
-            || entry.flags & !(VIEM_CLIPBOARD_TURN_HAS_READ | VIEM_CLIPBOARD_TURN_WRITABLE) != 0 { return Err(ViemStatus::InvalidArgument); }
+        if entry.flags & !(VIEM_CLIPBOARD_TURN_HAS_READ | VIEM_CLIPBOARD_TURN_WRITABLE) != 0 { return Err(ViemStatus::InvalidArgument); }
         let target = parse_clipboard_target(entry.target)?;
         if !seen.insert(target) { return Err(ViemStatus::InvalidArgument); }
         for region in [typed_pointer_region(entry.plain_text.data, entry.plain_text.length)?,typed_pointer_region(entry.fragment_json.data, entry.fragment_json.length)?] {
@@ -14579,7 +14087,7 @@ unsafe fn read_command_turn_context(
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_copy_clipboard_json(
     handle: ViemCoreHandle,
-    request: *const ViemFormattedUtf8RangeV1,
+    request: *const ViemFormattedUtf8Range,
     output: *mut u8,
     output_capacity: u64,
     out_required: *mut u64,
@@ -14590,7 +14098,6 @@ pub unsafe extern "C" fn viem_core_copy_clipboard_json(
         let required_region = typed_pointer_region(out_required,1)?;
         if regions_overlap(request_region,output_region) || regions_overlap(request_region,required_region) || regions_overlap(output_region,required_region) { return Err(ViemStatus::InvalidArgument); }
         let request = unsafe { request.read() };
-        if request.struct_size < VIEM_FORMATTED_UTF8_RANGE_V1_SIZE || request.reserved != 0 { return Err(ViemStatus::InvalidArgument); }
         unsafe { out_required.write(0); }
         let fragment = with_core(handle,|core| {
             validate_formatted_snapshot_identity(request.identity,core.document())?;
@@ -14672,10 +14179,10 @@ unsafe fn copy_clipboard_json_bytes(bytes: &[u8], output: *mut u8, capacity: u64
 pub unsafe extern "C" fn viem_core_view_set_document_mode_with_effects(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemSetDocumentModeV1,
+    request: *const ViemSetDocumentMode,
     language: *const u8,
     length: u64,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut ViemCoreOutcome,
     out_effects: *mut ViemEffectBatchHandle,
 ) -> ViemStatus {
     ffi_boundary(|| {
@@ -14687,7 +14194,7 @@ pub unsafe extern "C" fn viem_core_view_set_document_mode_with_effects(
         ];
         validate_disjoint_regions(&regions)?;
         let request = unsafe { request.read() };
-        if request.struct_size < VIEM_SET_DOCUMENT_MODE_V1_SIZE || length > 128 {
+        if length > 128 {
             return Err(ViemStatus::InvalidArgument);
         }
         unsafe {

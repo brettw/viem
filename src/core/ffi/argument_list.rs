@@ -19,7 +19,6 @@ pub const VIEM_ARGUMENT_RESOLVE_INVALID_INDEX: u32 = 4;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ViemArgumentResolution {
     pub status: u32,
-    pub reserved: u32,
     /// Zero-based destination, meaningful only on success.
     pub index: u64,
 }
@@ -55,7 +54,6 @@ pub extern "C" fn viem_argument_list_resolve(
     match result {
         Ok(index) => ViemArgumentResolution {
             status: VIEM_ARGUMENT_RESOLVE_OK,
-            reserved: 0,
             index,
         },
         Err(error) => ViemArgumentResolution {
@@ -65,7 +63,6 @@ pub extern "C" fn viem_argument_list_resolve(
                 ArgumentListError::AfterLast => VIEM_ARGUMENT_RESOLVE_AFTER_LAST,
                 ArgumentListError::InvalidIndex => VIEM_ARGUMENT_RESOLVE_INVALID_INDEX,
             },
-            reserved: 0,
             index: 0,
         },
     }

@@ -508,8 +508,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         XCTAssertGreaterThan(layout.rows.count, 2)
         let target = layout.rows[1]
 
-        var point = ViemLayoutCaretPointV1()
-        point.struct_size = UInt32(MemoryLayout<ViemLayoutCaretPointV1>.size)
+        var point = ViemLayoutCaretPoint()
         point.document_revision = surface.viewPresentation.document_revision
         point.text_offset = target.text_start
         point.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)

@@ -68,45 +68,45 @@ _Static_assert(VIEM_LAYOUT_DECORATION_CHECKBOX == {checkbox_decoration}, "checkb
 _Static_assert(VIEM_LAYOUT_DECORATION_CHECKED == {checked_decoration}, "checked decoration flag");
 _Static_assert(VIEM_LIST_STYLE_TASK == {task_style}, "task list style");
 _Static_assert(VIEM_SELECTED_STYLE_HAS_TABLE == {has_table}, "table membership");
-static ViemStatus (*toggle_checkbox)(ViemCoreHandle, ViemViewId, const ViemLayoutSnapshotIdentityV1 *, uint64_t, ViemCoreOutcomeV1 *) = viem_core_view_toggle_checkbox;
+static ViemStatus (*toggle_checkbox)(ViemCoreHandle, ViemViewId, const ViemLayoutSnapshotIdentity *, uint64_t, ViemCoreOutcome *) = viem_core_view_toggle_checkbox;
 _Static_assert(VIEM_LAYOUT_DECORATION_ALERT_ICON == {alert_icon}, "alert icon decoration flag");
 _Static_assert(VIEM_LAYOUT_DECORATION_ALERT_TITLE == {alert_title}, "alert title decoration flag");
 _Static_assert(VIEM_LAYOUT_DECORATION_ALERT_KIND_SHIFT == {alert_kind_shift}, "alert decoration kind shift");
 _Static_assert(VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT == {collapsed_context}, "collapsed context decoration flag");
 _Static_assert(VIEM_ALERT_CAUTION == {alert_caution}, "last alert kind");
-static ViemStatus (*set_alert)(ViemCoreHandle, ViemViewId, const ViemSetAlertV1 *, ViemCoreOutcomeV1 *) = viem_core_view_set_alert;
+static ViemStatus (*set_alert)(ViemCoreHandle, ViemViewId, const ViemSetAlert *, ViemCoreOutcome *) = viem_core_view_set_alert;
 _Static_assert(VIEM_FORMATTING_BOLD == {formatting_bold}, "first formatting action");
 _Static_assert(VIEM_FORMATTING_ALERT_NOTE == {formatting_alert_note}, "first alert formatting action");
 _Static_assert(VIEM_FORMATTING_HEADING_0 == {formatting_heading_0}, "base paragraph formatting action");
 _Static_assert(VIEM_FORMATTING_CHARACTER_STYLES == {formatting_character_styles}, "last formatting action");
-static ViemStatus (*formatting_actions)(ViemCoreHandle, ViemViewId, uint64_t, ViemFormattingActionsV1 *) = viem_core_view_formatting_actions;
+static ViemStatus (*formatting_actions)(ViemCoreHandle, ViemViewId, uint64_t, ViemFormattingActions *) = viem_core_view_formatting_actions;
 static ViemStatus (*set_smart_home)(ViemCoreHandle, ViemViewId, uint32_t) = viem_core_view_set_smart_home;
 _Static_assert(VIEM_KEY_ALT_ENTER == {alt_enter}, "list paragraph key");
 _Static_assert(VIEM_LIST_CAN_INSERT_PARAGRAPH == {list_paragraph_capability}, "list paragraph capability");
-static ViemStatus (*insert_list_paragraph)(ViemCoreHandle, ViemViewId, const ViemLogicalSelectionIdentityV1 *, ViemCoreOutcomeV1 *) = viem_core_view_insert_list_paragraph;
-_Static_assert(sizeof(ViemSetDocumentModeV1) == {set_mode_size}, "document mode operation size");
-static ViemStatus (*read_file_bytes)(ViemCoreHandle, ViemViewId, uint64_t, uint64_t, uint32_t, uint64_t, const uint8_t *, uint64_t, ViemCoreOutcomeV1 *) = viem_core_view_read_file;
-static ViemStatus (*execute_command_line)(ViemCoreHandle, ViemViewId, const uint8_t *, uint64_t, const ViemCommandTurnContextV2 *, ViemCoreOutcomeV1 *, ViemEffectBatchHandle *) = viem_core_view_execute_command_line;
-static ViemStatus (*resume_script)(ViemCoreHandle, ViemViewId, uint64_t, uint32_t, const ViemCommandTurnContextV2 *, ViemCoreOutcomeV1 *, ViemEffectBatchHandle *) = viem_core_view_resume_script;
-static ViemStatus (*take_startup_effects)(ViemCoreHandle, ViemViewId, ViemCoreOutcomeV1 *, ViemEffectBatchHandle *) = viem_core_view_take_startup_effects;
-static ViemStatus (*fire_autocmd)(ViemCoreHandle, ViemViewId, const uint8_t *, uint64_t, const uint8_t *, uint64_t, const ViemCommandTurnContextV2 *, ViemCoreOutcomeV1 *, ViemEffectBatchHandle *) = viem_core_view_fire_autocmd;
+static ViemStatus (*insert_list_paragraph)(ViemCoreHandle, ViemViewId, const ViemLogicalSelectionIdentity *, ViemCoreOutcome *) = viem_core_view_insert_list_paragraph;
+_Static_assert(sizeof(ViemSetDocumentMode) == {set_mode_size}, "document mode operation size");
+static ViemStatus (*read_file_bytes)(ViemCoreHandle, ViemViewId, uint64_t, uint64_t, uint32_t, uint64_t, const uint8_t *, uint64_t, ViemCoreOutcome *) = viem_core_view_read_file;
+static ViemStatus (*execute_command_line)(ViemCoreHandle, ViemViewId, const uint8_t *, uint64_t, const ViemCommandTurnContext *, ViemCoreOutcome *, ViemEffectBatchHandle *) = viem_core_view_execute_command_line;
+static ViemStatus (*resume_script)(ViemCoreHandle, ViemViewId, uint64_t, uint32_t, const ViemCommandTurnContext *, ViemCoreOutcome *, ViemEffectBatchHandle *) = viem_core_view_resume_script;
+static ViemStatus (*take_startup_effects)(ViemCoreHandle, ViemViewId, ViemCoreOutcome *, ViemEffectBatchHandle *) = viem_core_view_take_startup_effects;
+static ViemStatus (*fire_autocmd)(ViemCoreHandle, ViemViewId, const uint8_t *, uint64_t, const uint8_t *, uint64_t, const ViemCommandTurnContext *, ViemCoreOutcome *, ViemEffectBatchHandle *) = viem_core_view_fire_autocmd;
 static ViemStatus (*set_theme_names)(const uint8_t *, uint64_t) = viem_set_theme_names;
 static ViemStatus (*copy_source_bytes)(ViemCoreHandle, uint64_t, uint64_t, uint64_t, uint64_t, uint8_t *, uint64_t, uint64_t *, uint32_t *) = viem_core_copy_source_range_bytes;
 static ViemStatus (*wait_for_syntax)(ViemCoreHandle, ViemViewId, uint8_t *) = viem_core_view_wait_for_syntax;
 static ViemStatus (*font_en_width)(ViemCoreHandle, ViemViewId, uint64_t, float *) = viem_core_view_font_en_width;
-static ViemStatus (*navigate_link_fragment)(ViemCoreHandle, ViemViewId, uint64_t, uint64_t, ViemUtf8Slice, uint8_t *, ViemCoreOutcomeV1 *) = viem_core_view_navigate_link_fragment;
-static ViemStatus (*edit_image)(ViemCoreHandle, ViemViewId, const ViemLogicalSelectionIdentityV1 *, uint32_t, uint64_t, uint64_t, ViemUtf8Slice, ViemUtf8Slice, uint32_t, uint32_t, ViemCoreOutcomeV1 *) = viem_core_view_edit_image;
+static ViemStatus (*navigate_link_fragment)(ViemCoreHandle, ViemViewId, uint64_t, uint64_t, ViemUtf8Slice, uint8_t *, ViemCoreOutcome *) = viem_core_view_navigate_link_fragment;
+static ViemStatus (*edit_image)(ViemCoreHandle, ViemViewId, const ViemLogicalSelectionIdentity *, uint32_t, uint64_t, uint64_t, ViemUtf8Slice, ViemUtf8Slice, uint32_t, uint32_t, ViemCoreOutcome *) = viem_core_view_edit_image;
 static ViemStatus (*strikethrough_state)(ViemCoreHandle, ViemViewId, uint32_t *) = viem_core_view_strikethrough_state;
-static ViemStatus (*set_strikethrough)(ViemCoreHandle, ViemViewId, const ViemLogicalSelectionIdentityV1 *, uint8_t, ViemCoreOutcomeV1 *) = viem_core_view_set_strikethrough;
-_Static_assert(sizeof(ViemTableContextV1) == {table_context}, "table context size");
-_Static_assert(offsetof(ViemTableContextV1, selection) == {table_context_selection}, "table context selection offset");
-_Static_assert(sizeof(ViemInsertTableV1) == {insert_table}, "insert table size");
-_Static_assert(offsetof(ViemInsertTableV1, columns) == {insert_table_columns}, "insert table dimensions offset");
-_Static_assert(sizeof(ViemTableActionV1) == {table_action}, "table action size");
-_Static_assert(offsetof(ViemTableActionV1, expected) == {table_action_expected}, "table action identity offset");
-_Static_assert(sizeof(ViemTableCellV1) == {table_cell}, "table cell size");
-_Static_assert(offsetof(ViemTableCellV1, rect) == {table_cell_rect}, "table cell geometry offset");
-_Static_assert(sizeof(ViemTableSelectionV1) == {table_selection}, "table selection size");
+static ViemStatus (*set_strikethrough)(ViemCoreHandle, ViemViewId, const ViemLogicalSelectionIdentity *, uint8_t, ViemCoreOutcome *) = viem_core_view_set_strikethrough;
+_Static_assert(sizeof(ViemTableContext) == {table_context}, "table context size");
+_Static_assert(offsetof(ViemTableContext, selection) == {table_context_selection}, "table context selection offset");
+_Static_assert(sizeof(ViemInsertTable) == {insert_table}, "insert table size");
+_Static_assert(offsetof(ViemInsertTable, columns) == {insert_table_columns}, "insert table dimensions offset");
+_Static_assert(sizeof(ViemTableAction) == {table_action}, "table action size");
+_Static_assert(offsetof(ViemTableAction, expected) == {table_action_expected}, "table action identity offset");
+_Static_assert(sizeof(ViemTableCell) == {table_cell}, "table cell size");
+_Static_assert(offsetof(ViemTableCell, rect) == {table_cell_rect}, "table cell geometry offset");
+_Static_assert(sizeof(ViemTableSelection) == {table_selection}, "table selection size");
 _Static_assert(VIEM_LOGICAL_SELECTION_KIND_CELLS == {table_selection_kind}, "cell selection kind");
 _Static_assert(VIEM_STYLE_ROLE_TABLE == {table_role}, "table style role");
 _Static_assert(VIEM_STYLE_ROLE_CONTAINER == {container_role}, "container style role");
@@ -125,35 +125,33 @@ _Static_assert(VIEM_DIFF_RESULT_BASE_EXISTS == {diff_base_exists}, "diff base ex
 _Static_assert(VIEM_DIFF_FILE_RENAMED == {diff_file_renamed} && VIEM_DIFF_FILE_UNSAVED == {diff_file_unsaved}, "diff file changes");
 _Static_assert(VIEM_DIFF_NAVIGATE_PREVIOUS == {diff_navigate_previous} && VIEM_DIFF_NAVIGATION_SCROLLED == {diff_navigation_scrolled}, "diff navigation");
 _Static_assert(VIEM_DIFF_NAVIGATION_FOUND == {diff_navigation_found} && VIEM_DIFF_MARK_ADDED == {diff_mark_added}, "diff navigation and marks");
-_Static_assert(sizeof(ViemLineNumberSnapshotInfoV1) == {line_number_info_size}, "line number info size");
-_Static_assert(offsetof(ViemLineNumberSnapshotInfoV1, viewport) == {line_number_info_viewport}, "line number viewport offset");
-_Static_assert(sizeof(ViemLineNumberRegionV1) == {line_number_region_size}, "line number region size");
-_Static_assert(offsetof(ViemLineNumberRegionV1, top) == {line_number_region_top}, "line number geometry offset");
-static ViemStatus (*line_number_info)(ViemCoreHandle, ViemViewId, ViemLineNumberSnapshotInfoV1 *) = viem_core_view_line_number_snapshot_info;
-static ViemStatus (*line_number_regions)(ViemCoreHandle, ViemViewId, const ViemLayoutSnapshotIdentityV1 *, const ViemLayoutRectV1 *, ViemLineNumberRegionV1 *, uint64_t, uint64_t *) = viem_core_view_copy_line_number_regions;
+_Static_assert(sizeof(ViemLineNumberSnapshotInfo) == {line_number_info_size}, "line number info size");
+_Static_assert(offsetof(ViemLineNumberSnapshotInfo, viewport) == {line_number_info_viewport}, "line number viewport offset");
+_Static_assert(sizeof(ViemLineNumberRegion) == {line_number_region_size}, "line number region size");
+_Static_assert(offsetof(ViemLineNumberRegion, top) == {line_number_region_top}, "line number geometry offset");
+static ViemStatus (*line_number_info)(ViemCoreHandle, ViemViewId, ViemLineNumberSnapshotInfo *) = viem_core_view_line_number_snapshot_info;
+static ViemStatus (*line_number_regions)(ViemCoreHandle, ViemViewId, const ViemLayoutSnapshotIdentity *, const ViemLayoutRect *, ViemLineNumberRegion *, uint64_t, uint64_t *) = viem_core_view_copy_line_number_regions;
 static ViemStatus (*number_option_get)(ViemCoreHandle, ViemViewId, uint32_t *) = viem_core_view_number;
 static ViemStatus (*number_option_set)(ViemCoreHandle, ViemViewId, uint32_t) = viem_core_view_set_number;
 
 static ViemStatus (*prepare_table_refinement)(ViemCoreHandle, ViemViewId, uint64_t *) = viem_core_view_prepare_table_refinement;
 static ViemStatus (*install_table_refinement)(ViemCoreHandle, ViemViewId, uint64_t, uint8_t *) = viem_core_view_install_table_refinement;
-static ViemStatus (*table_context)(ViemCoreHandle, ViemViewId, ViemTableContextV1 *) = viem_core_view_table_context;
-_Static_assert(sizeof(ViemSetBlockQuoteV1) == {set_block_quote}, "quote request");
-_Static_assert(offsetof(ViemSetBlockQuoteV1, expected_selection) == {quote_selection}, "quote selection");
-static ViemStatus (*set_block_quote)(ViemCoreHandle, ViemViewId, const ViemSetBlockQuoteV1 *, ViemCoreOutcomeV1 *) = viem_core_view_set_block_quote;
-static ViemStatus (*table_context_at)(ViemCoreHandle, ViemViewId, uint64_t, uint64_t, uint64_t, ViemTableContextV1 *) = viem_core_view_table_context_at;
-static ViemStatus (*insert_table)(ViemCoreHandle, ViemViewId, const ViemInsertTableV1 *, ViemCoreOutcomeV1 *) = viem_core_view_insert_table;
-static ViemStatus (*table_action)(ViemCoreHandle, ViemViewId, const ViemTableActionV1 *, ViemCoreOutcomeV1 *) = viem_core_view_table_action;
-static ViemStatus (*copy_table_cells)(ViemCoreHandle, ViemViewId, const ViemLayoutSnapshotIdentityV1 *, ViemTableCellV1 *, uint64_t, uint64_t *) = viem_core_view_copy_table_cells;
-static ViemStatus (*copy_table_selection_text)(ViemCoreHandle, ViemViewId, const ViemTableSelectionV1 *, uint8_t *, uint64_t, uint64_t *) = viem_core_view_copy_table_selection_text;
-static ViemStatus (*copy_table_selection_ranges)(ViemCoreHandle, ViemViewId, const ViemTableSelectionV1 *, ViemFormattedUtf8RangeV1 *, uint64_t, uint64_t *) = viem_core_view_copy_table_selection_ranges;
-static ViemStatus (*table_selection)(ViemCoreHandle, ViemViewId, ViemTableSelectionV1 *) = viem_core_view_table_selection;
-static ViemStatus (*select_table_cells)(ViemCoreHandle, ViemViewId, const ViemTableSelectionV1 *, ViemCoreOutcomeV1 *) = viem_core_view_select_table_cells;
+static ViemStatus (*table_context)(ViemCoreHandle, ViemViewId, ViemTableContext *) = viem_core_view_table_context;
+_Static_assert(sizeof(ViemSetBlockQuote) == {set_block_quote}, "quote request");
+_Static_assert(offsetof(ViemSetBlockQuote, expected_selection) == {quote_selection}, "quote selection");
+static ViemStatus (*set_block_quote)(ViemCoreHandle, ViemViewId, const ViemSetBlockQuote *, ViemCoreOutcome *) = viem_core_view_set_block_quote;
+static ViemStatus (*table_context_at)(ViemCoreHandle, ViemViewId, uint64_t, uint64_t, uint64_t, ViemTableContext *) = viem_core_view_table_context_at;
+static ViemStatus (*insert_table)(ViemCoreHandle, ViemViewId, const ViemInsertTable *, ViemCoreOutcome *) = viem_core_view_insert_table;
+static ViemStatus (*table_action)(ViemCoreHandle, ViemViewId, const ViemTableAction *, ViemCoreOutcome *) = viem_core_view_table_action;
+static ViemStatus (*copy_table_cells)(ViemCoreHandle, ViemViewId, const ViemLayoutSnapshotIdentity *, ViemTableCell *, uint64_t, uint64_t *) = viem_core_view_copy_table_cells;
+static ViemStatus (*copy_table_selection_text)(ViemCoreHandle, ViemViewId, const ViemTableSelection *, uint8_t *, uint64_t, uint64_t *) = viem_core_view_copy_table_selection_text;
+static ViemStatus (*copy_table_selection_ranges)(ViemCoreHandle, ViemViewId, const ViemTableSelection *, ViemFormattedUtf8Range *, uint64_t, uint64_t *) = viem_core_view_copy_table_selection_ranges;
+static ViemStatus (*table_selection)(ViemCoreHandle, ViemViewId, ViemTableSelection *) = viem_core_view_table_selection;
+static ViemStatus (*select_table_cells)(ViemCoreHandle, ViemViewId, const ViemTableSelection *, ViemCoreOutcome *) = viem_core_view_select_table_cells;
 static ViemStatus (*style_defaults)(ViemCoreHandle, uint64_t, const uint8_t *, uint64_t, ViemStyleDefaultsDiagnosticCallback, void *) = viem_core_initialize_style_defaults;
 _Static_assert(VIEM_ENCODING_DETECT == 0u, "automatic encoding choice");
-_Static_assert(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V4 == 4u,
-    "provider ABI v4");
-_Static_assert(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION ==
-    VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V4, "current provider ABI");
+_Static_assert(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION == 4u,
+    "provider ABI");
 _Static_assert(VIEM_STATUS_UNSTABLE_SHAPING_CONTEXT == 26u,
     "bounded-context refusal status");
 _Static_assert(VIEM_STATUS_LAYOUT_UNAVAILABLE == 28u,
@@ -279,279 +277,202 @@ _Static_assert(VIEM_VISUAL_SELECTION_SEGMENT_HAS_HARD_LINE == (1u << 1),
 _Static_assert(VIEM_VISUAL_SELECTION_SEGMENT_HAS_EDGE_AFFINITIES == (1u << 2),
     "Visual segment affinity flag");
 _Static_assert(sizeof(ViemDocumentOptions) == {document_options}, "document options");
-_Static_assert(sizeof(ViemDocumentStateV1) == {document_state}, "document state");
-_Static_assert(VIEM_DOCUMENT_STATE_V1_SIZE == sizeof(ViemDocumentStateV1),
-    "document state size macro");
-_Static_assert(sizeof(ViemFormattedSnapshotIdentityV1) == {formatted_identity},
+_Static_assert(sizeof(ViemDocumentState) == {document_state}, "document state");
+_Static_assert(sizeof(ViemFormattedSnapshotIdentity) == {formatted_identity},
     "formatted snapshot identity");
-_Static_assert(VIEM_FORMATTED_SNAPSHOT_IDENTITY_V1_SIZE ==
-    sizeof(ViemFormattedSnapshotIdentityV1),
-    "formatted snapshot identity size macro");
-_Static_assert(offsetof(ViemFormattedSnapshotIdentityV1, document_id) ==
+_Static_assert(offsetof(ViemFormattedSnapshotIdentity, document_id) ==
     {formatted_identity_document}, "formatted identity document offset");
-_Static_assert(sizeof(ViemFormattedSnapshotInfoV1) == {formatted_info},
+_Static_assert(sizeof(ViemFormattedSnapshotInfo) == {formatted_info},
     "formatted snapshot info");
-_Static_assert(VIEM_FORMATTED_SNAPSHOT_INFO_V1_SIZE ==
-    sizeof(ViemFormattedSnapshotInfoV1), "formatted snapshot info size macro");
-_Static_assert(offsetof(ViemFormattedSnapshotInfoV1, utf8_length) ==
+_Static_assert(offsetof(ViemFormattedSnapshotInfo, utf8_length) ==
     {formatted_info_utf8}, "formatted info UTF-8 length offset");
-_Static_assert(sizeof(ViemFormattedUtf8RangeV1) == {formatted_range},
+_Static_assert(sizeof(ViemFormattedUtf8Range) == {formatted_range},
     "formatted UTF-8 range");
-_Static_assert(VIEM_FORMATTED_UTF8_RANGE_V1_SIZE ==
-    sizeof(ViemFormattedUtf8RangeV1), "formatted UTF-8 range size macro");
-_Static_assert(offsetof(ViemFormattedUtf8RangeV1, utf8_start) ==
+_Static_assert(offsetof(ViemFormattedUtf8Range, utf8_start) ==
     {formatted_range_start}, "formatted range start offset");
-_Static_assert(sizeof(ViemFormattedPointInfoV1) == {formatted_point},
+_Static_assert(sizeof(ViemFormattedPointInfo) == {formatted_point},
     "formatted point info");
-_Static_assert(VIEM_FORMATTED_POINT_INFO_V1_SIZE ==
-    sizeof(ViemFormattedPointInfoV1), "formatted point info size macro");
-_Static_assert(offsetof(ViemFormattedPointInfoV1, grapheme_column) ==
+_Static_assert(offsetof(ViemFormattedPointInfo, grapheme_column) ==
     {formatted_point_column}, "formatted point column offset");
-_Static_assert(sizeof(ViemClipboardTurnEntryV2) == {clipboard_turn_entry},
+_Static_assert(sizeof(ViemClipboardTurnEntry) == {clipboard_turn_entry},
     "clipboard turn entry");
-_Static_assert(VIEM_CLIPBOARD_TURN_ENTRY_V2_SIZE ==
-    sizeof(ViemClipboardTurnEntryV2), "clipboard turn entry size macro");
-_Static_assert(offsetof(ViemClipboardTurnEntryV2, plain_text) ==
+_Static_assert(offsetof(ViemClipboardTurnEntry, plain_text) ==
     {clipboard_turn_text}, "clipboard turn text offset");
-_Static_assert(sizeof(ViemFileMarkTargetV1) == {file_mark_target}, "file mark target");
-_Static_assert(VIEM_FILE_MARK_TARGET_V1_SIZE == sizeof(ViemFileMarkTargetV1), "file mark size macro");
-static ViemStatus (*file_mark_target)(uint32_t, uint64_t, ViemFileMarkTargetV1 *, uint8_t *, uint64_t) = viem_file_mark_target;
-static ViemStatus (*jump_file_mark)(ViemCoreHandle, ViemViewId, uint32_t, uint64_t, uint32_t, ViemCoreOutcomeV1 *) = viem_core_view_jump_file_mark;
+_Static_assert(sizeof(ViemFileMarkTarget) == {file_mark_target}, "file mark target");
+static ViemStatus (*file_mark_target)(uint32_t, uint64_t, ViemFileMarkTarget *, uint8_t *, uint64_t) = viem_file_mark_target;
+static ViemStatus (*jump_file_mark)(ViemCoreHandle, ViemViewId, uint32_t, uint64_t, uint32_t, ViemCoreOutcome *) = viem_core_view_jump_file_mark;
 static ViemStatus (*host_register)(ViemCoreHandle, ViemViewId, uint32_t, const uint8_t *, uint64_t) = viem_core_view_set_host_register;
-static ViemStatus (*drop_text)(ViemCoreHandle, ViemViewId, const uint8_t *, uint64_t, const ViemCommandTurnContextV2 *, ViemCoreOutcomeV1 *, ViemEffectBatchHandle *) = viem_core_view_drop_text;
-_Static_assert(offsetof(ViemFileMarkTargetV1, generation) == {file_mark_generation}, "file mark generation offset");
-_Static_assert(sizeof(ViemCommandTurnContextV2) == {command_turn_context},
+static ViemStatus (*drop_text)(ViemCoreHandle, ViemViewId, const uint8_t *, uint64_t, const ViemCommandTurnContext *, ViemCoreOutcome *, ViemEffectBatchHandle *) = viem_core_view_drop_text;
+_Static_assert(offsetof(ViemFileMarkTarget, generation) == {file_mark_generation}, "file mark generation offset");
+_Static_assert(sizeof(ViemCommandTurnContext) == {command_turn_context},
     "command turn context");
-_Static_assert(VIEM_COMMAND_TURN_CONTEXT_V2_SIZE ==
-    sizeof(ViemCommandTurnContextV2), "command turn context size macro");
-_Static_assert(sizeof(ViemEffectBytesRefV1) == {effect_bytes_ref},
+_Static_assert(sizeof(ViemEffectBytesRef) == {effect_bytes_ref},
     "effect byte reference");
-_Static_assert(sizeof(ViemClipboardWriteV1) == {clipboard_write},
+_Static_assert(sizeof(ViemClipboardWrite) == {clipboard_write},
     "clipboard write");
-_Static_assert(VIEM_CLIPBOARD_WRITE_V1_SIZE == sizeof(ViemClipboardWriteV1),
-    "clipboard write size macro");
-_Static_assert(sizeof(ViemExOptionDisplayV1) == {ex_option}, "Ex option");
-_Static_assert(VIEM_EX_OPTION_DISPLAY_V1_SIZE == sizeof(ViemExOptionDisplayV1),
-    "Ex option size macro");
-_Static_assert(sizeof(ViemExMarkV1) == {ex_mark}, "Ex mark");
-_Static_assert(VIEM_EX_MARK_V1_SIZE == sizeof(ViemExMarkV1),
-    "Ex mark size macro");
-_Static_assert(sizeof(ViemExRegisterV1) == {ex_register}, "Ex register");
-_Static_assert(VIEM_EX_REGISTER_V1_SIZE == sizeof(ViemExRegisterV1),
-    "Ex register size macro");
-_Static_assert(sizeof(ViemExJumpV1) == {ex_jump}, "Ex jump");
-_Static_assert(VIEM_EX_JUMP_V1_SIZE == sizeof(ViemExJumpV1),
-    "Ex jump size macro");
-_Static_assert(sizeof(ViemExTextLineV1) == {ex_text_line}, "Ex text line");
-_Static_assert(VIEM_EX_TEXT_LINE_V1_SIZE == sizeof(ViemExTextLineV1),
-    "Ex text-line size macro");
+_Static_assert(sizeof(ViemExOptionDisplay) == {ex_option}, "Ex option");
+_Static_assert(sizeof(ViemExMark) == {ex_mark}, "Ex mark");
+_Static_assert(sizeof(ViemExRegister) == {ex_register}, "Ex register");
+_Static_assert(sizeof(ViemExJump) == {ex_jump}, "Ex jump");
+_Static_assert(sizeof(ViemExTextLine) == {ex_text_line}, "Ex text line");
 _Static_assert(sizeof(ViemPaneChrome) == {pane_chrome}, "Pane chrome");
 _Static_assert(sizeof(ViemPaneFrame) == {pane_frame}, "Pane frame");
 _Static_assert(offsetof(ViemPaneFrame, x) == {pane_frame_x}, "Pane coordinate alignment");
 _Static_assert(sizeof(ViemPaneSnapshot) == {pane_snapshot}, "Pane snapshot");
-_Static_assert(sizeof(ViemExFrontendRequestV1) == {ex_request},
+_Static_assert(sizeof(ViemExFrontendRequest) == {ex_request},
     "Ex frontend request");
-_Static_assert(VIEM_EX_FRONTEND_REQUEST_V1_SIZE ==
-    sizeof(ViemExFrontendRequestV1), "Ex frontend request size macro");
-_Static_assert(offsetof(ViemExFrontendRequestV1, first_payload) ==
+_Static_assert(offsetof(ViemExFrontendRequest, first_payload) ==
     {ex_request_payload}, "Ex request payload offset");
-_Static_assert(sizeof(ViemEffectBatchInfoV1) == {effect_batch_info},
+_Static_assert(sizeof(ViemEffectBatchInfo) == {effect_batch_info},
     "effect batch info");
-_Static_assert(VIEM_EFFECT_BATCH_INFO_V1_SIZE == sizeof(ViemEffectBatchInfoV1),
-    "effect batch info size macro");
-_Static_assert(offsetof(ViemEffectBatchInfoV1, ex_mark_count) ==
+_Static_assert(offsetof(ViemEffectBatchInfo, ex_mark_count) ==
     {effect_batch_mark_count}, "effect batch mark count offset");
-_Static_assert(sizeof(ViemResolvedTextStyleV1) == {style}, "style");
-_Static_assert(offsetof(ViemResolvedTextStyleV1, baseline_offset) == {baseline_offset}, "baseline offset");
+_Static_assert(sizeof(ViemResolvedTextStyle) == {style}, "style");
+_Static_assert(offsetof(ViemResolvedTextStyle, baseline_offset) == {baseline_offset}, "baseline offset");
 _Static_assert(VIEM_STYLE_VALUE_PERCENTAGE == {percentage_value}, "percentage value tag");
-_Static_assert(sizeof(ViemShapeStyleRunV1) == {style_run}, "style run");
-_Static_assert(sizeof(ViemShapedClusterV1) == {cluster}, "cluster");
-_Static_assert(sizeof(ViemShapingDiagnosticV1) == {diagnostic}, "diagnostic");
-_Static_assert(sizeof(ViemShapeRequestV1) == {request}, "request");
-_Static_assert(sizeof(ViemInlineImageV1) == {inline_image}, "inline image");
-_Static_assert(offsetof(ViemInlineImageV1, destination) == {inline_image_destination}, "image destination");
-_Static_assert(offsetof(ViemShapeRequestV1, inline_images) == {request_images}, "request images");
-_Static_assert(offsetof(ViemShapeRequestV1, inline_image_count) == {request_image_count}, "request image count");
-_Static_assert(sizeof(ViemShapeResponseV1) == {response}, "response");
-_Static_assert(sizeof(ViemTextMeasurementProviderV1) == {provider}, "provider");
-_Static_assert(sizeof(ViemViewOptionsV1) == {view_options}, "view options");
-_Static_assert(sizeof(ViemViewportOriginV1) == {viewport_origin}, "viewport origin");
-_Static_assert(sizeof(ViemViewportStateV1) == {viewport_state}, "viewport state");
-_Static_assert(sizeof(ViemLayoutSnapshotIdentityV1) == {layout_identity},
+_Static_assert(sizeof(ViemShapeStyleRun) == {style_run}, "style run");
+_Static_assert(sizeof(ViemShapedCluster) == {cluster}, "cluster");
+_Static_assert(sizeof(ViemShapingDiagnostic) == {diagnostic}, "diagnostic");
+_Static_assert(sizeof(ViemShapeRequest) == {request}, "request");
+_Static_assert(sizeof(ViemInlineImage) == {inline_image}, "inline image");
+_Static_assert(offsetof(ViemInlineImage, destination) == {inline_image_destination}, "image destination");
+_Static_assert(offsetof(ViemShapeRequest, inline_images) == {request_images}, "request images");
+_Static_assert(offsetof(ViemShapeRequest, inline_image_count) == {request_image_count}, "request image count");
+_Static_assert(sizeof(ViemShapeResponse) == {response}, "response");
+_Static_assert(sizeof(ViemTextMeasurementProvider) == {provider}, "provider");
+_Static_assert(sizeof(ViemViewOptions) == {view_options}, "view options");
+_Static_assert(sizeof(ViemViewportOrigin) == {viewport_origin}, "viewport origin");
+_Static_assert(sizeof(ViemViewportState) == {viewport_state}, "viewport state");
+_Static_assert(sizeof(ViemLayoutSnapshotIdentity) == {layout_identity},
     "layout identity");
-_Static_assert(sizeof(ViemLayoutInsetsV1) == {layout_insets}, "layout insets");
-_Static_assert(sizeof(ViemLayoutRectV1) == {layout_rect}, "layout rect");
-_Static_assert(sizeof(ViemRgbaV1) == {rgba}, "RGBA");
-_Static_assert(sizeof(ViemStyleSheetIdentityV1) == {style_sheet_identity},
+_Static_assert(sizeof(ViemLayoutInsets) == {layout_insets}, "layout insets");
+_Static_assert(sizeof(ViemLayoutRect) == {layout_rect}, "layout rect");
+_Static_assert(sizeof(ViemRgba) == {rgba}, "RGBA");
+_Static_assert(sizeof(ViemStyleSheetIdentity) == {style_sheet_identity},
     "style-sheet identity");
-_Static_assert(VIEM_STYLE_SHEET_IDENTITY_V1_SIZE == sizeof(ViemStyleSheetIdentityV1),
-    "style-sheet identity size macro");
-_Static_assert(sizeof(ViemStyleStringRefV1) == {style_string_ref},
+_Static_assert(sizeof(ViemStyleStringRef) == {style_string_ref},
     "style string reference");
-_Static_assert(sizeof(ViemStyleSheetInfoV1) == {style_sheet_info},
+_Static_assert(sizeof(ViemStyleSheetInfo) == {style_sheet_info},
     "style-sheet info");
-_Static_assert(VIEM_STYLE_SHEET_INFO_V1_SIZE == sizeof(ViemStyleSheetInfoV1),
-    "style-sheet info size macro");
-_Static_assert(sizeof(ViemStyleValueV1) == {style_value}, "style value");
-_Static_assert(VIEM_STYLE_VALUE_V1_SIZE == sizeof(ViemStyleValueV1),
-    "style value size macro");
-_Static_assert(sizeof(ViemStyleValueItemV1) == {style_value_item},
+_Static_assert(sizeof(ViemStyleValue) == {style_value}, "style value");
+_Static_assert(sizeof(ViemStyleValueItem) == {style_value_item},
     "style value item");
-_Static_assert(sizeof(ViemStyleDependencyV1) == {style_dependency},
+_Static_assert(sizeof(ViemStyleDependency) == {style_dependency},
     "style dependency");
-_Static_assert(sizeof(ViemStyleDefinitionV1) == {style_definition},
+_Static_assert(sizeof(ViemStyleDefinition) == {style_definition},
     "style definition");
-_Static_assert(sizeof(ViemStylePropertyV1) == {style_property},
+_Static_assert(sizeof(ViemStyleProperty) == {style_property},
     "style property");
-_Static_assert(sizeof(ViemStyleEditValueItemV1) == {style_edit_value_item},
+_Static_assert(sizeof(ViemStyleEditValueItem) == {style_edit_value_item},
     "style edit value item");
-_Static_assert(sizeof(ViemStyleEditValueV1) == {style_edit_value},
+_Static_assert(sizeof(ViemStyleEditValue) == {style_edit_value},
     "style edit value");
-_Static_assert(sizeof(ViemStyleEditV1) == {style_edit}, "style edit");
-_Static_assert(VIEM_STYLE_EDIT_V1_SIZE == sizeof(ViemStyleEditV1),
-    "style edit size macro");
-_Static_assert(sizeof(ViemStyleEditGroupV1) == {style_edit_group},
+_Static_assert(sizeof(ViemStyleEdit) == {style_edit}, "style edit");
+_Static_assert(sizeof(ViemStyleEditGroup) == {style_edit_group},
     "style edit group");
-_Static_assert(VIEM_STYLE_EDIT_GROUP_V1_SIZE == sizeof(ViemStyleEditGroupV1),
-    "style edit group size macro");
-_Static_assert(offsetof(ViemStyleEditGroupV1, token) == {style_edit_group_token},
+_Static_assert(offsetof(ViemStyleEditGroup, token) == {style_edit_group_token},
     "style edit group token offset");
 _Static_assert(VIEM_STYLE_EDIT_SET_DISPLAY_NAME == 7u,
     "style display-name operation");
 _Static_assert(VIEM_STYLE_CAPABILITY_EDIT_DISPLAY_NAME == (1u << 3),
     "style display-name capability");
-_Static_assert(sizeof(ViemTextPaintV1) == {text_paint}, "text paint");
-_Static_assert(VIEM_TEXT_PAINT_V1_SIZE == sizeof(ViemTextPaintV1),
-    "text paint size macro");
-_Static_assert(sizeof(ViemLayoutPaintInfoV1) == {layout_paint_info},
+_Static_assert(sizeof(ViemTextPaint) == {text_paint}, "text paint");
+_Static_assert(sizeof(ViemLayoutPaintInfo) == {layout_paint_info},
     "layout paint info");
-_Static_assert(VIEM_LAYOUT_PAINT_INFO_V1_SIZE == sizeof(ViemLayoutPaintInfoV1),
-    "layout paint info size macro");
-_Static_assert(sizeof(ViemPaintStyleRunV1) == {paint_style_run},
+_Static_assert(sizeof(ViemPaintStyleRun) == {paint_style_run},
     "paint style run");
-_Static_assert(VIEM_PAINT_STYLE_RUN_V1_SIZE == sizeof(ViemPaintStyleRunV1),
-    "paint style run size macro");
-_Static_assert(sizeof(ViemLayoutSnapshotInfoV1) == {layout_info}, "layout info");
-_Static_assert(sizeof(ViemVisualRowV1) == {visual_row}, "visual row");
-_Static_assert(sizeof(ViemPositionedClusterV1) == {positioned_cluster},
+_Static_assert(sizeof(ViemLayoutSnapshotInfo) == {layout_info}, "layout info");
+_Static_assert(sizeof(ViemVisualRow) == {visual_row}, "visual row");
+_Static_assert(sizeof(ViemPositionedCluster) == {positioned_cluster},
     "positioned cluster");
-_Static_assert(sizeof(ViemPositionedCaretV1) == {positioned_caret},
+_Static_assert(sizeof(ViemPositionedCaret) == {positioned_caret},
     "positioned caret");
-_Static_assert(sizeof(ViemLayoutCaretRequestV1) == {caret_request},
+_Static_assert(sizeof(ViemLayoutCaretRequest) == {caret_request},
     "caret request");
 _Static_assert(VIEM_LAYOUT_HIT_TEST_POINTER_DOWN == {pointer_down_flag}, "pointer-down hit-test flag");
 _Static_assert(VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE == {pointer_gesture_flag}, "pointer gesture flag");
-_Static_assert(sizeof(ViemPointerCaretV1) == {pointer_caret_size}, "pointer caret size");
-_Static_assert(offsetof(ViemPointerCaretV1, text_start) == {pointer_caret_start}, "pointer caret range");
+_Static_assert(sizeof(ViemPointerCaret) == {pointer_caret_size}, "pointer caret size");
+_Static_assert(offsetof(ViemPointerCaret, text_start) == {pointer_caret_start}, "pointer caret range");
 _Static_assert(VIEM_POINTER_CARET_CURRENT == {pointer_caret_current}, "pointer caret current flag");
-static ViemStatus (*pointer_caret)(ViemCoreHandle, ViemViewId, const ViemLayoutHitTestRequestV1 *, ViemPointerCaretV1 *) = viem_core_view_pointer_caret;
-_Static_assert(offsetof(ViemLayoutHitTestRequestV1, flags) == {hit_test_flags}, "hit-test flags offset");
-_Static_assert(sizeof(ViemLayoutHitTestRequestV1) == {hit_test_request},
+static ViemStatus (*pointer_caret)(ViemCoreHandle, ViemViewId, const ViemLayoutHitTestRequest *, ViemPointerCaret *) = viem_core_view_pointer_caret;
+_Static_assert(offsetof(ViemLayoutHitTestRequest, flags) == {hit_test_flags}, "hit-test flags offset");
+_Static_assert(sizeof(ViemLayoutHitTestRequest) == {hit_test_request},
     "hit-test request");
-_Static_assert(sizeof(ViemLayoutCaretPointV1) == {caret_point}, "caret point");
-_Static_assert(sizeof(ViemLayoutCaretGeometryV1) == {caret_geometry},
+_Static_assert(sizeof(ViemLayoutCaretPoint) == {caret_point}, "caret point");
+_Static_assert(sizeof(ViemLayoutCaretGeometry) == {caret_geometry},
     "caret geometry");
-_Static_assert(sizeof(ViemViewPresentationV1) == {presentation},
+_Static_assert(sizeof(ViemViewPresentation) == {presentation},
     "view presentation");
-_Static_assert(sizeof(ViemCommandLineIdentityV1) == {command_line_identity},
+_Static_assert(sizeof(ViemCommandLineIdentity) == {command_line_identity},
     "command-line identity");
-_Static_assert(VIEM_COMMAND_LINE_IDENTITY_V1_SIZE == sizeof(ViemCommandLineIdentityV1),
-    "command-line identity size macro");
-_Static_assert(sizeof(ViemCommandLineInfoV1) == {command_line_info},
+_Static_assert(sizeof(ViemCommandLineInfo) == {command_line_info},
     "command-line info");
-_Static_assert(VIEM_COMMAND_LINE_INFO_V1_SIZE == sizeof(ViemCommandLineInfoV1),
-    "command-line info size macro");
-_Static_assert(sizeof(ViemCompletionInfoV1) == {completion_info},
+_Static_assert(sizeof(ViemCompletionInfo) == {completion_info},
     "completion info");
-_Static_assert(VIEM_COMPLETION_INFO_V1_SIZE == sizeof(ViemCompletionInfoV1),
-    "completion info size macro");
-_Static_assert(offsetof(ViemCompletionInfoV1, selected_index) == {completion_selected},
+_Static_assert(offsetof(ViemCompletionInfo, selected_index) == {completion_selected},
     "completion signed selection offset");
-_Static_assert(offsetof(ViemCompletionInfoV1, anchor_layout) == {completion_anchor_layout},
+_Static_assert(offsetof(ViemCompletionInfo, anchor_layout) == {completion_anchor_layout},
     "completion anchor identity offset");
-_Static_assert(offsetof(ViemCompletionInfoV1, anchor_rect) == {completion_anchor_rect},
+_Static_assert(offsetof(ViemCompletionInfo, anchor_rect) == {completion_anchor_rect},
     "completion anchor geometry offset");
-_Static_assert(sizeof(ViemCompletionItemV1) == {completion_item},
+_Static_assert(sizeof(ViemCompletionItem) == {completion_item},
     "completion item");
-_Static_assert(VIEM_COMPLETION_ITEM_V1_SIZE == sizeof(ViemCompletionItemV1),
-    "completion item size macro");
 _Static_assert(VIEM_COMPLETION_ACTIVE == {completion_active}, "completion active flag");
 _Static_assert(VIEM_COMPLETION_SEARCHING == {completion_searching}, "completion searching flag");
 _Static_assert(VIEM_COMPLETION_TRUNCATED == {completion_truncated}, "completion truncated flag");
 _Static_assert(VIEM_COMPLETION_HAS_ANCHOR == {completion_has_anchor}, "completion anchor flag");
 _Static_assert(VIEM_COMPLETION_RIGHT_TO_LEFT == {completion_rtl}, "completion RTL flag");
-_Static_assert(sizeof(ViemVisualSelectionIdentityV1) == {visual_selection_identity},
+_Static_assert(sizeof(ViemVisualSelectionIdentity) == {visual_selection_identity},
     "Visual-selection identity");
-_Static_assert(VIEM_VISUAL_SELECTION_IDENTITY_V1_SIZE == sizeof(ViemVisualSelectionIdentityV1),
-    "Visual-selection identity size macro");
-_Static_assert(sizeof(ViemVisualSelectionInfoV1) == {visual_selection_info},
+_Static_assert(sizeof(ViemVisualSelectionInfo) == {visual_selection_info},
     "Visual-selection info");
-_Static_assert(VIEM_VISUAL_SELECTION_INFO_V1_SIZE == sizeof(ViemVisualSelectionInfoV1),
-    "Visual-selection info size macro");
-_Static_assert(sizeof(ViemVisualSelectionSegmentV1) == {visual_selection_segment},
+_Static_assert(sizeof(ViemVisualSelectionSegment) == {visual_selection_segment},
     "Visual-selection segment");
-_Static_assert(VIEM_VISUAL_SELECTION_SEGMENT_V1_SIZE == sizeof(ViemVisualSelectionSegmentV1),
-    "Visual-selection segment size macro");
-_Static_assert(sizeof(ViemVisualSelectionRectangleV1) == {visual_selection_rectangle},
+_Static_assert(sizeof(ViemVisualSelectionRectangle) == {visual_selection_rectangle},
     "Visual-selection rectangle");
-_Static_assert(VIEM_VISUAL_SELECTION_RECTANGLE_V1_SIZE == sizeof(ViemVisualSelectionRectangleV1),
-    "Visual-selection rectangle size macro");
-_Static_assert(sizeof(ViemPlaceCursorV1) == {place_cursor}, "place cursor");
-_Static_assert(sizeof(ViemAssignStyleV1) == {assign_style}, "assign style");
-_Static_assert(VIEM_ASSIGN_STYLE_V1_SIZE == sizeof(ViemAssignStyleV1), "assign style size macro");
-_Static_assert(sizeof(ViemCreateStyleV1) == {create_style}, "create style");
-_Static_assert(VIEM_CREATE_STYLE_V1_SIZE == sizeof(ViemCreateStyleV1), "create style size macro");
-_Static_assert(sizeof(ViemDeleteStyleV1) == {delete_style}, "delete style");
-_Static_assert(VIEM_DELETE_STYLE_V1_SIZE == sizeof(ViemDeleteStyleV1), "delete style size macro");
-_Static_assert(sizeof(ViemSetFileFormatV1) == {set_file_format},
+_Static_assert(sizeof(ViemPlaceCursor) == {place_cursor}, "place cursor");
+_Static_assert(sizeof(ViemAssignStyle) == {assign_style}, "assign style");
+_Static_assert(sizeof(ViemCreateStyle) == {create_style}, "create style");
+_Static_assert(sizeof(ViemDeleteStyle) == {delete_style}, "delete style");
+_Static_assert(sizeof(ViemSetFileFormat) == {set_file_format},
     "set file format");
-_Static_assert(VIEM_SET_FILE_FORMAT_V1_SIZE == sizeof(ViemSetFileFormatV1),
-    "set file format size macro");
-_Static_assert(sizeof(ViemMarkSavedV1) == {mark_saved}, "mark saved");
-_Static_assert(VIEM_MARK_SAVED_V1_SIZE == sizeof(ViemMarkSavedV1),
-    "mark saved size macro");
-_Static_assert(sizeof(ViemKeyInputV1) == {key}, "key");
-_Static_assert(sizeof(ViemCompositionBeginV1) == {composition_begin}, "composition begin");
-_Static_assert(sizeof(ViemCompositionUpdateV1) == {composition_update}, "composition update");
-_Static_assert(sizeof(ViemCompositionCommitV1) == {composition_commit}, "composition commit");
-_Static_assert(sizeof(ViemCompositionCancelV1) == {composition_cancel}, "composition cancel");
-_Static_assert(sizeof(ViemCompositionOverlayIdentityV1) == {composition_overlay_identity},
+_Static_assert(sizeof(ViemMarkSaved) == {mark_saved}, "mark saved");
+_Static_assert(sizeof(ViemKeyInput) == {key}, "key");
+_Static_assert(sizeof(ViemCompositionBegin) == {composition_begin}, "composition begin");
+_Static_assert(sizeof(ViemCompositionUpdate) == {composition_update}, "composition update");
+_Static_assert(sizeof(ViemCompositionCommit) == {composition_commit}, "composition commit");
+_Static_assert(sizeof(ViemCompositionCancel) == {composition_cancel}, "composition cancel");
+_Static_assert(sizeof(ViemCompositionOverlayIdentity) == {composition_overlay_identity},
     "composition overlay identity");
-_Static_assert(VIEM_COMPOSITION_OVERLAY_IDENTITY_V1_SIZE ==
-    sizeof(ViemCompositionOverlayIdentityV1), "composition overlay identity size macro");
-_Static_assert(sizeof(ViemCompositionOverlayInfoV1) == {composition_overlay_info},
+_Static_assert(sizeof(ViemCompositionOverlayInfo) == {composition_overlay_info},
     "composition overlay info");
-_Static_assert(VIEM_COMPOSITION_OVERLAY_INFO_V1_SIZE ==
-    sizeof(ViemCompositionOverlayInfoV1), "composition overlay info size macro");
-_Static_assert(sizeof(ViemCompositionOverlayUtf8RangeV1) == {composition_overlay_range},
+_Static_assert(sizeof(ViemCompositionOverlayUtf8Range) == {composition_overlay_range},
     "composition overlay range");
-_Static_assert(VIEM_COMPOSITION_OVERLAY_UTF8_RANGE_V1_SIZE ==
-    sizeof(ViemCompositionOverlayUtf8RangeV1), "composition overlay range size macro");
-_Static_assert(sizeof(ViemCoreOutcomeV1) == {outcome}, "outcome");
+_Static_assert(sizeof(ViemCoreOutcome) == {outcome}, "outcome");
 static void typecheck(void) {{
-  ViemShapeRequestV1 request = {{0}};
+  ViemShapeRequest request = {{0}};
   request.paragraph_base_direction = VIEM_TEXT_DIRECTION_AUTO;
   ViemStatus (*create_core)(const uint8_t *, uint64_t,
       const ViemDocumentOptions *, ViemCoreHandle *, uint64_t *) = viem_core_create;
-  ViemStatus (*document_state)(ViemCoreHandle, ViemDocumentStateV1 *) =
+  ViemStatus (*document_state)(ViemCoreHandle, ViemDocumentState *) =
       viem_core_document_state;
   ViemStatus (*formatted_info)(ViemCoreHandle,
-      ViemFormattedSnapshotInfoV1 *) = viem_core_formatted_snapshot_info;
+      ViemFormattedSnapshotInfo *) = viem_core_formatted_snapshot_info;
   ViemStatus (*copy_formatted_range)(ViemCoreHandle,
-      const ViemFormattedUtf8RangeV1 *, uint8_t *, uint64_t, uint64_t *) =
+      const ViemFormattedUtf8Range *, uint8_t *, uint64_t, uint64_t *) =
       viem_core_copy_formatted_utf8_range;
   ViemStatus (*map_utf8_to_utf16)(ViemCoreHandle,
-      const ViemFormattedSnapshotIdentityV1 *, const uint64_t *, uint64_t,
+      const ViemFormattedSnapshotIdentity *, const uint64_t *, uint64_t,
       uint64_t *, uint64_t, uint64_t *) =
       viem_core_map_formatted_utf8_to_utf16;
   ViemStatus (*map_utf16_to_utf8)(ViemCoreHandle,
-      const ViemFormattedSnapshotIdentityV1 *, const uint64_t *, uint64_t,
+      const ViemFormattedSnapshotIdentity *, const uint64_t *, uint64_t,
       uint64_t *, uint64_t, uint64_t *) =
       viem_core_map_formatted_utf16_to_utf8;
   ViemStatus (*formatted_point)(ViemCoreHandle,
-      const ViemFormattedSnapshotIdentityV1 *, uint64_t,
-      ViemFormattedPointInfoV1 *) = viem_core_formatted_point_info;
-  ViemStatus (*mark_saved)(ViemCoreHandle, const ViemMarkSavedV1 *) =
+      const ViemFormattedSnapshotIdentity *, uint64_t,
+      ViemFormattedPointInfo *) = viem_core_formatted_point_info;
+  ViemStatus (*mark_saved)(ViemCoreHandle, const ViemMarkSaved *) =
       viem_core_mark_saved;
   ViemStatus (*prepare_html_export)(ViemCoreHandle, ViemViewId, uint64_t,
       ViemHtmlExportHandle *) = viem_core_prepare_html_export;
@@ -565,144 +486,144 @@ static void typecheck(void) {{
       ViemViewId, uint32_t *) = viem_diff_session_sync;
   ViemStatus (*diff_line)(ViemDiffSessionHandle, uint32_t, uint64_t, uint64_t *) =
       viem_diff_session_corresponding_line;
-  ViemStatus (*diff_load)(const ViemDiffBaseRequestV1 *, ViemDiffResultHandle *) = viem_diff_load_base;
-  ViemStatus (*diff_item)(ViemDiffResultHandle, uint64_t, ViemDiffListItemV1 *, uint8_t *, uint64_t,
+  ViemStatus (*diff_load)(const ViemDiffBaseRequest *, ViemDiffResultHandle *) = viem_diff_load_base;
+  ViemStatus (*diff_item)(ViemDiffResultHandle, uint64_t, ViemDiffListItem *, uint8_t *, uint64_t,
       uint64_t *) = viem_diff_result_copy_item;
   ViemStatus (*saved_source)(ViemCoreHandle, uint8_t *, uint64_t, uint64_t *, uint32_t *) =
       viem_core_copy_saved_source;
   ViemStatus (*diff_navigate)(ViemDiffSessionHandle, ViemCoreHandle, ViemViewId, ViemCoreHandle,
-      ViemViewId, uint32_t, ViemDiffNavigationV1 *) = viem_diff_session_navigate;
+      ViemViewId, uint32_t, ViemDiffNavigation *) = viem_diff_session_navigate;
   ViemStatus (*diff_marks)(ViemDiffSessionHandle, ViemCoreHandle, ViemViewId, uint32_t,
-      ViemDiffScrollbarMarkV1 *, uint64_t, uint64_t *, float *) = viem_diff_session_scrollbar_marks;
+      ViemDiffScrollbarMark *, uint64_t, uint64_t *, float *) = viem_diff_session_scrollbar_marks;
   ViemStatus (*diff_set_collapsed)(ViemDiffSessionHandle, uint32_t) = viem_diff_session_set_collapsed;
   ViemStatus (*diff_open_collapsed)(ViemDiffSessionHandle, uint32_t, uint64_t, uint32_t *) =
       viem_diff_session_open_collapsed;
   ViemStatus (*diff_opened_context)(ViemCoreHandle, ViemViewId, uint32_t *) = viem_diff_view_opened_context;
   (void)diff_set_collapsed; (void)diff_open_collapsed; (void)diff_opened_context;
   (void)diff_create; (void)diff_sync; (void)diff_line; (void)diff_load; (void)diff_item; (void)saved_source;
-  ViemStatus (*diff_colors)(ViemRgbaV1 *, ViemRgbaV1 *) = viem_diff_line_colors;
+  ViemStatus (*diff_colors)(ViemRgba *, ViemRgba *) = viem_diff_line_colors;
   (void)diff_navigate; (void)diff_marks; (void)diff_colors;
   ViemStatus (*import_clipboard)(uint32_t, const uint8_t *, uint64_t,
       uint8_t *, uint64_t, uint64_t *) = viem_import_clipboard_json;
-  ViemStatus (*style_sheet_info)(ViemCoreHandle, uint32_t, ViemStyleSheetInfoV1 *) =
+  ViemStatus (*style_sheet_info)(ViemCoreHandle, uint32_t, ViemStyleSheetInfo *) =
       viem_core_style_sheet_info;
   ViemStatus (*copy_style_sheet)(ViemCoreHandle, uint32_t,
-      const ViemStyleSheetIdentityV1 *, ViemStyleDefinitionV1 *, uint64_t,
-      ViemStylePropertyV1 *, uint64_t, ViemStyleValueItemV1 *, uint64_t,
-      ViemStyleDependencyV1 *, uint64_t, uint8_t *, uint64_t,
-      ViemStyleSheetInfoV1 *) = viem_core_copy_style_sheet;
-  ViemStatus (*add_view)(ViemCoreHandle, const ViemViewOptionsV1 *,
-      const ViemTextMeasurementProviderV1 *, ViemViewId *,
-      ViemCoreOutcomeV1 *) = viem_core_view_add;
+      const ViemStyleSheetIdentity *, ViemStyleDefinition *, uint64_t,
+      ViemStyleProperty *, uint64_t, ViemStyleValueItem *, uint64_t,
+      ViemStyleDependency *, uint64_t, uint8_t *, uint64_t,
+      ViemStyleSheetInfo *) = viem_core_copy_style_sheet;
+  ViemStatus (*add_view)(ViemCoreHandle, const ViemViewOptions *,
+      const ViemTextMeasurementProvider *, ViemViewId *,
+      ViemCoreOutcome *) = viem_core_view_add;
   ViemStatus (*viewport_state)(ViemCoreHandle, ViemViewId,
-      ViemViewportStateV1 *) = viem_core_view_viewport_state;
+      ViemViewportState *) = viem_core_view_viewport_state;
   ViemStatus (*layout_info)(ViemCoreHandle, ViemViewId,
-      ViemLayoutSnapshotInfoV1 *) = viem_core_view_layout_snapshot_info;
+      ViemLayoutSnapshotInfo *) = viem_core_view_layout_snapshot_info;
   ViemStatus (*copy_layout)(ViemCoreHandle, ViemViewId,
-      const ViemLayoutSnapshotIdentityV1 *, ViemVisualRowV1 *, uint64_t,
-      ViemPositionedClusterV1 *, uint64_t, ViemPositionedCaretV1 *, uint64_t,
-      ViemLayoutSnapshotInfoV1 *) = viem_core_view_copy_layout_snapshot;
+      const ViemLayoutSnapshotIdentity *, ViemVisualRow *, uint64_t,
+      ViemPositionedCluster *, uint64_t, ViemPositionedCaret *, uint64_t,
+      ViemLayoutSnapshotInfo *) = viem_core_view_copy_layout_snapshot;
   ViemStatus (*layout_paint_info)(ViemCoreHandle, ViemViewId,
-      ViemLayoutPaintInfoV1 *) = viem_core_view_layout_paint_info;
+      ViemLayoutPaintInfo *) = viem_core_view_layout_paint_info;
   ViemStatus (*copy_layout_paint)(ViemCoreHandle, ViemViewId,
-      const ViemLayoutSnapshotIdentityV1 *, ViemPaintStyleRunV1 *, uint64_t,
-      ViemLayoutPaintInfoV1 *) = viem_core_view_copy_layout_paint;
+      const ViemLayoutSnapshotIdentity *, ViemPaintStyleRun *, uint64_t,
+      ViemLayoutPaintInfo *) = viem_core_view_copy_layout_paint;
   ViemStatus (*caret_geometry)(ViemCoreHandle, ViemViewId,
-      const ViemLayoutCaretRequestV1 *, ViemLayoutCaretGeometryV1 *) =
+      const ViemLayoutCaretRequest *, ViemLayoutCaretGeometry *) =
       viem_core_view_caret_geometry;
   ViemStatus (*hit_test)(ViemCoreHandle, ViemViewId,
-      const ViemLayoutHitTestRequestV1 *, ViemLayoutCaretPointV1 *) =
+      const ViemLayoutHitTestRequest *, ViemLayoutCaretPoint *) =
       viem_core_view_layout_hit_test;
   ViemStatus (*presentation)(ViemCoreHandle, ViemViewId,
-      ViemViewPresentationV1 *) = viem_core_view_presentation;
+      ViemViewPresentation *) = viem_core_view_presentation;
   ViemStatus (*command_line_info)(ViemCoreHandle, ViemViewId,
-      ViemCommandLineInfoV1 *) = viem_core_view_command_line_info;
+      ViemCommandLineInfo *) = viem_core_view_command_line_info;
   ViemStatus (*copy_command_line)(ViemCoreHandle, ViemViewId,
-      const ViemCommandLineIdentityV1 *, uint8_t *, uint64_t,
-      ViemCommandLineInfoV1 *) = viem_core_view_copy_command_line;
+      const ViemCommandLineIdentity *, uint8_t *, uint64_t,
+      ViemCommandLineInfo *) = viem_core_view_copy_command_line;
   ViemStatus (*completion_info)(ViemCoreHandle, ViemViewId,
-      ViemCompletionInfoV1 *) = viem_core_view_completion_info;
+      ViemCompletionInfo *) = viem_core_view_completion_info;
   ViemStatus (*copy_completion_items)(ViemCoreHandle, ViemViewId,
-      const ViemCompletionInfoV1 *, ViemCompletionItemV1 *, uint64_t,
+      const ViemCompletionInfo *, ViemCompletionItem *, uint64_t,
       uint64_t *) = viem_core_view_copy_completion_items;
   ViemStatus (*copy_completion_utf8)(ViemCoreHandle, ViemViewId,
-      const ViemCompletionInfoV1 *, uint8_t *, uint64_t,
+      const ViemCompletionInfo *, uint8_t *, uint64_t,
       uint64_t *) = viem_core_view_copy_completion_utf8;
   ViemStatus (*poll_completion)(ViemCoreHandle, ViemViewId,
       uint8_t *) = viem_core_view_poll_completion;
   ViemStatus (*accept_completion)(ViemCoreHandle, ViemViewId,
       uint8_t *) = viem_core_view_accept_completion;
   ViemStatus (*visual_selection_info)(ViemCoreHandle, ViemViewId,
-      ViemVisualSelectionInfoV1 *) = viem_core_view_visual_selection_info;
+      ViemVisualSelectionInfo *) = viem_core_view_visual_selection_info;
   ViemStatus (*copy_visual_selection)(ViemCoreHandle, ViemViewId,
-      const ViemVisualSelectionIdentityV1 *,
-      ViemVisualSelectionSegmentV1 *, uint64_t,
-      ViemVisualSelectionRectangleV1 *, uint64_t,
-      ViemVisualSelectionInfoV1 *) = viem_core_view_copy_visual_selection;
+      const ViemVisualSelectionIdentity *,
+      ViemVisualSelectionSegment *, uint64_t,
+      ViemVisualSelectionRectangle *, uint64_t,
+      ViemVisualSelectionInfo *) = viem_core_view_copy_visual_selection;
   ViemStatus (*use_selection_for_find)(ViemCoreHandle, ViemViewId,
-      const ViemVisualSelectionIdentityV1 *, ViemCoreOutcomeV1 *) =
+      const ViemVisualSelectionIdentity *, ViemCoreOutcome *) =
       viem_core_view_use_selection_for_find;
   ViemStatus (*reveal_selection)(ViemCoreHandle, ViemViewId,
-      ViemCoreOutcomeV1 *) = viem_core_view_reveal_selection;
+      ViemCoreOutcome *) = viem_core_view_reveal_selection;
   ViemStatus (*set_viewport_origin)(ViemCoreHandle, ViemViewId,
-      const ViemViewportOriginV1 *, ViemCoreOutcomeV1 *) =
+      const ViemViewportOrigin *, ViemCoreOutcome *) =
       viem_core_view_set_viewport_origin;
   ViemStatus (*set_scale)(ViemCoreHandle, ViemViewId, float,
-      ViemCoreOutcomeV1 *) = viem_core_view_set_scale;
+      ViemCoreOutcome *) = viem_core_view_set_scale;
   ViemStatus (*set_file_format)(ViemCoreHandle, ViemViewId,
-      const ViemSetFileFormatV1 *, ViemCoreOutcomeV1 *) =
+      const ViemSetFileFormat *, ViemCoreOutcome *) =
       viem_core_view_set_file_format;
   ViemStatus (*edit_style)(ViemCoreHandle, ViemViewId,
-      const ViemStyleEditV1 *, ViemCoreOutcomeV1 *) =
+      const ViemStyleEdit *, ViemCoreOutcome *) =
       viem_core_view_edit_style;
   ViemStatus (*assign_style)(ViemCoreHandle, ViemViewId,
-      const ViemAssignStyleV1 *, ViemCoreOutcomeV1 *) = viem_core_view_assign_style;
+      const ViemAssignStyle *, ViemCoreOutcome *) = viem_core_view_assign_style;
   ViemStatus (*begin_style_group)(ViemCoreHandle, ViemViewId,
-      const ViemStyleSheetIdentityV1 *, ViemStyleEditGroupV1 *) =
+      const ViemStyleSheetIdentity *, ViemStyleEditGroup *) =
       viem_core_view_begin_style_edit_group;
   ViemStatus (*edit_style_in_group)(ViemCoreHandle, ViemViewId,
-      const ViemStyleEditGroupV1 *, const ViemStyleEditV1 *,
-      ViemCoreOutcomeV1 *) = viem_core_view_edit_style_in_group;
+      const ViemStyleEditGroup *, const ViemStyleEdit *,
+      ViemCoreOutcome *) = viem_core_view_edit_style_in_group;
   ViemStatus (*end_style_group)(ViemCoreHandle, ViemViewId,
-      const ViemStyleEditGroupV1 *) = viem_core_view_end_style_edit_group;
+      const ViemStyleEditGroup *) = viem_core_view_end_style_edit_group;
   ViemStatus (*send_key_with_host_context)(ViemCoreHandle, ViemViewId,
-      const ViemKeyInputV1 *, const ViemCommandTurnContextV2 *,
-      ViemCoreOutcomeV1 *, ViemEffectBatchHandle *) =
-      viem_core_view_send_key_with_host_context_v2;
+      const ViemKeyInput *, const ViemCommandTurnContext *,
+      ViemCoreOutcome *, ViemEffectBatchHandle *) =
+      viem_core_view_send_key_with_host_context;
   ViemStatus (*send_text_with_host_context)(ViemCoreHandle, ViemViewId,
-      const uint8_t *, uint64_t, const ViemCommandTurnContextV2 *,
-      ViemCoreOutcomeV1 *, ViemEffectBatchHandle *) =
-      viem_core_view_send_text_with_host_context_v2;
+      const uint8_t *, uint64_t, const ViemCommandTurnContext *,
+      ViemCoreOutcome *, ViemEffectBatchHandle *) =
+      viem_core_view_send_text_with_host_context;
   ViemStatus (*effect_info)(ViemEffectBatchHandle,
-      ViemEffectBatchInfoV1 *) = viem_effect_batch_info;
+      ViemEffectBatchInfo *) = viem_effect_batch_info;
   ViemStatus (*effect_read)(ViemEffectBatchHandle,
-      ViemEffectBatchViewV1 *) = viem_effect_batch_read;
+      ViemEffectBatchView *) = viem_effect_batch_read;
   ViemStatus (*effect_release)(ViemEffectBatchHandle) =
       viem_effect_batch_release;
   ViemStatus (*place_cursor)(ViemCoreHandle, ViemViewId,
-      const ViemPlaceCursorV1 *, ViemCoreOutcomeV1 *) =
+      const ViemPlaceCursor *, ViemCoreOutcome *) =
       viem_core_view_place_cursor;
-  ViemStatus (*undo)(ViemCoreHandle, ViemViewId, ViemCoreOutcomeV1 *) =
+  ViemStatus (*undo)(ViemCoreHandle, ViemViewId, ViemCoreOutcome *) =
       viem_core_view_undo;
-  ViemStatus (*redo)(ViemCoreHandle, ViemViewId, ViemCoreOutcomeV1 *) =
+  ViemStatus (*redo)(ViemCoreHandle, ViemViewId, ViemCoreOutcome *) =
       viem_core_view_redo;
   ViemStatus (*composition_begin)(ViemCoreHandle, ViemViewId,
-      const ViemCompositionBeginV1 *, ViemCoreOutcomeV1 *) =
+      const ViemCompositionBegin *, ViemCoreOutcome *) =
       viem_core_view_composition_begin;
   ViemStatus (*composition_update)(ViemCoreHandle, ViemViewId,
-      const ViemCompositionUpdateV1 *, ViemCoreOutcomeV1 *) =
+      const ViemCompositionUpdate *, ViemCoreOutcome *) =
       viem_core_view_composition_update;
   ViemStatus (*composition_overlay_info)(ViemCoreHandle, ViemViewId,
-      ViemCompositionOverlayInfoV1 *) =
+      ViemCompositionOverlayInfo *) =
       viem_core_view_composition_overlay_info;
   ViemStatus (*copy_composition_range)(ViemCoreHandle, ViemViewId,
-      const ViemCompositionOverlayUtf8RangeV1 *, uint8_t *, uint64_t,
+      const ViemCompositionOverlayUtf8Range *, uint8_t *, uint64_t,
       uint64_t *) = viem_core_view_copy_composition_utf8_range;
   ViemStatus (*composition_commit)(ViemCoreHandle, ViemViewId,
-      const ViemCompositionCommitV1 *, ViemCoreOutcomeV1 *) =
+      const ViemCompositionCommit *, ViemCoreOutcome *) =
       viem_core_view_composition_commit;
   ViemStatus (*composition_cancel)(ViemCoreHandle, ViemViewId,
-      const ViemCompositionCancelV1 *, ViemCoreOutcomeV1 *) =
+      const ViemCompositionCancel *, ViemCoreOutcome *) =
       viem_core_view_composition_cancel;
   (void)request; (void)create_core; (void)document_state;
   (void)formatted_info; (void)copy_formatted_range;
@@ -734,20 +655,20 @@ static void typecheck(void) {{
   (void)composition_overlay_info; (void)copy_composition_range;
   (void)composition_commit; (void)composition_cancel;
   ViemStatus (*layout_diagnostics)(ViemCoreHandle, ViemViewId,
-      const ViemLayoutSnapshotIdentityV1 *, uint8_t *, uint64_t, uint64_t *) =
+      const ViemLayoutSnapshotIdentity *, uint8_t *, uint64_t, uint64_t *) =
       viem_core_view_copy_layout_diagnostics;
   (void)layout_diagnostics;
 }}
 "#,
-        table_context = std::mem::size_of::<ViemTableContextV1>(),
-        table_context_selection = std::mem::offset_of!(ViemTableContextV1, selection),
-        insert_table = std::mem::size_of::<ViemInsertTableV1>(),
-        insert_table_columns = std::mem::offset_of!(ViemInsertTableV1, columns),
-        table_action = std::mem::size_of::<ViemTableActionV1>(),
-        table_action_expected = std::mem::offset_of!(ViemTableActionV1, expected),
-        table_cell = std::mem::size_of::<ViemTableCellV1>(),
-        table_cell_rect = std::mem::offset_of!(ViemTableCellV1, rect),
-        table_selection = std::mem::size_of::<ViemTableSelectionV1>(),
+        table_context = std::mem::size_of::<ViemTableContext>(),
+        table_context_selection = std::mem::offset_of!(ViemTableContext, selection),
+        insert_table = std::mem::size_of::<ViemInsertTable>(),
+        insert_table_columns = std::mem::offset_of!(ViemInsertTable, columns),
+        table_action = std::mem::size_of::<ViemTableAction>(),
+        table_action_expected = std::mem::offset_of!(ViemTableAction, expected),
+        table_cell = std::mem::size_of::<ViemTableCell>(),
+        table_cell_rect = std::mem::offset_of!(ViemTableCell, rect),
+        table_selection = std::mem::size_of::<ViemTableSelection>(),
         table_selection_kind = VIEM_LOGICAL_SELECTION_KIND_CELLS,
         table_role = VIEM_STYLE_ROLE_TABLE,
         container_role = VIEM_STYLE_ROLE_CONTAINER,
@@ -774,10 +695,10 @@ static void typecheck(void) {{
         diff_navigation_scrolled = VIEM_DIFF_NAVIGATION_SCROLLED,
         diff_navigation_found = VIEM_DIFF_NAVIGATION_FOUND,
         diff_mark_added = VIEM_DIFF_MARK_ADDED,
-        line_number_info_size = std::mem::size_of::<ViemLineNumberSnapshotInfoV1>(),
-        line_number_info_viewport = std::mem::offset_of!(ViemLineNumberSnapshotInfoV1, viewport),
-        line_number_region_size = std::mem::size_of::<ViemLineNumberRegionV1>(),
-        line_number_region_top = std::mem::offset_of!(ViemLineNumberRegionV1, top),
+        line_number_info_size = std::mem::size_of::<ViemLineNumberSnapshotInfo>(),
+        line_number_info_viewport = std::mem::offset_of!(ViemLineNumberSnapshotInfo, viewport),
+        line_number_region_size = std::mem::size_of::<ViemLineNumberRegion>(),
+        line_number_region_top = std::mem::offset_of!(ViemLineNumberRegion, top),
         abi = VIEM_CORE_ABI_VERSION,
         alt_enter = VIEM_KEY_ALT_ENTER,
         language_picker_disabled = VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED,
@@ -799,122 +720,122 @@ static void typecheck(void) {{
         selection_line = VIEM_MODE_SELECTION_LINE,
         selection_block = VIEM_MODE_SELECTION_BLOCK,
         autoselect = VIEM_EX_OPTION_AUTOSELECT,
-        set_mode_size = std::mem::size_of::<ViemSetDocumentModeV1>(),
+        set_mode_size = std::mem::size_of::<ViemSetDocumentMode>(),
         document_options = std::mem::size_of::<ViemDocumentOptions>(),
-        document_state = std::mem::size_of::<ViemDocumentStateV1>(),
-        formatted_identity = std::mem::size_of::<ViemFormattedSnapshotIdentityV1>(),
+        document_state = std::mem::size_of::<ViemDocumentState>(),
+        formatted_identity = std::mem::size_of::<ViemFormattedSnapshotIdentity>(),
         formatted_identity_document =
-            std::mem::offset_of!(ViemFormattedSnapshotIdentityV1, document_id),
-        formatted_info = std::mem::size_of::<ViemFormattedSnapshotInfoV1>(),
-        formatted_info_utf8 = std::mem::offset_of!(ViemFormattedSnapshotInfoV1, utf8_length),
-        formatted_range = std::mem::size_of::<ViemFormattedUtf8RangeV1>(),
-        formatted_range_start = std::mem::offset_of!(ViemFormattedUtf8RangeV1, utf8_start),
-        formatted_point = std::mem::size_of::<ViemFormattedPointInfoV1>(),
-        formatted_point_column = std::mem::offset_of!(ViemFormattedPointInfoV1, grapheme_column),
-        clipboard_turn_entry = std::mem::size_of::<ViemClipboardTurnEntryV2>(),
-        clipboard_turn_text = std::mem::offset_of!(ViemClipboardTurnEntryV2, plain_text),
-        file_mark_target = std::mem::size_of::<ViemFileMarkTargetV1>(),
-        file_mark_generation = std::mem::offset_of!(ViemFileMarkTargetV1, generation),
-        command_turn_context = std::mem::size_of::<ViemCommandTurnContextV2>(),
-        effect_bytes_ref = std::mem::size_of::<ViemEffectBytesRefV1>(),
-        clipboard_write = std::mem::size_of::<ViemClipboardWriteV1>(),
-        ex_option = std::mem::size_of::<ViemExOptionDisplayV1>(),
-        ex_mark = std::mem::size_of::<ViemExMarkV1>(),
-        ex_register = std::mem::size_of::<ViemExRegisterV1>(),
-        ex_jump = std::mem::size_of::<ViemExJumpV1>(),
-        ex_text_line = std::mem::size_of::<ViemExTextLineV1>(),
+            std::mem::offset_of!(ViemFormattedSnapshotIdentity, document_id),
+        formatted_info = std::mem::size_of::<ViemFormattedSnapshotInfo>(),
+        formatted_info_utf8 = std::mem::offset_of!(ViemFormattedSnapshotInfo, utf8_length),
+        formatted_range = std::mem::size_of::<ViemFormattedUtf8Range>(),
+        formatted_range_start = std::mem::offset_of!(ViemFormattedUtf8Range, utf8_start),
+        formatted_point = std::mem::size_of::<ViemFormattedPointInfo>(),
+        formatted_point_column = std::mem::offset_of!(ViemFormattedPointInfo, grapheme_column),
+        clipboard_turn_entry = std::mem::size_of::<ViemClipboardTurnEntry>(),
+        clipboard_turn_text = std::mem::offset_of!(ViemClipboardTurnEntry, plain_text),
+        file_mark_target = std::mem::size_of::<ViemFileMarkTarget>(),
+        file_mark_generation = std::mem::offset_of!(ViemFileMarkTarget, generation),
+        command_turn_context = std::mem::size_of::<ViemCommandTurnContext>(),
+        effect_bytes_ref = std::mem::size_of::<ViemEffectBytesRef>(),
+        clipboard_write = std::mem::size_of::<ViemClipboardWrite>(),
+        ex_option = std::mem::size_of::<ViemExOptionDisplay>(),
+        ex_mark = std::mem::size_of::<ViemExMark>(),
+        ex_register = std::mem::size_of::<ViemExRegister>(),
+        ex_jump = std::mem::size_of::<ViemExJump>(),
+        ex_text_line = std::mem::size_of::<ViemExTextLine>(),
         pane_chrome = std::mem::size_of::<ViemPaneChrome>(),
         pane_frame = std::mem::size_of::<ViemPaneFrame>(),
         pane_frame_x = std::mem::offset_of!(ViemPaneFrame, x),
         pane_snapshot = std::mem::size_of::<ViemPaneSnapshot>(),
-        ex_request = std::mem::size_of::<ViemExFrontendRequestV1>(),
-        ex_request_payload = std::mem::offset_of!(ViemExFrontendRequestV1, first_payload),
-        effect_batch_info = std::mem::size_of::<ViemEffectBatchInfoV1>(),
-        effect_batch_mark_count = std::mem::offset_of!(ViemEffectBatchInfoV1, ex_mark_count),
-        style = std::mem::size_of::<ViemResolvedTextStyleV1>(),
-        baseline_offset = std::mem::offset_of!(ViemResolvedTextStyleV1, baseline_offset),
+        ex_request = std::mem::size_of::<ViemExFrontendRequest>(),
+        ex_request_payload = std::mem::offset_of!(ViemExFrontendRequest, first_payload),
+        effect_batch_info = std::mem::size_of::<ViemEffectBatchInfo>(),
+        effect_batch_mark_count = std::mem::offset_of!(ViemEffectBatchInfo, ex_mark_count),
+        style = std::mem::size_of::<ViemResolvedTextStyle>(),
+        baseline_offset = std::mem::offset_of!(ViemResolvedTextStyle, baseline_offset),
         percentage_value = VIEM_STYLE_VALUE_PERCENTAGE,
-        style_run = std::mem::size_of::<ViemShapeStyleRunV1>(),
-        cluster = std::mem::size_of::<ViemShapedClusterV1>(),
-        diagnostic = std::mem::size_of::<ViemShapingDiagnosticV1>(),
-        request = std::mem::size_of::<ViemShapeRequestV1>(),
-        inline_image = std::mem::size_of::<ViemInlineImageV1>(),
-        inline_image_destination = std::mem::offset_of!(ViemInlineImageV1, destination),
-        request_images = std::mem::offset_of!(ViemShapeRequestV1, inline_images),
-        request_image_count = std::mem::offset_of!(ViemShapeRequestV1, inline_image_count),
-        response = std::mem::size_of::<ViemShapeResponseV1>(),
-        provider = std::mem::size_of::<ViemTextMeasurementProviderV1>(),
-        view_options = std::mem::size_of::<ViemViewOptionsV1>(),
-        viewport_origin = std::mem::size_of::<ViemViewportOriginV1>(),
-        viewport_state = std::mem::size_of::<ViemViewportStateV1>(),
-        layout_identity = std::mem::size_of::<ViemLayoutSnapshotIdentityV1>(),
-        layout_insets = std::mem::size_of::<ViemLayoutInsetsV1>(),
-        layout_rect = std::mem::size_of::<ViemLayoutRectV1>(),
-        rgba = std::mem::size_of::<ViemRgbaV1>(),
-        style_sheet_identity = std::mem::size_of::<ViemStyleSheetIdentityV1>(),
-        style_string_ref = std::mem::size_of::<ViemStyleStringRefV1>(),
-        style_sheet_info = std::mem::size_of::<ViemStyleSheetInfoV1>(),
-        style_value = std::mem::size_of::<ViemStyleValueV1>(),
-        style_value_item = std::mem::size_of::<ViemStyleValueItemV1>(),
-        style_dependency = std::mem::size_of::<ViemStyleDependencyV1>(),
-        style_definition = std::mem::size_of::<ViemStyleDefinitionV1>(),
-        style_property = std::mem::size_of::<ViemStylePropertyV1>(),
-        style_edit_value_item = std::mem::size_of::<ViemStyleEditValueItemV1>(),
-        style_edit_value = std::mem::size_of::<ViemStyleEditValueV1>(),
-        style_edit = std::mem::size_of::<ViemStyleEditV1>(),
-        style_edit_group = std::mem::size_of::<ViemStyleEditGroupV1>(),
-        style_edit_group_token = std::mem::offset_of!(ViemStyleEditGroupV1, token),
-        text_paint = std::mem::size_of::<ViemTextPaintV1>(),
-        layout_paint_info = std::mem::size_of::<ViemLayoutPaintInfoV1>(),
-        paint_style_run = std::mem::size_of::<ViemPaintStyleRunV1>(),
-        layout_info = std::mem::size_of::<ViemLayoutSnapshotInfoV1>(),
-        visual_row = std::mem::size_of::<ViemVisualRowV1>(),
-        positioned_cluster = std::mem::size_of::<ViemPositionedClusterV1>(),
-        positioned_caret = std::mem::size_of::<ViemPositionedCaretV1>(),
-        caret_request = std::mem::size_of::<ViemLayoutCaretRequestV1>(),
+        style_run = std::mem::size_of::<ViemShapeStyleRun>(),
+        cluster = std::mem::size_of::<ViemShapedCluster>(),
+        diagnostic = std::mem::size_of::<ViemShapingDiagnostic>(),
+        request = std::mem::size_of::<ViemShapeRequest>(),
+        inline_image = std::mem::size_of::<ViemInlineImage>(),
+        inline_image_destination = std::mem::offset_of!(ViemInlineImage, destination),
+        request_images = std::mem::offset_of!(ViemShapeRequest, inline_images),
+        request_image_count = std::mem::offset_of!(ViemShapeRequest, inline_image_count),
+        response = std::mem::size_of::<ViemShapeResponse>(),
+        provider = std::mem::size_of::<ViemTextMeasurementProvider>(),
+        view_options = std::mem::size_of::<ViemViewOptions>(),
+        viewport_origin = std::mem::size_of::<ViemViewportOrigin>(),
+        viewport_state = std::mem::size_of::<ViemViewportState>(),
+        layout_identity = std::mem::size_of::<ViemLayoutSnapshotIdentity>(),
+        layout_insets = std::mem::size_of::<ViemLayoutInsets>(),
+        layout_rect = std::mem::size_of::<ViemLayoutRect>(),
+        rgba = std::mem::size_of::<ViemRgba>(),
+        style_sheet_identity = std::mem::size_of::<ViemStyleSheetIdentity>(),
+        style_string_ref = std::mem::size_of::<ViemStyleStringRef>(),
+        style_sheet_info = std::mem::size_of::<ViemStyleSheetInfo>(),
+        style_value = std::mem::size_of::<ViemStyleValue>(),
+        style_value_item = std::mem::size_of::<ViemStyleValueItem>(),
+        style_dependency = std::mem::size_of::<ViemStyleDependency>(),
+        style_definition = std::mem::size_of::<ViemStyleDefinition>(),
+        style_property = std::mem::size_of::<ViemStyleProperty>(),
+        style_edit_value_item = std::mem::size_of::<ViemStyleEditValueItem>(),
+        style_edit_value = std::mem::size_of::<ViemStyleEditValue>(),
+        style_edit = std::mem::size_of::<ViemStyleEdit>(),
+        style_edit_group = std::mem::size_of::<ViemStyleEditGroup>(),
+        style_edit_group_token = std::mem::offset_of!(ViemStyleEditGroup, token),
+        text_paint = std::mem::size_of::<ViemTextPaint>(),
+        layout_paint_info = std::mem::size_of::<ViemLayoutPaintInfo>(),
+        paint_style_run = std::mem::size_of::<ViemPaintStyleRun>(),
+        layout_info = std::mem::size_of::<ViemLayoutSnapshotInfo>(),
+        visual_row = std::mem::size_of::<ViemVisualRow>(),
+        positioned_cluster = std::mem::size_of::<ViemPositionedCluster>(),
+        positioned_caret = std::mem::size_of::<ViemPositionedCaret>(),
+        caret_request = std::mem::size_of::<ViemLayoutCaretRequest>(),
         pointer_down_flag = VIEM_LAYOUT_HIT_TEST_POINTER_DOWN,
         pointer_gesture_flag = VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE,
-        pointer_caret_size = std::mem::size_of::<ViemPointerCaretV1>(),
-        pointer_caret_start = std::mem::offset_of!(ViemPointerCaretV1, text_start),
+        pointer_caret_size = std::mem::size_of::<ViemPointerCaret>(),
+        pointer_caret_start = std::mem::offset_of!(ViemPointerCaret, text_start),
         pointer_caret_current = VIEM_POINTER_CARET_CURRENT,
-        hit_test_flags = std::mem::offset_of!(ViemLayoutHitTestRequestV1, flags),
-        hit_test_request = std::mem::size_of::<ViemLayoutHitTestRequestV1>(),
-        caret_point = std::mem::size_of::<ViemLayoutCaretPointV1>(),
-        caret_geometry = std::mem::size_of::<ViemLayoutCaretGeometryV1>(),
-        presentation = std::mem::size_of::<ViemViewPresentationV1>(),
-        command_line_identity = std::mem::size_of::<ViemCommandLineIdentityV1>(),
-        command_line_info = std::mem::size_of::<ViemCommandLineInfoV1>(),
-        completion_info = std::mem::size_of::<ViemCompletionInfoV1>(),
-        completion_selected = std::mem::offset_of!(ViemCompletionInfoV1, selected_index),
-        completion_anchor_layout = std::mem::offset_of!(ViemCompletionInfoV1, anchor_layout),
-        completion_anchor_rect = std::mem::offset_of!(ViemCompletionInfoV1, anchor_rect),
-        completion_item = std::mem::size_of::<ViemCompletionItemV1>(),
+        hit_test_flags = std::mem::offset_of!(ViemLayoutHitTestRequest, flags),
+        hit_test_request = std::mem::size_of::<ViemLayoutHitTestRequest>(),
+        caret_point = std::mem::size_of::<ViemLayoutCaretPoint>(),
+        caret_geometry = std::mem::size_of::<ViemLayoutCaretGeometry>(),
+        presentation = std::mem::size_of::<ViemViewPresentation>(),
+        command_line_identity = std::mem::size_of::<ViemCommandLineIdentity>(),
+        command_line_info = std::mem::size_of::<ViemCommandLineInfo>(),
+        completion_info = std::mem::size_of::<ViemCompletionInfo>(),
+        completion_selected = std::mem::offset_of!(ViemCompletionInfo, selected_index),
+        completion_anchor_layout = std::mem::offset_of!(ViemCompletionInfo, anchor_layout),
+        completion_anchor_rect = std::mem::offset_of!(ViemCompletionInfo, anchor_rect),
+        completion_item = std::mem::size_of::<ViemCompletionItem>(),
         completion_active = VIEM_COMPLETION_ACTIVE,
         completion_searching = VIEM_COMPLETION_SEARCHING,
         completion_truncated = VIEM_COMPLETION_TRUNCATED,
         completion_has_anchor = VIEM_COMPLETION_HAS_ANCHOR,
         completion_rtl = VIEM_COMPLETION_RIGHT_TO_LEFT,
-        visual_selection_identity = std::mem::size_of::<ViemVisualSelectionIdentityV1>(),
-        visual_selection_info = std::mem::size_of::<ViemVisualSelectionInfoV1>(),
-        visual_selection_segment = std::mem::size_of::<ViemVisualSelectionSegmentV1>(),
-        visual_selection_rectangle = std::mem::size_of::<ViemVisualSelectionRectangleV1>(),
-        place_cursor = std::mem::size_of::<ViemPlaceCursorV1>(),
-        assign_style = std::mem::size_of::<ViemAssignStyleV1>(),
-        set_block_quote = std::mem::size_of::<ViemSetBlockQuoteV1>(),
-        quote_selection = std::mem::offset_of!(ViemSetBlockQuoteV1, expected_selection),
-        create_style = std::mem::size_of::<ViemCreateStyleV1>(),
-        delete_style = std::mem::size_of::<ViemDeleteStyleV1>(),
-        set_file_format = std::mem::size_of::<ViemSetFileFormatV1>(),
-        mark_saved = std::mem::size_of::<ViemMarkSavedV1>(),
-        key = std::mem::size_of::<ViemKeyInputV1>(),
-        composition_begin = std::mem::size_of::<ViemCompositionBeginV1>(),
-        composition_update = std::mem::size_of::<ViemCompositionUpdateV1>(),
-        composition_commit = std::mem::size_of::<ViemCompositionCommitV1>(),
-        composition_cancel = std::mem::size_of::<ViemCompositionCancelV1>(),
-        composition_overlay_identity = std::mem::size_of::<ViemCompositionOverlayIdentityV1>(),
-        composition_overlay_info = std::mem::size_of::<ViemCompositionOverlayInfoV1>(),
-        composition_overlay_range = std::mem::size_of::<ViemCompositionOverlayUtf8RangeV1>(),
-        outcome = std::mem::size_of::<ViemCoreOutcomeV1>(),
+        visual_selection_identity = std::mem::size_of::<ViemVisualSelectionIdentity>(),
+        visual_selection_info = std::mem::size_of::<ViemVisualSelectionInfo>(),
+        visual_selection_segment = std::mem::size_of::<ViemVisualSelectionSegment>(),
+        visual_selection_rectangle = std::mem::size_of::<ViemVisualSelectionRectangle>(),
+        place_cursor = std::mem::size_of::<ViemPlaceCursor>(),
+        assign_style = std::mem::size_of::<ViemAssignStyle>(),
+        set_block_quote = std::mem::size_of::<ViemSetBlockQuote>(),
+        quote_selection = std::mem::offset_of!(ViemSetBlockQuote, expected_selection),
+        create_style = std::mem::size_of::<ViemCreateStyle>(),
+        delete_style = std::mem::size_of::<ViemDeleteStyle>(),
+        set_file_format = std::mem::size_of::<ViemSetFileFormat>(),
+        mark_saved = std::mem::size_of::<ViemMarkSaved>(),
+        key = std::mem::size_of::<ViemKeyInput>(),
+        composition_begin = std::mem::size_of::<ViemCompositionBegin>(),
+        composition_update = std::mem::size_of::<ViemCompositionUpdate>(),
+        composition_commit = std::mem::size_of::<ViemCompositionCommit>(),
+        composition_cancel = std::mem::size_of::<ViemCompositionCancel>(),
+        composition_overlay_identity = std::mem::size_of::<ViemCompositionOverlayIdentity>(),
+        composition_overlay_info = std::mem::size_of::<ViemCompositionOverlayInfo>(),
+        composition_overlay_range = std::mem::size_of::<ViemCompositionOverlayUtf8Range>(),
+        outcome = std::mem::size_of::<ViemCoreOutcome>(),
     );
     append_generated_layout_checks(&mut source);
     source

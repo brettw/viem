@@ -12,7 +12,7 @@ internal sealed record ReferenceUse(string Text, ulong Offset, bool Image);
 internal sealed record ReferenceContext(ulong Start, ulong End, string Name, string Text, string Destination, string Title,
     bool Definition, ulong? DefinitionOffset, bool Inactive, int Links, int Images, bool Complete, bool Editable,
     ReferenceChoice[] Choices, ReferenceUse[] Uses);
-internal sealed record LinkContext(ViemLogicalSelectionIdentityV1 Selection, bool CanInsert, bool Linked, bool CanRemoveSelection, bool CanExitLink, string Text, MarkdownLink? Link, ReferenceContext? Reference = null);
+internal sealed record LinkContext(ViemLogicalSelectionIdentity Selection, bool CanInsert, bool Linked, bool CanRemoveSelection, bool CanExitLink, string Text, MarkdownLink? Link, ReferenceContext? Reference = null);
 
 internal sealed unsafe partial class CoreView
 {

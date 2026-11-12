@@ -12,9 +12,9 @@ namespace Viem.Windows.Rendering;
 internal sealed unsafe partial class DirectWriteProvider
 {
 #if DEBUG
-    internal float ImageLocationFontSize(ViemRenderRunHandleV1 handle) => resources.TryGetValue(handle.identifier, out var resource) ? resource.MarkerFont.Size : 0;
+    internal float ImageLocationFontSize(ViemRenderRunHandle handle) => resources.TryGetValue(handle.identifier, out var resource) ? resource.MarkerFont.Size : 0;
 #endif
-    public void DrawImageLocation(CanvasDrawingSession drawing, ViemRenderRunHandleV1 handle, string text, Rect bounds, Color color, uint paintFlags)
+    public void DrawImageLocation(CanvasDrawingSession drawing, ViemRenderRunHandle handle, string text, Rect bounds, Color color, uint paintFlags)
     {
         if (handle.owner != owner || handle.metrics_generation != Generation || !resources.TryGetValue(handle.identifier, out var resource)) return;
         if (text.Length > 4096) text = text[..(char.IsHighSurrogate(text[4095]) ? 4095 : 4096)] + "…";

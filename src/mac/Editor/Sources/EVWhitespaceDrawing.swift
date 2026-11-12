@@ -130,7 +130,7 @@ extension EVEditorView {
 
     /// The marker inherits the contributor whose slot contains its origin.
     /// Rows are sorted by x once, so a long whitespace row stays O(n log n).
-    static func whitespaceCluster(at x: CGFloat, in clusters: [ViemPositionedClusterV1]) -> ViemPositionedClusterV1? {
+    static func whitespaceCluster(at x: CGFloat, in clusters: [ViemPositionedCluster]) -> ViemPositionedCluster? {
         guard !clusters.isEmpty else { return nil }
         var lower = 0
         var upper = clusters.count

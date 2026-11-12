@@ -90,7 +90,7 @@ final class EVBlockExitTests: XCTestCase {
             target: .boundary(offset: 0, affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM))).rect).minX
     }
 
-    private func codeFills(_ snapshot: EVLayoutExport) -> [ViemLayoutDecorationV1] {
+    private func codeFills(_ snapshot: EVLayoutExport) -> [ViemLayoutDecoration] {
         snapshot.decorations.filter {
             $0.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND) != 0
                 && abs($0.paint.foreground.red - codeBackground.red) < 0.001
@@ -393,8 +393,7 @@ final class EVBlockExitTests: XCTestCase {
         surface.performInput { _ = try session.sendText("i") }
         // AX placement requires existing geometry. Place this distant logical
         // boundary through the session so it acquires its own visible layout.
-        var point = ViemLayoutCaretPointV1()
-        point.struct_size = UInt32(MemoryLayout<ViemLayoutCaretPointV1>.size)
+        var point = ViemLayoutCaretPoint()
         point.document_revision = surface.viewPresentation.document_revision
         point.text_offset = UInt64(offset)
         point.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)

@@ -13,7 +13,7 @@ struct EVLinkHeadingList: Decodable {
 }
 
 extension EVCoreViewSession {
-    func linkHeadings(expected: ViemLogicalSelectionIdentityV1) throws -> EVLinkHeadingList {
+    func linkHeadings(expected: ViemLogicalSelectionIdentity) throws -> EVLinkHeadingList {
         guard expected.isSameSelection(as: try listSelection()) else {
             throw EVCoreFrontendError.core(operation: "List linked headings", status: UInt32(VIEM_STATUS_STALE_REVISION))
         }
@@ -29,7 +29,7 @@ extension EVCoreViewSession {
         guard result == 0 else { throw EVCoreFrontendError.core(operation: "List linked headings", status: result) }
         return try JSONDecoder().decode(EVLinkHeadingList.self, from: Data(bytes))
     }
-    func referenceChoices(expected: ViemLogicalSelectionIdentityV1) throws -> [EVInlineContentContext.Reference.Choice] {
+    func referenceChoices(expected: ViemLogicalSelectionIdentity) throws -> [EVInlineContentContext.Reference.Choice] {
         guard expected.isSameSelection(as: try listSelection()) else {
             throw EVCoreFrontendError.core(operation: "List reference definitions", status: UInt32(VIEM_STATUS_STALE_REVISION))
         }

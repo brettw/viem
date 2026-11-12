@@ -6,17 +6,17 @@ using static Viem.Windows.Interop.Abi;
 namespace Viem.Windows.Core;
 
 internal sealed record ClipboardWrite(string Text, string Fragment);
-internal sealed record FrontendRequest(ViemExFrontendRequestV1 Value, string Text);
+internal sealed record FrontendRequest(ViemExFrontendRequest Value, string Text);
 internal sealed record HostEffects(ClipboardWrite[] Clipboard, FrontendRequest[] Requests, string[] Output, IReadOnlyDictionary<uint, string> SelectionOptions)
 {
     public static unsafe HostEffects Read(ulong handle)
     {
-        var info = New<ViemEffectBatchInfoV1>(); Check(viem_effect_batch_info(handle, &info), "Read effects");
-        var borrowed = new ViemEffectBatchViewV1();
+        var info = new ViemEffectBatchInfo(); Check(viem_effect_batch_info(handle, &info), "Read effects");
+        var borrowed = new ViemEffectBatchView();
         Check(viem_effect_batch_read(handle, &borrowed), "Read effect arrays");
-        var clipboard = new ReadOnlySpan<ViemClipboardWriteV1>(borrowed.clipboard_writes, checked((int)info.clipboard_write_count)).ToArray();
-        var requests = new ReadOnlySpan<ViemExFrontendRequestV1>(borrowed.ex_requests, checked((int)info.ex_request_count)).ToArray();
-        var options = new ReadOnlySpan<ViemExOptionDisplayV1>(borrowed.ex_options, checked((int)info.ex_option_count)).ToArray();
+        var clipboard = new ReadOnlySpan<ViemClipboardWrite>(borrowed.clipboard_writes, checked((int)info.clipboard_write_count)).ToArray();
+        var requests = new ReadOnlySpan<ViemExFrontendRequest>(borrowed.ex_requests, checked((int)info.ex_request_count)).ToArray();
+        var options = new ReadOnlySpan<ViemExOptionDisplay>(borrowed.ex_options, checked((int)info.ex_option_count)).ToArray();
         var bytes = new ReadOnlySpan<byte>(borrowed.strings, checked((int)info.string_bytes)).ToArray();
         var writes = clipboard.Select((c, i) => new ClipboardWrite(Text(bytes, c.plain_text),
             System.Text.Encoding.UTF8.GetString(Copy((p, n, r) => viem_effect_batch_copy_clipboard_json(handle, (ulong)i, p, n, r))))).ToArray();

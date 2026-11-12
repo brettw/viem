@@ -65,7 +65,7 @@ pub unsafe extern "C" fn viem_core_view_copy_image_context(
 pub unsafe extern "C" fn viem_core_view_edit_image(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemLogicalSelectionIdentityV1,
+    expected: *const ViemLogicalSelectionIdentity,
     action: u32,
     image_start: u64,
     image_end: u64,
@@ -73,7 +73,7 @@ pub unsafe extern "C" fn viem_core_view_edit_image(
     destination: ViemUtf8Slice,
     width: u32,
     height: u32,
-    output: *mut ViemCoreOutcomeV1,
+    output: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         validate_disjoint_regions(&[
@@ -152,7 +152,7 @@ pub unsafe extern "C" fn viem_core_view_select_image(
     document: u64,
     revision: u64,
     offset: u64,
-    output: *mut ViemCoreOutcomeV1,
+    output: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         unsafe {

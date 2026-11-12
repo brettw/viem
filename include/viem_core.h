@@ -8,10 +8,8 @@
 extern "C" {
 #endif
 
-#define VIEM_CORE_ABI_VERSION 8u
-#define VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V4 4u
-#define VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION \
-  VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V4
+#define VIEM_CORE_ABI_VERSION 9u
+#define VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION 4u
 
 typedef uint64_t ViemCoreHandle;
 /* Owned immutable command-turn effects; zero means no effects. */
@@ -140,17 +138,14 @@ ViemStatus viem_pane_layout_action(uint64_t handle, uint64_t pane, uint32_t oper
 #define VIEM_DOCUMENT_STATE_MARKDOWN_SOURCE (1u << 6)
 
 typedef struct ViemDocumentOptions {
-  uint32_t struct_size;
   uint32_t encoding;
   uint32_t format;
   uint32_t file_format;
 } ViemDocumentOptions;
 
-#define VIEM_DOCUMENT_OPTIONS_SIZE 16u
 
 /* Model, pipeline, and history metadata captured in one serial core query. */
-typedef struct ViemDocumentStateV1 {
-  uint32_t struct_size;
+typedef struct ViemDocumentState {
   uint32_t flags;
   uint64_t document_id;
   uint64_t document_revision;
@@ -162,67 +157,48 @@ typedef struct ViemDocumentStateV1 {
   uint32_t file_format_origin;
   uint32_t undo_action_category;
   uint32_t redo_action_category;
-  uint32_t reserved[2];
-} ViemDocumentStateV1;
+} ViemDocumentState;
 
-#define VIEM_DOCUMENT_STATE_V1_SIZE \
-  ((uint32_t)sizeof(ViemDocumentStateV1))
 
 /* Exact identity of one immutable formatted projection. */
-typedef struct ViemFormattedSnapshotIdentityV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
+typedef struct ViemFormattedSnapshotIdentity {
   uint64_t document_id;
   uint64_t document_revision;
-} ViemFormattedSnapshotIdentityV1;
+} ViemFormattedSnapshotIdentity;
 
-#define VIEM_FORMATTED_SNAPSHOT_IDENTITY_V1_SIZE \
-  ((uint32_t)sizeof(ViemFormattedSnapshotIdentityV1))
 
 /* Constant-time aggregate metadata; querying it never flattens document text. */
-typedef struct ViemFormattedSnapshotInfoV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
-  ViemFormattedSnapshotIdentityV1 identity;
+typedef struct ViemFormattedSnapshotInfo {
+  ViemFormattedSnapshotIdentity identity;
   uint64_t utf8_length;
   uint64_t utf16_length;
   uint64_t hard_line_count;
-} ViemFormattedSnapshotInfoV1;
+} ViemFormattedSnapshotInfo;
 
-#define VIEM_FORMATTED_SNAPSHOT_INFO_V1_SIZE \
-  ((uint32_t)sizeof(ViemFormattedSnapshotInfoV1))
 
 /* Scalar-aligned, half-open UTF-8 range in one exact formatted snapshot. */
-typedef struct ViemFormattedUtf8RangeV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
-  ViemFormattedSnapshotIdentityV1 identity;
+typedef struct ViemFormattedUtf8Range {
+  ViemFormattedSnapshotIdentity identity;
   uint64_t utf8_start;
   uint64_t utf8_end;
-} ViemFormattedUtf8RangeV1;
+} ViemFormattedUtf8Range;
 
-#define VIEM_FORMATTED_UTF8_RANGE_V1_SIZE \
-  ((uint32_t)sizeof(ViemFormattedUtf8RangeV1))
 
 /*
  * Logical status metadata for one grapheme-aligned formatted point. Line and
  * column values are zero based. hard_line_start..hard_line_end excludes the
  * following semantic hard break.
  */
-typedef struct ViemFormattedPointInfoV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
-  ViemFormattedSnapshotIdentityV1 identity;
+typedef struct ViemFormattedPointInfo {
+  ViemFormattedSnapshotIdentity identity;
   uint64_t utf8_offset;
   uint64_t utf16_offset;
   uint64_t hard_line_index;
   uint64_t hard_line_start;
   uint64_t hard_line_end;
   uint64_t grapheme_column;
-} ViemFormattedPointInfoV1;
+} ViemFormattedPointInfo;
 
-#define VIEM_FORMATTED_POINT_INFO_V1_SIZE \
-  ((uint32_t)sizeof(ViemFormattedPointInfoV1))
 
 #define VIEM_PROVIDER_THREADING_ANY_WORKER 1u
 #define VIEM_PROVIDER_THREADING_DEDICATED_SERIAL 2u
@@ -390,7 +366,6 @@ typedef struct ViemFormattedPointInfoV1 {
 
 typedef struct ViemArgumentResolution {
   uint32_t status;
-  uint32_t reserved;
   uint64_t index;
 } ViemArgumentResolution;
 
@@ -524,89 +499,71 @@ typedef struct ViemUtf8Slice {
 } ViemUtf8Slice;
 
 /* One snapshot/capability per clipboard target, with optional private JSON. */
-typedef struct ViemClipboardTurnEntryV2 {
-  uint32_t struct_size;
+typedef struct ViemClipboardTurnEntry {
   uint32_t flags;
   uint32_t target;
-  uint32_t reserved;
   uint64_t generation;
   ViemUtf8Slice plain_text;
   ViemUtf8Slice fragment_json;
-} ViemClipboardTurnEntryV2;
-#define VIEM_CLIPBOARD_TURN_ENTRY_V2_SIZE ((uint32_t)sizeof(ViemClipboardTurnEntryV2))
-typedef struct ViemCommandTurnContextV2 {
-  uint32_t struct_size;
-  uint32_t reserved;
-  const ViemClipboardTurnEntryV2 *clipboards;
+} ViemClipboardTurnEntry;
+typedef struct ViemCommandTurnContext {
+  const ViemClipboardTurnEntry *clipboards;
   uint64_t clipboard_count;
-} ViemCommandTurnContextV2;
-#define VIEM_COMMAND_TURN_CONTEXT_V2_SIZE ((uint32_t)sizeof(ViemCommandTurnContextV2))
+} ViemCommandTurnContext;
 
 /* Offset and length in the UTF-8 string arena copied with an effect batch. */
-typedef struct ViemEffectBytesRefV1 {
+typedef struct ViemEffectBytesRef {
   uint64_t offset;
   uint64_t length;
-} ViemEffectBytesRefV1;
+} ViemEffectBytesRef;
 
-typedef struct ViemClipboardWriteV1 {
-  uint32_t struct_size;
+typedef struct ViemClipboardWrite {
   uint32_t flags;
   uint32_t target;
   uint32_t register_kind;
   uint64_t document_id;
   uint64_t document_revision;
-  ViemEffectBytesRefV1 plain_text;
+  ViemEffectBytesRef plain_text;
   uint64_t first_hard_break;
   uint64_t hard_break_count;
-} ViemClipboardWriteV1;
+} ViemClipboardWrite;
 
-#define VIEM_CLIPBOARD_WRITE_V1_SIZE \
-  ((uint32_t)sizeof(ViemClipboardWriteV1))
 
 /* Subordinate display value for one VIEM_EX_FRONTEND_OPTIONS request. */
-typedef struct ViemExOptionDisplayV1 {
-  uint32_t struct_size;
+typedef struct ViemExOptionDisplay {
   uint32_t name;
   uint32_t value_kind;
   uint32_t scalar_value;
   uint64_t first_file_format;
   uint64_t file_format_count;
-  ViemEffectBytesRefV1 text;
-} ViemExOptionDisplayV1;
+  ViemEffectBytesRef text;
+} ViemExOptionDisplay;
 
-#define VIEM_EX_OPTION_DISPLAY_V1_SIZE \
-  ((uint32_t)sizeof(ViemExOptionDisplayV1))
 
 /* Exact resolved mark plus its captured hard-line text. */
-typedef struct ViemExMarkV1 {
-  uint32_t struct_size;
+typedef struct ViemExMark {
   uint32_t name;
   uint64_t utf8_offset;
   uint64_t hard_line_index;
   uint64_t hard_line_start;
   uint64_t hard_line_end;
   uint64_t grapheme_column;
-  ViemEffectBytesRefV1 line_text;
-} ViemExMarkV1;
+  ViemEffectBytesRef line_text;
+} ViemExMark;
 
-#define VIEM_EX_MARK_V1_SIZE ((uint32_t)sizeof(ViemExMarkV1))
 
 /* Exact resolved register contents and optional semantic hard-break offsets. */
-typedef struct ViemExRegisterV1 {
-  uint32_t struct_size;
+typedef struct ViemExRegister {
   uint32_t name;
   uint32_t register_kind;
-  uint32_t reserved;
-  ViemEffectBytesRefV1 text;
+  ViemEffectBytesRef text;
   uint64_t first_hard_break;
   uint64_t hard_break_count;
-} ViemExRegisterV1;
+} ViemExRegister;
 
-#define VIEM_EX_REGISTER_V1_SIZE ((uint32_t)sizeof(ViemExRegisterV1))
 
 /* Exact jump in oldest-to-newest order plus its captured hard-line text. */
-typedef struct ViemExJumpV1 {
-  uint32_t struct_size;
+typedef struct ViemExJump {
   uint32_t flags;
   uint64_t list_index;
   uint64_t utf8_offset;
@@ -614,22 +571,18 @@ typedef struct ViemExJumpV1 {
   uint64_t hard_line_start;
   uint64_t hard_line_end;
   uint64_t grapheme_column;
-  ViemEffectBytesRefV1 line_text;
-} ViemExJumpV1;
+  ViemEffectBytesRef line_text;
+} ViemExJump;
 
-#define VIEM_EX_JUMP_V1_SIZE ((uint32_t)sizeof(ViemExJumpV1))
 
 /* Exact post-turn formatted hard-line content for PRINT_LINES. */
-typedef struct ViemExTextLineV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
+typedef struct ViemExTextLine {
   uint64_t hard_line_index;
   uint64_t utf8_start;
   uint64_t utf8_end;
-  ViemEffectBytesRefV1 text;
-} ViemExTextLineV1;
+  ViemEffectBytesRef text;
+} ViemExTextLine;
 
-#define VIEM_EX_TEXT_LINE_V1_SIZE ((uint32_t)sizeof(ViemExTextLineV1))
 
 /*
  * One raw Ex request in execution order. text references the copied UTF-8
@@ -642,15 +595,14 @@ typedef struct ViemExTextLineV1 {
  * first_payload/payload_count address the mark, register, jump, or text-line
  * array selected by the info-request kind.
  */
-typedef struct ViemExFrontendRequestV1 {
-  uint32_t struct_size;
+typedef struct ViemExFrontendRequest {
   uint32_t kind;
   uint32_t flags;
   /* One VIEM_WINDOW_* value when kind is VIEM_EX_FRONTEND_WINDOW. */
   uint32_t window_command;
   uint64_t document_id;
   uint64_t document_revision;
-  ViemEffectBytesRefV1 text;
+  ViemEffectBytesRef text;
   uint64_t hard_line_start;
   uint64_t hard_line_end;
   uint64_t first_option;
@@ -662,20 +614,16 @@ typedef struct ViemExFrontendRequestV1 {
   uint64_t window_count;
   /* VIEM_ARGUMENT_* command, count and optional initial line for ARGUMENT. */
   uint32_t argument_command;
-  uint32_t reserved;
   uint64_t argument_count;
   /* One-based line; zero means last line. Valid only with HAS_LINE. */
   uint64_t argument_line;
   /* Core-formatted output, independent of the typed request payload. */
-  ViemEffectBytesRefV1 display_text;
-} ViemExFrontendRequestV1;
+  ViemEffectBytesRef display_text;
+} ViemExFrontendRequest;
 
-#define VIEM_EX_FRONTEND_REQUEST_V1_SIZE \
-  ((uint32_t)sizeof(ViemExFrontendRequestV1))
 
 /* Exact immutable batch identity, flags, and two-pass copy sizes. */
-typedef struct ViemEffectBatchInfoV1 {
-  uint32_t struct_size;
+typedef struct ViemEffectBatchInfo {
   uint32_t flags;
   ViemEffectBatchHandle batch_handle;
   uint64_t document_id;
@@ -692,39 +640,36 @@ typedef struct ViemEffectBatchInfoV1 {
   uint64_t string_bytes;
   uint64_t navigation_utf8_offset;
   uint64_t substitution_count;
-} ViemEffectBatchInfoV1;
+} ViemEffectBatchInfo;
 
-#define VIEM_EFFECT_BATCH_INFO_V1_SIZE \
-  ((uint32_t)sizeof(ViemEffectBatchInfoV1))
 
-typedef struct ViemTextMetricsV1 {
+typedef struct ViemTextMetrics {
   float cap_height;
   float ascent;
   float descent;
   float leading;
-} ViemTextMetricsV1;
+} ViemTextMetrics;
 
-typedef struct ViemShapedBoundsV1 {
+typedef struct ViemShapedBounds {
   float x;
   float y;
   float width;
   float height;
-} ViemShapedBoundsV1;
+} ViemShapedBounds;
 
-typedef struct ViemOpenTypeFeatureV1 {
+typedef struct ViemOpenTypeFeature {
   uint8_t tag[4];
   uint32_t value;
-} ViemOpenTypeFeatureV1;
+} ViemOpenTypeFeature;
 
-typedef struct ViemResolvedTextStyleV1 {
-  uint32_t struct_size;
+typedef struct ViemResolvedTextStyle {
   uint32_t slant;
   uint32_t direction;
   uint32_t has_language;
   uint32_t has_script;
-  /* bit0: weight includes relative bold (+300); retain selected face as base.
-     Other bits are reserved and zero. Older providers may ignore this hint. */
-  uint32_t reserved;
+  /* Nonzero when weight includes relative bold (+300); retain the selected
+     face as the base rather than choosing a bold face. */
+  uint32_t relative_bold;
   float size;
   float weight;
   float letter_spacing;
@@ -733,26 +678,21 @@ typedef struct ViemResolvedTextStyleV1 {
   uint64_t font_family_count;
   ViemUtf8Slice language;
   ViemUtf8Slice script;
-  const ViemOpenTypeFeatureV1 *features;
+  const ViemOpenTypeFeature *features;
   uint64_t feature_count;
   ViemUtf8Slice font_axes; /* JSON object: four-character axis tags to finite coordinates. */
   ViemUtf8Slice font_face; /* OpenType subfamily of the primary family; empty for automatic selection. */
-} ViemResolvedTextStyleV1;
+} ViemResolvedTextStyle;
 
 #define VIEM_RESOLVED_TEXT_STYLE_RELATIVE_BOLD (1u << 0)
 
-#define VIEM_RESOLVED_TEXT_STYLE_V1_SIZE \
-  ((uint32_t)sizeof(ViemResolvedTextStyleV1))
 
-typedef struct ViemShapeStyleRunV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
+typedef struct ViemShapeStyleRun {
   uint64_t text_start;
   uint64_t text_end;
-  ViemResolvedTextStyleV1 style;
-} ViemShapeStyleRunV1;
+  ViemResolvedTextStyle style;
+} ViemShapeStyleRun;
 
-#define VIEM_SHAPE_STYLE_RUN_V1_SIZE ((uint32_t)sizeof(ViemShapeStyleRunV1))
 
 /*
  * Provider-owned opaque render resource. identifier is an integer token, not
@@ -762,49 +702,41 @@ typedef struct ViemShapeStyleRunV1 {
  * is current. Borrowed frontend exports remain tied to their exact layout.
  * Lease release remains valid after metrics invalidation or view removal.
  */
-typedef struct ViemRenderRunHandleV1 {
+typedef struct ViemRenderRunHandle {
   uint64_t owner;
   uint64_t identifier;
   uint64_t metrics_generation;
   uint32_t threading;
-  uint32_t reserved;
-} ViemRenderRunHandleV1;
+} ViemRenderRunHandle;
 
-typedef struct ViemClusterCaretStopV1 {
+typedef struct ViemClusterCaretStop {
   uint64_t text_offset;
   float inline_offset;
   uint32_t affinity;
-} ViemClusterCaretStopV1;
+} ViemClusterCaretStop;
 
-typedef struct ViemShapedClusterV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
+typedef struct ViemShapedCluster {
   uint64_t text_start;
   uint64_t text_end;
   float advance;
-  ViemTextMetricsV1 metrics;
-  ViemShapedBoundsV1 typographic_bounds;
-  ViemShapedBoundsV1 ink_bounds;
+  ViemTextMetrics metrics;
+  ViemShapedBounds typographic_bounds;
+  ViemShapedBounds ink_bounds;
   uint32_t bidi_level;
   uint32_t has_render_run;
   ViemUtf8Slice fallback_font;
-  const ViemClusterCaretStopV1 *caret_stops;
+  const ViemClusterCaretStop *caret_stops;
   uint64_t caret_stop_count;
-  ViemRenderRunHandleV1 render_run;
-} ViemShapedClusterV1;
+  ViemRenderRunHandle render_run;
+} ViemShapedCluster;
 
-#define VIEM_SHAPED_CLUSTER_V1_SIZE ((uint32_t)sizeof(ViemShapedClusterV1))
 
-typedef struct ViemShapingDiagnosticV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
+typedef struct ViemShapingDiagnostic {
   uint64_t text_start;
   uint64_t text_end;
   ViemUtf8Slice message;
-} ViemShapingDiagnosticV1;
+} ViemShapingDiagnostic;
 
-#define VIEM_SHAPING_DIAGNOSTIC_V1_SIZE \
-  ((uint32_t)sizeof(ViemShapingDiagnosticV1))
 
 /* Passive source metadata. Never fetch an image destination. Local decoding is
  * native-owned and bounded; unavailable and remote images use a 300 x 64 point
@@ -812,14 +744,13 @@ typedef struct ViemShapingDiagnosticV1 {
  * by request.scale, bottom baseline, and only endpoint caret stops. Core clamps
  * the cluster to the content width while preserving aspect ratio. Draw native
  * image resources into the final exported cluster typographic bounds. */
-typedef struct ViemInlineImageV1 {
+typedef struct ViemInlineImage {
   uint64_t text_start;
   uint64_t text_end;
   ViemUtf8Slice destination;
-} ViemInlineImageV1;
+} ViemInlineImage;
 
-typedef struct ViemShapeRequestV1 {
-  uint32_t struct_size;
+typedef struct ViemShapeRequest {
   uint32_t purpose;
   uint64_t document_id;
   uint64_t document_revision;
@@ -830,9 +761,9 @@ typedef struct ViemShapeRequestV1 {
   ViemUtf8Slice text;
   ViemUtf8Slice context_before;
   ViemUtf8Slice context_after;
-  const ViemShapeStyleRunV1 *style_runs;
+  const ViemShapeStyleRun *style_runs;
   uint64_t style_run_count;
-  ViemResolvedTextStyleV1 default_style;
+  ViemResolvedTextStyle default_style;
   float scale;
   uint32_t has_render_run_policy;
   uint64_t render_run_owner;
@@ -846,14 +777,12 @@ typedef struct ViemShapeRequestV1 {
    * slices contain immediately adjacent complete grapheme sequences.
    */
   uint32_t paragraph_base_direction;
-  const ViemInlineImageV1 *inline_images;
+  const ViemInlineImage *inline_images;
   uint64_t inline_image_count;
-} ViemShapeRequestV1;
+} ViemShapeRequest;
 
-#define VIEM_SHAPE_REQUEST_V1_SIZE ((uint32_t)sizeof(ViemShapeRequestV1))
 
-typedef struct ViemShapeResponseV1 {
-  uint32_t struct_size;
+typedef struct ViemShapeResponse {
   /* 0/1 native fixed-pitch trait of the resolved default-style font, independent
    * of fallback glyphs/style runs. Query native traits, never font names. */
   uint32_t default_font_is_monospaced;
@@ -863,14 +792,14 @@ typedef struct ViemShapeResponseV1 {
   uint64_t metrics_generation;
   uint64_t text_start;
   uint64_t text_end;
-  const ViemShapedClusterV1 *clusters;
+  const ViemShapedCluster *clusters;
   uint64_t cluster_count;
   const uint64_t *visual_order;
   uint64_t visual_order_count;
-  ViemTextMetricsV1 default_metrics;
-  const ViemShapingDiagnosticV1 *diagnostics;
+  ViemTextMetrics default_metrics;
+  const ViemShapingDiagnostic *diagnostics;
   uint64_t diagnostic_count;
-} ViemShapeResponseV1;
+} ViemShapeResponse;
 
 /*
  * A response echoes the request's text_start..text_end ownership interior.
@@ -878,7 +807,6 @@ typedef struct ViemShapeResponseV1 {
  * response bounds do not expand to include those cluster tails.
  */
 
-#define VIEM_SHAPE_RESPONSE_V1_SIZE ((uint32_t)sizeof(ViemShapeResponseV1))
 
 /* One retained fragment lease. Resources stay valid until release, or a
  * metrics-generation change. Response resources are pinned until the next
@@ -887,13 +815,13 @@ typedef struct ViemShapeResponseV1 {
  * the required executor, and do not call back into core. Both callbacks are
  * required when has_render_run_policy is true. NULL from retain is failure. */
 typedef void *(*ViemRetainRenderRunsCallback)(
-    void *context, const ViemRenderRunHandleV1 *handles, uint64_t count);
+    void *context, const ViemRenderRunHandle *handles, uint64_t count);
 typedef void (*ViemReleaseRenderRunsCallback)(void *lease);
 
 typedef uint64_t (*ViemMetricsGenerationCallback)(void *context);
 typedef uint32_t (*ViemShapeBatchCallback)(
-    void *context, const ViemShapeRequestV1 *requests, uint64_t request_count,
-    ViemShapeResponseV1 *responses, uint64_t response_capacity);
+    void *context, const ViemShapeRequest *requests, uint64_t request_count,
+    ViemShapeResponse *responses, uint64_t response_capacity);
 
 /*
  * The provider table is copied by viem_core_view_add. Only the current
@@ -904,7 +832,7 @@ typedef uint32_t (*ViemShapeBatchCallback)(
  * shape_batch must remain readable until the next shape_batch call for that
  * view; core copies all values immediately. Retaining a fragment lease does
  * not invalidate response storage. Opaque render-run tokens follow the lease
- * and generation lifetime documented on ViemRenderRunHandleV1.
+ * and generation lifetime documented on ViemRenderRunHandle.
  *
  * A successful ABI-v4 response affirms that its ownership interior is stable
  * under arbitrary text outside the supplied bounded context. A provider that
@@ -912,8 +840,7 @@ typedef uint32_t (*ViemShapeBatchCallback)(
  * shape_batch instead of returning partial or uncacheable measurements. Core
  * then installs and caches nothing from the failed batch.
  */
-typedef struct ViemTextMeasurementProviderV1 {
-  uint32_t struct_size;
+typedef struct ViemTextMeasurementProvider {
   uint32_t abi_version;
   void *context;
   uint64_t measurement_environment_id;
@@ -921,18 +848,14 @@ typedef struct ViemTextMeasurementProviderV1 {
   uint32_t has_render_run_policy;
   uint64_t render_run_owner;
   uint32_t render_run_threading;
-  uint32_t reserved;
   ViemMetricsGenerationCallback metrics_generation;
   ViemShapeBatchCallback shape_batch;
   ViemRetainRenderRunsCallback retain_render_runs;
   ViemReleaseRenderRunsCallback release_render_runs;
-} ViemTextMeasurementProviderV1;
+} ViemTextMeasurementProvider;
 
-#define VIEM_TEXT_MEASUREMENT_PROVIDER_V1_SIZE \
-  ((uint32_t)sizeof(ViemTextMeasurementProviderV1))
 
-typedef struct ViemViewOptionsV1 {
-  uint32_t struct_size;
+typedef struct ViemViewOptions {
   uint32_t execution_context;
   float width;
   float height;
@@ -941,9 +864,8 @@ typedef struct ViemViewOptionsV1 {
   float padding_left;
   float padding_bottom;
   float padding_right;
-} ViemViewOptionsV1;
+} ViemViewOptions;
 
-#define VIEM_VIEW_OPTIONS_V1_SIZE ((uint32_t)sizeof(ViemViewOptionsV1))
 
 /*
  * Absolute presentation origin. left is always requested. With HAS_TOP, all
@@ -952,8 +874,7 @@ typedef struct ViemViewOptionsV1 {
  * viewport plus bounded overscan, and publishes both coordinates atomically.
  * The expected_* identity is ignored for a horizontal-only request.
  */
-typedef struct ViemViewportOriginV1 {
-  uint32_t struct_size;
+typedef struct ViemViewportOrigin {
   uint32_t flags;
   float left;
   float top;
@@ -963,10 +884,8 @@ typedef struct ViemViewportOriginV1 {
   uint64_t expected_configuration_generation;
   uint64_t expected_measurement_environment_id;
   uint64_t expected_metrics_generation;
-} ViemViewportOriginV1;
+} ViemViewportOrigin;
 
-#define VIEM_VIEWPORT_ORIGIN_V1_SIZE \
-  ((uint32_t)sizeof(ViemViewportOriginV1))
 #define VIEM_VIEWPORT_ORIGIN_HAS_TOP (1u << 0)
 
 #define VIEM_VIEWPORT_STATE_WRAP (1u << 0)
@@ -979,8 +898,7 @@ typedef struct ViemViewportOriginV1 {
 
 /* Explicit replacement recovery hints in zero-based logical hard-line and
  * grapheme-column coordinates. These are not snapshot editing positions. */
-typedef struct ViemViewRestorationV1 {
-  uint32_t struct_size;
+typedef struct ViemViewRestoration {
   uint32_t cursor_affinity;
   uint64_t cursor_line;
   uint64_t cursor_column;
@@ -988,9 +906,7 @@ typedef struct ViemViewRestorationV1 {
   uint64_t viewport_column;
   float row_fraction;
   float left;
-} ViemViewRestorationV1;
-#define VIEM_VIEW_RESTORATION_V1_SIZE \
-  ((uint32_t)sizeof(ViemViewRestorationV1))
+} ViemViewRestoration;
 
 /*
  * maximum_left describes rows intersecting the current vertical viewport.
@@ -1006,8 +922,7 @@ typedef struct ViemViewRestorationV1 {
  * document y. The dependency identity is captured atomically with these flags
  * and values.
  */
-typedef struct ViemViewportStateV1 {
-  uint32_t struct_size;
+typedef struct ViemViewportState {
   uint32_t flags;
   float left;
   float top;
@@ -1020,19 +935,15 @@ typedef struct ViemViewportStateV1 {
   uint64_t configuration_generation;
   uint64_t measurement_environment_id;
   uint64_t metrics_generation;
-} ViemViewportStateV1;
+} ViemViewportState;
 
-#define VIEM_VIEWPORT_STATE_V1_SIZE \
-  ((uint32_t)sizeof(ViemViewportStateV1))
 
 /*
  * Exact identity for one immutable layout snapshot. Copy this value from a
  * snapshot-info query into every dependent geometry request. Core never
  * silently substitutes a newer layout.
  */
-typedef struct ViemLayoutSnapshotIdentityV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
+typedef struct ViemLayoutSnapshotIdentity {
   uint64_t view_id;
   uint64_t document_id;
   uint64_t document_revision;
@@ -1040,32 +951,30 @@ typedef struct ViemLayoutSnapshotIdentityV1 {
   uint64_t configuration_generation;
   uint64_t measurement_environment_id;
   uint64_t metrics_generation;
-} ViemLayoutSnapshotIdentityV1;
+} ViemLayoutSnapshotIdentity;
 
-#define VIEM_LAYOUT_SNAPSHOT_IDENTITY_V1_SIZE \
-  ((uint32_t)sizeof(ViemLayoutSnapshotIdentityV1))
 
-typedef struct ViemLayoutInsetsV1 {
+typedef struct ViemLayoutInsets {
   float top;
   float left;
   float bottom;
   float right;
-} ViemLayoutInsetsV1;
+} ViemLayoutInsets;
 
-typedef struct ViemLayoutRectV1 {
+typedef struct ViemLayoutRect {
   float x;
   float y;
   float width;
   float height;
-} ViemLayoutRectV1;
+} ViemLayoutRect;
 
 /* Normalized RGBA components; each value is finite and in [0, 1]. */
-typedef struct ViemRgbaV1 {
+typedef struct ViemRgba {
   float red;
   float green;
   float blue;
   float alpha;
-} ViemRgbaV1;
+} ViemRgba;
 
 #define VIEM_STYLE_NAMESPACE_BLOCK 1u
 #define VIEM_STYLE_NAMESPACE_CHARACTER 2u
@@ -1201,148 +1110,109 @@ typedef struct ViemRgbaV1 {
 #define VIEM_STYLE_EDIT_SET_DISPLAY_NAME 7
 #define VIEM_STYLE_EDIT_SET_PARENT_VARIANT 8u
 
-typedef struct ViemStyleSheetIdentityV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
+typedef struct ViemStyleSheetIdentity {
   uint64_t document_id;
   uint64_t document_revision;
   uint64_t style_sheet_revision;
-} ViemStyleSheetIdentityV1;
+} ViemStyleSheetIdentity;
 
-#define VIEM_STYLE_SHEET_IDENTITY_V1_SIZE \
-  ((uint32_t)sizeof(ViemStyleSheetIdentityV1))
 
-typedef struct ViemStyleStringRefV1 {
+typedef struct ViemStyleStringRef {
   uint64_t offset;
   uint64_t length;
-} ViemStyleStringRefV1;
+} ViemStyleStringRef;
 
-typedef struct ViemStyleSheetInfoV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
-  ViemStyleSheetIdentityV1 identity;
+typedef struct ViemStyleSheetInfo {
+  ViemStyleSheetIdentity identity;
   uint64_t definition_count;
   uint64_t property_count;
   uint64_t value_item_count;
   uint64_t dependency_count;
   uint64_t string_bytes;
-} ViemStyleSheetInfoV1;
+} ViemStyleSheetInfo;
 
-#define VIEM_STYLE_SHEET_INFO_V1_SIZE \
-  ((uint32_t)sizeof(ViemStyleSheetInfoV1))
 
-typedef struct ViemStyleValueV1 {
-  uint32_t struct_size;
+typedef struct ViemStyleValue {
   uint32_t kind;
   uint32_t enum_value;
-  uint32_t reserved;
   float number;
-  float number_reserved;
-  ViemRgbaV1 color;
-  ViemStyleStringRefV1 string;
+  ViemRgba color;
+  ViemStyleStringRef string;
   uint64_t first_item;
   uint64_t item_count;
-} ViemStyleValueV1;
+} ViemStyleValue;
 
-#define VIEM_STYLE_VALUE_V1_SIZE ((uint32_t)sizeof(ViemStyleValueV1))
 
-typedef struct ViemStyleValueItemV1 {
-  uint32_t struct_size;
+typedef struct ViemStyleValueItem {
   uint32_t kind;
-  ViemStyleStringRefV1 string;
+  ViemStyleStringRef string;
   uint32_t unsigned_value;
-  uint32_t reserved;
-} ViemStyleValueItemV1;
+} ViemStyleValueItem;
 
-#define VIEM_STYLE_VALUE_ITEM_V1_SIZE \
-  ((uint32_t)sizeof(ViemStyleValueItemV1))
 
-typedef struct ViemStyleDependencyV1 {
-  uint32_t struct_size;
+typedef struct ViemStyleDependency {
   uint32_t namespace_id;
-  ViemStyleStringRefV1 style_id;
-} ViemStyleDependencyV1;
+  ViemStyleStringRef style_id;
+} ViemStyleDependency;
 
-#define VIEM_STYLE_DEPENDENCY_V1_SIZE \
-  ((uint32_t)sizeof(ViemStyleDependencyV1))
 
-typedef struct ViemStyleDefinitionV1 {
-  uint32_t struct_size;
+typedef struct ViemStyleDefinition {
   uint32_t flags;
   uint32_t namespace_id;
   uint32_t role;
   uint32_t origin;
   uint32_t capabilities;
   uint32_t parent_variant; /* zero for local inheritance, otherwise a source-format family */
-  uint32_t reserved;
-  ViemStyleStringRefV1 stable_id;
-  ViemStyleStringRefV1 display_name;
-  ViemStyleStringRefV1 parent_id;
-  ViemStyleStringRefV1 next_style_id;
+  ViemStyleStringRef stable_id;
+  ViemStyleStringRef display_name;
+  ViemStyleStringRef parent_id;
+  ViemStyleStringRef next_style_id;
   uint64_t first_property;
   uint64_t property_count;
-} ViemStyleDefinitionV1;
+} ViemStyleDefinition;
 
-#define VIEM_STYLE_DEFINITION_V1_SIZE \
-  ((uint32_t)sizeof(ViemStyleDefinitionV1))
 
-typedef struct ViemStylePropertyV1 {
-  uint32_t struct_size;
+typedef struct ViemStyleProperty {
   uint32_t flags;
   uint32_t property;
   uint32_t contributor_kind;
   uint32_t contributor_namespace;
-  uint32_t reserved;
-  ViemStyleValueV1 declared;
-  ViemStyleValueV1 effective;
-  ViemStyleStringRefV1 contributor_style_id;
+  ViemStyleValue declared;
+  ViemStyleValue effective;
+  ViemStyleStringRef contributor_style_id;
   uint64_t first_dependency;
   uint64_t dependency_count;
-} ViemStylePropertyV1;
+} ViemStyleProperty;
 
-#define VIEM_STYLE_PROPERTY_V1_SIZE \
-  ((uint32_t)sizeof(ViemStylePropertyV1))
 
-typedef struct ViemStyleEditValueItemV1 {
-  uint32_t struct_size;
+typedef struct ViemStyleEditValueItem {
   uint32_t kind;
   ViemUtf8Slice text;
   uint32_t unsigned_value;
-  uint32_t reserved;
-} ViemStyleEditValueItemV1;
+} ViemStyleEditValueItem;
 
-#define VIEM_STYLE_EDIT_VALUE_ITEM_V1_SIZE \
-  ((uint32_t)sizeof(ViemStyleEditValueItemV1))
 
-typedef struct ViemStyleEditValueV1 {
-  uint32_t struct_size;
+typedef struct ViemStyleEditValue {
   uint32_t kind;
   uint32_t enum_value;
-  uint32_t reserved;
   float number;
-  float number_reserved;
-  ViemRgbaV1 color;
+  ViemRgba color;
   ViemUtf8Slice text;
-  const ViemStyleEditValueItemV1 *items;
+  const ViemStyleEditValueItem *items;
   uint64_t item_count;
-} ViemStyleEditValueV1;
+} ViemStyleEditValue;
 
-#define VIEM_STYLE_EDIT_VALUE_V1_SIZE \
-  ((uint32_t)sizeof(ViemStyleEditValueV1))
 
-typedef struct ViemStyleEditV1 {
-  uint32_t struct_size;
+typedef struct ViemStyleEdit {
   uint32_t flags;
-  ViemStyleSheetIdentityV1 identity;
+  ViemStyleSheetIdentity identity;
   uint32_t namespace_id;
   uint32_t operation;
   uint32_t property;
-  uint32_t reserved;
   ViemUtf8Slice style_id;
-  ViemStyleEditValueV1 value;
-} ViemStyleEditV1;
+  ViemStyleEditValue value;
+} ViemStyleEdit;
 
-#define VIEM_STYLE_EDIT_V1_SIZE ((uint32_t)sizeof(ViemStyleEditV1))
 
 /*
  * Immutable capability for one explicit live style-edit group. token is
@@ -1350,18 +1220,15 @@ typedef struct ViemStyleEditV1 {
  * capability and must be returned unchanged. Begin revisions remain fixed as
  * grouped edits commit newer snapshots.
  */
-typedef struct ViemStyleEditGroupV1 {
-  uint32_t struct_size;
+typedef struct ViemStyleEditGroup {
   uint32_t flags;
   uint64_t token;
   ViemViewId view_id;
   uint64_t document_id;
   uint64_t begin_document_revision;
   uint64_t begin_style_sheet_revision;
-} ViemStyleEditGroupV1;
+} ViemStyleEditGroup;
 
-#define VIEM_STYLE_EDIT_GROUP_V1_SIZE \
-  ((uint32_t)sizeof(ViemStyleEditGroupV1))
 
 #define VIEM_TEXT_PAINT_HAS_BACKGROUND (1u << 0)
 #define VIEM_TEXT_PAINT_UNDERLINE (1u << 1)
@@ -1373,42 +1240,32 @@ typedef struct ViemStyleEditGroupV1 {
  * Foreground is always present. Background is meaningful only with
  * HAS_BACKGROUND. Decoration flags mean that decoration is enabled.
  */
-typedef struct ViemTextPaintV1 {
-  uint32_t struct_size;
+typedef struct ViemTextPaint {
   uint32_t flags;
-  ViemRgbaV1 foreground;
-  ViemRgbaV1 background;
+  ViemRgba foreground;
+  ViemRgba background;
   /* Unscaled baseline displacement; positive values raise the text. */
   float baseline_offset;
-} ViemTextPaintV1;
+} ViemTextPaint;
 
-#define VIEM_TEXT_PAINT_V1_SIZE ((uint32_t)sizeof(ViemTextPaintV1))
 
 /* Canvas/default paint and required override-run count for one exact layout. */
-typedef struct ViemLayoutPaintInfoV1 {
-  uint32_t struct_size;
-  /* Formerly reserved; output flags preserve the v1 binary layout. */
+typedef struct ViemLayoutPaintInfo {
   uint32_t flags;
-  ViemLayoutSnapshotIdentityV1 identity;
-  ViemRgbaV1 canvas_background;
-  ViemTextPaintV1 default_paint;
+  ViemLayoutSnapshotIdentity identity;
+  ViemRgba canvas_background;
+  ViemTextPaint default_paint;
   uint64_t paint_run_count;
-} ViemLayoutPaintInfoV1;
+} ViemLayoutPaintInfo;
 
-#define VIEM_LAYOUT_PAINT_INFO_V1_SIZE \
-  ((uint32_t)sizeof(ViemLayoutPaintInfoV1))
 
 /* Ordered, non-overlapping logical half-open UTF-8 override range. */
-typedef struct ViemPaintStyleRunV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
+typedef struct ViemPaintStyleRun {
   uint64_t text_start;
   uint64_t text_end;
-  ViemTextPaintV1 paint;
-} ViemPaintStyleRunV1;
+  ViemTextPaint paint;
+} ViemPaintStyleRun;
 
-#define VIEM_PAINT_STYLE_RUN_V1_SIZE \
-  ((uint32_t)sizeof(ViemPaintStyleRunV1))
 
 #define VIEM_LAYOUT_SNAPSHOT_FULL_DOCUMENT (1u << 0)
 #define VIEM_LAYOUT_SNAPSHOT_PREFIX_EXACT (1u << 1)
@@ -1416,16 +1273,15 @@ typedef struct ViemPaintStyleRunV1 {
 #define VIEM_LAYOUT_SNAPSHOT_TOTAL_HEIGHT_EXACT (1u << 3)
 
 /* Geometry is in document-layout coordinates; subtract the viewport origin. */
-typedef struct ViemLayoutSnapshotInfoV1 {
-  uint32_t struct_size;
+typedef struct ViemLayoutSnapshotInfo {
   uint32_t flags;
-  ViemLayoutSnapshotIdentityV1 identity;
+  ViemLayoutSnapshotIdentity identity;
   float viewport_width;
   float viewport_height;
   float usable_width;
   float content_width;
   float total_height;
-  ViemLayoutInsetsV1 content_insets;
+  ViemLayoutInsets content_insets;
   uint64_t coverage_hard_line_start;
   uint64_t coverage_hard_line_end;
   uint64_t document_hard_line_count;
@@ -1434,18 +1290,15 @@ typedef struct ViemLayoutSnapshotInfoV1 {
   uint64_t row_count;
   uint64_t cluster_count;
   uint64_t caret_count;
-} ViemLayoutSnapshotInfoV1;
+} ViemLayoutSnapshotInfo;
 
-#define VIEM_LAYOUT_SNAPSHOT_INFO_V1_SIZE \
-  ((uint32_t)sizeof(ViemLayoutSnapshotInfoV1))
 
 #define VIEM_VISUAL_ROW_HAS_PARAGRAPH (1u << 0)
 #define VIEM_VISUAL_ROW_WRAPPED_FROM_PREVIOUS (1u << 1)
 #define VIEM_VISUAL_ROW_WRAPS_TO_NEXT (1u << 2)
 
 /* first_* and *_count index arrays copied by the same snapshot export. */
-typedef struct ViemVisualRowV1 {
-  uint32_t struct_size;
+typedef struct ViemVisualRow {
   uint32_t flags;
   uint64_t row_index;
   uint64_t paragraph_id;
@@ -1467,29 +1320,24 @@ typedef struct ViemVisualRowV1 {
   uint64_t cluster_count;
   uint64_t first_caret;
   uint64_t caret_count;
-} ViemVisualRowV1;
+} ViemVisualRow;
 
-#define VIEM_VISUAL_ROW_V1_SIZE ((uint32_t)sizeof(ViemVisualRowV1))
 
 #define VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN (1u << 0)
 
-typedef struct ViemPositionedClusterV1 {
-  uint32_t struct_size;
+typedef struct ViemPositionedCluster {
   uint32_t flags;
   uint64_t row_index;
   uint64_t text_start;
   uint64_t text_end;
   float x;
   float advance;
-  ViemLayoutRectV1 typographic_bounds;
-  ViemLayoutRectV1 ink_bounds;
+  ViemLayoutRect typographic_bounds;
+  ViemLayoutRect ink_bounds;
   uint32_t bidi_level;
-  uint32_t reserved;
-  ViemRenderRunHandleV1 render_run;
-} ViemPositionedClusterV1;
+  ViemRenderRunHandle render_run;
+} ViemPositionedCluster;
 
-#define VIEM_POSITIONED_CLUSTER_V1_SIZE \
-  ((uint32_t)sizeof(ViemPositionedClusterV1))
 
 #define VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER (1u << 1)
 #define VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND (1u << 2)
@@ -1514,9 +1362,8 @@ typedef struct ViemPositionedClusterV1 {
 #define VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT (1u << 13)
 /* Noneditable block furniture; label offsets address only the separate label
  * byte blob. No decoration creates formatted offsets, caret or selection stops. */
-typedef struct ViemLayoutDecorationV1 {
+typedef struct ViemLayoutDecoration {
   uint64_t paragraph_id;
-  uint32_t struct_size;
   uint32_t flags;
   uint64_t row_index;
   uint64_t label_byte_start;
@@ -1527,86 +1374,65 @@ typedef struct ViemLayoutDecorationV1 {
   /* A text decoration's layout baseline: its row's, except an alert title in
    * the band above its row. Zero for non-text furniture. */
   float baseline;
-  ViemLayoutRectV1 typographic_bounds;
-  ViemLayoutRectV1 ink_bounds;
-  ViemRenderRunHandleV1 render_run;
-  ViemTextPaintV1 paint;
-} ViemLayoutDecorationV1;
-#define VIEM_LAYOUT_DECORATION_V1_SIZE ((uint32_t)sizeof(ViemLayoutDecorationV1))
-typedef struct ViemLayoutDecorationsInfoV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
-  ViemLayoutSnapshotIdentityV1 identity;
+  ViemLayoutRect typographic_bounds;
+  ViemLayoutRect ink_bounds;
+  ViemRenderRunHandle render_run;
+  ViemTextPaint paint;
+} ViemLayoutDecoration;
+typedef struct ViemLayoutDecorationsInfo {
+  ViemLayoutSnapshotIdentity identity;
   uint64_t decoration_count;
   uint64_t label_bytes;
-} ViemLayoutDecorationsInfoV1;
-#define VIEM_LAYOUT_DECORATIONS_INFO_V1_SIZE ((uint32_t)sizeof(ViemLayoutDecorationsInfoV1))
+} ViemLayoutDecorationsInfo;
 
-typedef struct ViemPositionedCaretV1 {
-  uint32_t struct_size;
+typedef struct ViemPositionedCaret {
   uint32_t affinity;
   uint64_t row_index;
   uint64_t text_offset;
   float x;
-  float reserved;
-} ViemPositionedCaretV1;
+} ViemPositionedCaret;
 
-#define VIEM_POSITIONED_CARET_V1_SIZE \
-  ((uint32_t)sizeof(ViemPositionedCaretV1))
 
-typedef struct ViemLayoutCaretRequestV1 {
-  uint32_t struct_size;
+typedef struct ViemLayoutCaretRequest {
   uint32_t affinity;
-  ViemLayoutSnapshotIdentityV1 identity;
+  ViemLayoutSnapshotIdentity identity;
   uint64_t text_offset;
-} ViemLayoutCaretRequestV1;
+} ViemLayoutCaretRequest;
 
-#define VIEM_LAYOUT_CARET_REQUEST_V1_SIZE \
-  ((uint32_t)sizeof(ViemLayoutCaretRequestV1))
 
 /* Character-cell hit testing for pointer-down in character-addressing modes. */
 #define VIEM_LAYOUT_HIT_TEST_POINTER_DOWN (1u << 0)
 
-typedef struct ViemLayoutHitTestRequestV1 {
-  uint32_t struct_size;
+typedef struct ViemLayoutHitTestRequest {
   uint32_t flags;
-  ViemLayoutSnapshotIdentityV1 identity;
+  ViemLayoutSnapshotIdentity identity;
   float x;
   float y;
-} ViemLayoutHitTestRequestV1;
+} ViemLayoutHitTestRequest;
 
-#define VIEM_LAYOUT_HIT_TEST_REQUEST_V1_SIZE \
-  ((uint32_t)sizeof(ViemLayoutHitTestRequestV1))
 
-typedef struct ViemLayoutCaretPointV1 {
-  uint32_t struct_size;
+typedef struct ViemLayoutCaretPoint {
   uint32_t affinity;
   uint64_t document_id;
   uint64_t document_revision;
   uint64_t layout_revision;
   uint64_t text_offset;
-} ViemLayoutCaretPointV1;
+} ViemLayoutCaretPoint;
 
-#define VIEM_LAYOUT_CARET_POINT_V1_SIZE \
-  ((uint32_t)sizeof(ViemLayoutCaretPointV1))
 
 #define VIEM_CARET_GEOMETRY_CLUSTER_FALLBACK (1u << 0)
 
-typedef struct ViemLayoutCaretGeometryV1 {
-  uint32_t struct_size;
+typedef struct ViemLayoutCaretGeometry {
   uint32_t flags;
-  ViemLayoutCaretPointV1 point;
-  ViemLayoutRectV1 rect;
+  ViemLayoutCaretPoint point;
+  ViemLayoutRect rect;
   uint64_t row_index;
-} ViemLayoutCaretGeometryV1;
+} ViemLayoutCaretGeometry;
 
-#define VIEM_LAYOUT_CARET_GEOMETRY_V1_SIZE \
-  ((uint32_t)sizeof(ViemLayoutCaretGeometryV1))
 
 /* Predicted plain-click caret; CURRENT means it already occupies this target. */
 #define VIEM_POINTER_CARET_CURRENT (1u << 0)
-typedef struct ViemPointerCaretV1 {
-  uint32_t struct_size;
+typedef struct ViemPointerCaret {
   uint32_t flags;
   uint32_t mode;
   uint32_t caret_shape;
@@ -1614,12 +1440,11 @@ typedef struct ViemPointerCaretV1 {
   float font_en_width;
   uint64_t text_start;
   uint64_t text_end;
-} ViemPointerCaretV1;
-#define VIEM_POINTER_CARET_V1_SIZE ((uint32_t)sizeof(ViemPointerCaretV1))
+} ViemPointerCaret;
 
 /* Read-only plain-click prediction. Request flags must be zero. */
 ViemStatus viem_core_view_pointer_caret(ViemCoreHandle handle, ViemViewId view,
-    const ViemLayoutHitTestRequestV1 *request, ViemPointerCaretV1 *out_caret);
+    const ViemLayoutHitTestRequest *request, ViemPointerCaret *out_caret);
 
 #define VIEM_VIEW_PRESENTATION_HAS_VISUAL_ANCHOR (1u << 0)
 #define VIEM_VIEW_PRESENTATION_VISUAL_ANCHOR_AFFINITY_EXACT (1u << 1)
@@ -1638,8 +1463,7 @@ ViemStatus viem_core_view_pointer_caret(ViemCoreHandle handle, ViemViewId view,
  * affinity is zero unless VISUAL_ANCHOR_AFFINITY_EXACT is present. Visual
  * Block endpoints retain exact affinity and display-space x edges.
  */
-typedef struct ViemViewPresentationV1 {
-  uint32_t struct_size;
+typedef struct ViemViewPresentation {
   uint32_t flags;
   uint32_t mode;
   /* Row disambiguation for caret_utf8_start when caret_shape is a boundary.
@@ -1655,7 +1479,6 @@ typedef struct ViemViewPresentationV1 {
   float visual_block_left_x;
   float visual_block_right_x;
   float desired_x;
-  float reserved_float;
   uint64_t command_line_utf8_length;
   uint64_t command_line_cursor_utf8_offset;
   /* Exact formatted range the caret occupies. A cell covers one grapheme of
@@ -1668,10 +1491,8 @@ typedef struct ViemViewPresentationV1 {
   uint32_t pending_command_length;
   uint64_t active_count;
   uint8_t pending_command[32];
-} ViemViewPresentationV1;
+} ViemViewPresentation;
 
-#define VIEM_VIEW_PRESENTATION_V1_SIZE \
-  ((uint32_t)sizeof(ViemViewPresentationV1))
 
 /* The caret covers one grapheme: draw the cell caret_utf8_start..caret_utf8_end.
    Boundary affinity does not apply. */
@@ -1690,29 +1511,22 @@ typedef struct ViemViewPresentationV1 {
  * state_identity is an opaque exact-content token. It changes whenever the
  * exported kind, UTF-8 cursor, or bytes change without a document revision.
  */
-typedef struct ViemCommandLineIdentityV1 {
-  uint32_t struct_size;
+typedef struct ViemCommandLineIdentity {
   uint32_t kind;
   uint64_t view_id;
   uint64_t document_id;
   uint64_t document_revision;
   uint8_t state_identity[32];
-} ViemCommandLineIdentityV1;
+} ViemCommandLineIdentity;
 
-#define VIEM_COMMAND_LINE_IDENTITY_V1_SIZE \
-  ((uint32_t)sizeof(ViemCommandLineIdentityV1))
 
 /* The prompt prefix is represented by identity.kind, not by the UTF-8 bytes. */
-typedef struct ViemCommandLineInfoV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
-  ViemCommandLineIdentityV1 identity;
+typedef struct ViemCommandLineInfo {
+  ViemCommandLineIdentity identity;
   uint64_t utf8_length;
   uint64_t cursor_utf8_offset;
-} ViemCommandLineInfoV1;
+} ViemCommandLineInfo;
 
-#define VIEM_COMMAND_LINE_INFO_V1_SIZE \
-  ((uint32_t)sizeof(ViemCommandLineInfoV1))
 
 #define VIEM_COMPLETION_ACTIVE (1u << 0)
 #define VIEM_COMPLETION_SEARCHING (1u << 1)
@@ -1731,8 +1545,7 @@ typedef struct ViemCommandLineInfoV1 {
  * padding. RIGHT_TO_LEFT mirrors the popup and aligns the text's right edge.
  * No anchor is published until prefix discovery and exact geometry are ready.
  */
-typedef struct ViemCompletionInfoV1 {
-  uint32_t struct_size;
+typedef struct ViemCompletionInfo {
   uint32_t flags;
   uint64_t session_id;
   uint64_t generation;
@@ -1742,21 +1555,17 @@ typedef struct ViemCompletionInfoV1 {
   int64_t selected_index;
   uint64_t item_count;
   uint64_t utf8_length;
-  ViemLayoutSnapshotIdentityV1 anchor_layout;
-  ViemLayoutRectV1 anchor_rect;
-} ViemCompletionInfoV1;
+  ViemLayoutSnapshotIdentity anchor_layout;
+  ViemLayoutRect anchor_rect;
+} ViemCompletionInfo;
 
-#define VIEM_COMPLETION_INFO_V1_SIZE \
-  ((uint32_t)sizeof(ViemCompletionInfoV1))
 
 /* Byte ranges in the concatenated, length-delimited UTF-8 candidate arena. */
-typedef struct ViemCompletionItemV1 {
+typedef struct ViemCompletionItem {
   uint64_t text_offset;
   uint64_t text_length;
-} ViemCompletionItemV1;
+} ViemCompletionItem;
 
-#define VIEM_COMPLETION_ITEM_V1_SIZE \
-  ((uint32_t)sizeof(ViemCompletionItemV1))
 
 #define VIEM_VISUAL_SELECTION_KIND_NONE 0u
 #define VIEM_VISUAL_SELECTION_KIND_CHARACTER 1u
@@ -1772,39 +1581,31 @@ typedef struct ViemCompletionItemV1 {
  * exact-payload token that also changes when selection state changes without
  * relayout.
  */
-typedef struct ViemVisualSelectionIdentityV1 {
-  uint32_t struct_size;
+typedef struct ViemVisualSelectionIdentity {
   uint32_t kind;
-  ViemLayoutSnapshotIdentityV1 layout;
+  ViemLayoutSnapshotIdentity layout;
   uint8_t state_identity[32];
-} ViemVisualSelectionIdentityV1;
+} ViemVisualSelectionIdentity;
 
-#define VIEM_VISUAL_SELECTION_IDENTITY_V1_SIZE \
-  ((uint32_t)sizeof(ViemVisualSelectionIdentityV1))
 
 /*
  * Segments are in logical UTF-8 document order. Character/Line segments retain
  * the entire selected range, including text outside materialized layout.
  * Rectangles cover only materialized geometry, in visual-row, then x order.
  */
-typedef struct ViemVisualSelectionInfoV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
-  ViemVisualSelectionIdentityV1 identity;
+typedef struct ViemVisualSelectionInfo {
+  ViemVisualSelectionIdentity identity;
   uint64_t segment_count;
   uint64_t rectangle_count;
-} ViemVisualSelectionInfoV1;
+} ViemVisualSelectionInfo;
 
-#define VIEM_VISUAL_SELECTION_INFO_V1_SIZE \
-  ((uint32_t)sizeof(ViemVisualSelectionInfoV1))
 
 /*
  * One logical half-open UTF-8 range. Character/Line segments have zero flags.
  * Block segments retain their visual row, hard line, and display-left/right
  * affinities; these affinities are not logical start/end labels in bidi text.
  */
-typedef struct ViemVisualSelectionSegmentV1 {
-  uint32_t struct_size;
+typedef struct ViemVisualSelectionSegment {
   uint32_t flags;
   uint64_t text_start;
   uint64_t text_end;
@@ -1812,22 +1613,16 @@ typedef struct ViemVisualSelectionSegmentV1 {
   uint64_t hard_line_index;
   uint32_t left_affinity;
   uint32_t right_affinity;
-} ViemVisualSelectionSegmentV1;
+} ViemVisualSelectionSegment;
 
-#define VIEM_VISUAL_SELECTION_SEGMENT_V1_SIZE \
-  ((uint32_t)sizeof(ViemVisualSelectionSegmentV1))
 
 /* segment_index indexes the segment array copied by the same call. */
-typedef struct ViemVisualSelectionRectangleV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
+typedef struct ViemVisualSelectionRectangle {
   uint64_t row_index;
   uint64_t segment_index;
-  ViemLayoutRectV1 rect;
-} ViemVisualSelectionRectangleV1;
+  ViemLayoutRect rect;
+} ViemVisualSelectionRectangle;
 
-#define VIEM_VISUAL_SELECTION_RECTANGLE_V1_SIZE \
-  ((uint32_t)sizeof(ViemVisualSelectionRectangleV1))
 
 #define VIEM_LOGICAL_SELECTION_KIND_NONE 0u
 #define VIEM_LOGICAL_SELECTION_KIND_CHARACTER 1u
@@ -1853,8 +1648,7 @@ typedef struct ViemVisualSelectionRectangleV1 {
  * Exact logical selection identity with no layout dependency. Only Character
  * and Line selections name an actionable contiguous range in this ABI.
  */
-typedef struct ViemLogicalSelectionIdentityV1 {
-  uint32_t struct_size;
+typedef struct ViemLogicalSelectionIdentity {
   uint32_t kind;
   uint64_t view_id;
   uint64_t document_id;
@@ -1862,10 +1656,8 @@ typedef struct ViemLogicalSelectionIdentityV1 {
   uint64_t text_start;
   uint64_t text_end;
   uint8_t state_identity[32];
-} ViemLogicalSelectionIdentityV1;
+} ViemLogicalSelectionIdentity;
 
-#define VIEM_LOGICAL_SELECTION_IDENTITY_V1_SIZE \
-  ((uint32_t)sizeof(ViemLogicalSelectionIdentityV1))
 
 #define VIEM_TABLE_CAN_INSERT 1u
 #define VIEM_TABLE_IN_TABLE 2u
@@ -1896,10 +1688,9 @@ typedef struct ViemLogicalSelectionIdentityV1 {
 #define VIEM_TABLE_SET_ALIGNMENT 7u
 #define VIEM_TABLE_CLEAR_CELL 8u
 
-typedef struct ViemTableContextV1 {
-  uint32_t struct_size;
+typedef struct ViemTableContext {
   uint32_t flags;
-  ViemLogicalSelectionIdentityV1 selection;
+  ViemLogicalSelectionIdentity selection;
   uint64_t table_id;
   uint64_t row;
   uint64_t column;
@@ -1909,46 +1700,36 @@ typedef struct ViemTableContextV1 {
   uint64_t row_end;
   uint64_t column_end;
   uint32_t alignment;
-  uint32_t reserved;
-} ViemTableContextV1;
-#define VIEM_TABLE_CONTEXT_V1_SIZE ((uint32_t)sizeof(ViemTableContextV1))
+} ViemTableContext;
 
-typedef struct ViemInsertTableV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
-  ViemLogicalSelectionIdentityV1 expected_selection;
+typedef struct ViemInsertTable {
+  ViemLogicalSelectionIdentity expected_selection;
   uint32_t columns;
   uint32_t body_rows;
-} ViemInsertTableV1;
-#define VIEM_INSERT_TABLE_V1_SIZE ((uint32_t)sizeof(ViemInsertTableV1))
+} ViemInsertTable;
 
-typedef struct ViemTableActionV1 {
-  uint32_t struct_size;
+typedef struct ViemTableAction {
   uint32_t action;
-  ViemTableContextV1 expected;
+  ViemTableContext expected;
   uint32_t alignment;
-  uint32_t reserved;
-} ViemTableActionV1;
-#define VIEM_TABLE_ACTION_V1_SIZE ((uint32_t)sizeof(ViemTableActionV1))
+} ViemTableAction;
 
 /* Current WYSIWYG cell geometry; rects are in document layout coordinates.
  * Exported only from the exact requested immutable layout snapshot. */
-typedef struct ViemTableCellV1 {
+typedef struct ViemTableCell {
   uint64_t table_id;
   uint64_t row;
   uint64_t column;
   uint64_t cell_id;
   uint64_t text_start;
   uint64_t text_end;
-  ViemLayoutRectV1 rect;
-  ViemLayoutRectV1 table_rect;
+  ViemLayoutRect rect;
+  ViemLayoutRect table_rect;
   uint32_t alignment;
   uint32_t flags;
-} ViemTableCellV1;
-#define VIEM_TABLE_CELL_V1_SIZE ((uint32_t)sizeof(ViemTableCellV1))
+} ViemTableCell;
 
-typedef struct ViemTableSelectionV1 {
-  uint32_t struct_size;
+typedef struct ViemTableSelection {
   uint32_t active;
   uint64_t document_id;
   uint64_t document_revision;
@@ -1957,32 +1738,24 @@ typedef struct ViemTableSelectionV1 {
   uint64_t anchor_column;
   uint64_t active_row;
   uint64_t active_column;
-} ViemTableSelectionV1;
-#define VIEM_TABLE_SELECTION_V1_SIZE ((uint32_t)sizeof(ViemTableSelectionV1))
+} ViemTableSelection;
 
 /* Adapter capability and check/mixed state at one core-owned selection. */
-typedef struct ViemSemanticStylePresentationV1 {
-  uint32_t struct_size;
+typedef struct ViemSemanticStylePresentation {
   uint32_t style;
   uint32_t state;
   uint32_t flags;
-  ViemLogicalSelectionIdentityV1 selection;
-} ViemSemanticStylePresentationV1;
+  ViemLogicalSelectionIdentity selection;
+} ViemSemanticStylePresentation;
 
-#define VIEM_SEMANTIC_STYLE_PRESENTATION_V1_SIZE \
-  ((uint32_t)sizeof(ViemSemanticStylePresentationV1))
 
 /* Exact request using an identity returned by the presentation query. */
-typedef struct ViemSetSemanticStyleV1 {
-  uint32_t struct_size;
+typedef struct ViemSetSemanticStyle {
   uint32_t style;
   uint32_t enabled;
-  uint32_t reserved;
-  ViemLogicalSelectionIdentityV1 expected_selection;
-} ViemSetSemanticStyleV1;
+  ViemLogicalSelectionIdentity expected_selection;
+} ViemSetSemanticStyle;
 
-#define VIEM_SET_SEMANTIC_STYLE_V1_SIZE \
-  ((uint32_t)sizeof(ViemSetSemanticStyleV1))
 
 #define VIEM_PLACE_CURSOR_EXTEND_SELECTION (1u << 0)
 /* Select whole words; EXTEND retains the gesture's original word. */
@@ -1990,53 +1763,41 @@ typedef struct ViemSetSemanticStyleV1 {
 /* Seed a character-inclusive drag origin; incompatible with extend/word flags. */
 #define VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE (1u << 2)
 
-typedef struct ViemPlaceCursorV1 {
-  uint32_t struct_size;
+typedef struct ViemPlaceCursor {
   uint32_t flags;
   uint64_t document_revision;
   uint64_t text_offset;
   uint32_t affinity;
-  uint32_t reserved;
-} ViemPlaceCursorV1;
+} ViemPlaceCursor;
 
-#define VIEM_PLACE_CURSOR_V1_SIZE ((uint32_t)sizeof(ViemPlaceCursorV1))
 
 /* Concrete file-format target bound to one exact document snapshot. */
-typedef struct ViemSetFileFormatV1 {
-  uint32_t struct_size;
+typedef struct ViemSetFileFormat {
   uint32_t file_format;
   uint64_t document_id;
   uint64_t document_revision;
-} ViemSetFileFormatV1;
+} ViemSetFileFormat;
 
-#define VIEM_SET_FILE_FORMAT_V1_SIZE \
-  ((uint32_t)sizeof(ViemSetFileFormatV1))
 
-typedef struct ViemSetEncodingV1 {
-  uint32_t struct_size;
+typedef struct ViemSetEncoding {
   uint32_t encoding;
   uint64_t document_id;
   uint64_t document_revision;
-} ViemSetEncodingV1;
-#define VIEM_SET_ENCODING_V1_SIZE ((uint32_t)sizeof(ViemSetEncodingV1))
+} ViemSetEncoding;
 
 #define VIEM_LIST_STYLE_NONE 0u
 #define VIEM_LIST_STYLE_BULLET 1u
 #define VIEM_LIST_STYLE_NUMBERED 2u
 #define VIEM_LIST_STYLE_TASK 3u
-typedef struct ViemSetListStyleV1 {
-  uint32_t struct_size;
+typedef struct ViemSetListStyle {
   uint32_t style;
-  ViemLogicalSelectionIdentityV1 expected_selection;
-} ViemSetListStyleV1;
-#define VIEM_SET_LIST_STYLE_V1_SIZE ((uint32_t)sizeof(ViemSetListStyleV1))
+  ViemLogicalSelectionIdentity expected_selection;
+} ViemSetListStyle;
 
-typedef struct ViemSetBlockQuoteV1 {
-  uint32_t struct_size;
+typedef struct ViemSetBlockQuote {
   uint32_t enabled;
-  ViemLogicalSelectionIdentityV1 expected_selection;
-} ViemSetBlockQuoteV1;
-#define VIEM_SET_BLOCK_QUOTE_V1_SIZE ((uint32_t)sizeof(ViemSetBlockQuoteV1))
+  ViemLogicalSelectionIdentity expected_selection;
+} ViemSetBlockQuote;
 
 /* GitHub alert kinds; VIEM_ALERT_NONE makes a plain quote. */
 #define VIEM_ALERT_NONE 0u
@@ -2045,152 +1806,114 @@ typedef struct ViemSetBlockQuoteV1 {
 #define VIEM_ALERT_IMPORTANT 3u
 #define VIEM_ALERT_WARNING 4u
 #define VIEM_ALERT_CAUTION 5u
-typedef struct ViemSetAlertV1 {
-  uint32_t struct_size;
+typedef struct ViemSetAlert {
   uint32_t kind;
-  ViemLogicalSelectionIdentityV1 expected_selection;
-} ViemSetAlertV1;
-#define VIEM_SET_ALERT_V1_SIZE ((uint32_t)sizeof(ViemSetAlertV1))
+  ViemLogicalSelectionIdentity expected_selection;
+} ViemSetAlert;
 
 #define VIEM_LIST_CAN_INDENT 1u
 #define VIEM_LIST_CAN_UNINDENT 2u
 #define VIEM_LIST_CAN_INSERT_PARAGRAPH 4u
-typedef struct ViemListIndentV1 {
-  uint32_t struct_size;
+typedef struct ViemListIndent {
   uint32_t unindent;
-  ViemLogicalSelectionIdentityV1 expected_selection;
-} ViemListIndentV1;
-#define VIEM_LIST_INDENT_V1_SIZE ((uint32_t)sizeof(ViemListIndentV1))
+  ViemLogicalSelectionIdentity expected_selection;
+} ViemListIndent;
 
-typedef struct ViemSetParagraphStyleV1 {
-  uint32_t struct_size;
+typedef struct ViemSetParagraphStyle {
   uint32_t level; /* 0 = Base Paragraph, 1..6 = heading. */
-  ViemLogicalSelectionIdentityV1 expected_selection;
-} ViemSetParagraphStyleV1;
-#define VIEM_SET_PARAGRAPH_STYLE_V1_SIZE ((uint32_t)sizeof(ViemSetParagraphStyleV1))
+  ViemLogicalSelectionIdentity expected_selection;
+} ViemSetParagraphStyle;
 
 /* Named paragraph or character style assignment. With no selection a character
  * assignment updates subsequent typing and enters Insert from Normal. An empty character style_id clears the
  * named assignment (Default Paragraph); it is never a stored style definition.
  * Paragraph assignment accepts the current paragraph identity. */
-typedef struct ViemAssignStyleV1 {
-  uint32_t struct_size;
+typedef struct ViemAssignStyle {
   uint32_t namespace;
-  ViemStyleSheetIdentityV1 identity;
-  ViemLogicalSelectionIdentityV1 expected_selection;
+  ViemStyleSheetIdentity identity;
+  ViemLogicalSelectionIdentity expected_selection;
   ViemUtf8Slice style_id;
-} ViemAssignStyleV1;
-#define VIEM_ASSIGN_STYLE_V1_SIZE ((uint32_t)sizeof(ViemAssignStyleV1))
+} ViemAssignStyle;
 
 /* New sparse Code style definition. Empty parent uses the namespace base;
  * empty next style leaves it absent. */
-typedef struct ViemCreateStyleV1 {
-  uint32_t struct_size;
+typedef struct ViemCreateStyle {
   uint32_t namespace;
-  ViemStyleSheetIdentityV1 identity;
+  ViemStyleSheetIdentity identity;
   ViemUtf8Slice style_id;
   ViemUtf8Slice display_name;
   ViemUtf8Slice parent_id;
   ViemUtf8Slice next_style_id;
-} ViemCreateStyleV1;
-#define VIEM_CREATE_STYLE_V1_SIZE ((uint32_t)sizeof(ViemCreateStyleV1))
+} ViemCreateStyle;
 
-typedef struct ViemDeleteStyleV1 {
-  uint32_t struct_size;
+typedef struct ViemDeleteStyle {
   uint32_t namespace;
-  ViemStyleSheetIdentityV1 identity;
+  ViemStyleSheetIdentity identity;
   ViemUtf8Slice style_id;
-} ViemDeleteStyleV1;
-#define VIEM_DELETE_STYLE_V1_SIZE ((uint32_t)sizeof(ViemDeleteStyleV1))
+} ViemDeleteStyle;
 
 /* Exact acknowledgement of a successfully persisted native snapshot. */
-typedef struct ViemMarkSavedV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
+typedef struct ViemMarkSaved {
   uint64_t document_id;
   uint64_t document_revision;
-} ViemMarkSavedV1;
+} ViemMarkSaved;
 
-#define VIEM_MARK_SAVED_V1_SIZE ((uint32_t)sizeof(ViemMarkSavedV1))
 
-typedef struct ViemKeyInputV1 {
-  uint32_t struct_size;
+typedef struct ViemKeyInput {
   uint32_t kind;
   /* Unicode scalar, or function-key number 1..35 for VIEM_KEY_FUNCTION. */
   uint32_t codepoint;
   /* VIEM_KEY_MODIFIER_* bits for function and navigation keys; zero otherwise. */
   uint32_t modifiers;
-} ViemKeyInputV1;
+} ViemKeyInput;
 
-#define VIEM_KEY_INPUT_V1_SIZE ((uint32_t)sizeof(ViemKeyInputV1))
 
 /*
  * Exact formatted-snapshot replacement target for native marked text. The
  * frontend passes its current selection, or an empty range at its insertion
  * caret, using UTF-8 byte offsets for document_revision.
  */
-typedef struct ViemCompositionBeginV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
+typedef struct ViemCompositionBegin {
   uint64_t document_revision;
   uint64_t replacement_start;
   uint64_t replacement_end;
-} ViemCompositionBeginV1;
+} ViemCompositionBegin;
 
-#define VIEM_COMPOSITION_BEGIN_V1_SIZE \
-  ((uint32_t)sizeof(ViemCompositionBeginV1))
 
 /* selected_start/end are UTF-8 byte offsets relative to marked_text. */
-typedef struct ViemCompositionUpdateV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
+typedef struct ViemCompositionUpdate {
   uint64_t document_revision;
   ViemUtf8Slice marked_text;
   uint64_t selected_start;
   uint64_t selected_end;
-} ViemCompositionUpdateV1;
+} ViemCompositionUpdate;
 
-#define VIEM_COMPOSITION_UPDATE_V1_SIZE \
-  ((uint32_t)sizeof(ViemCompositionUpdateV1))
 
-typedef struct ViemCompositionCommitV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
+typedef struct ViemCompositionCommit {
   uint64_t document_revision;
   ViemUtf8Slice committed_text;
-} ViemCompositionCommitV1;
+} ViemCompositionCommit;
 
-#define VIEM_COMPOSITION_COMMIT_V1_SIZE \
-  ((uint32_t)sizeof(ViemCompositionCommitV1))
 
-typedef struct ViemCompositionCancelV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
+typedef struct ViemCompositionCancel {
   uint64_t document_revision;
-} ViemCompositionCancelV1;
+} ViemCompositionCancel;
 
-#define VIEM_COMPOSITION_CANCEL_V1_SIZE \
-  ((uint32_t)sizeof(ViemCompositionCancelV1))
 
 #define VIEM_COMPOSITION_OVERLAY_ACTIVE (1u << 0)
 
-typedef struct ViemCompositionOverlayIdentityV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
+typedef struct ViemCompositionOverlayIdentity {
   uint64_t view_id;
   uint64_t document_id;
   uint64_t document_revision;
   uint64_t generation;
-} ViemCompositionOverlayIdentityV1;
+} ViemCompositionOverlayIdentity;
 
-#define VIEM_COMPOSITION_OVERLAY_IDENTITY_V1_SIZE \
-  ((uint32_t)sizeof(ViemCompositionOverlayIdentityV1))
 
 /* Exact ranges in the disposable, source-nonmutating composed projection. */
-typedef struct ViemCompositionOverlayInfoV1 {
-  uint32_t struct_size;
+typedef struct ViemCompositionOverlayInfo {
   uint32_t flags;
-  ViemCompositionOverlayIdentityV1 identity;
+  ViemCompositionOverlayIdentity identity;
   uint64_t utf8_length;
   uint64_t replacement_start;
   uint64_t replacement_end;
@@ -2198,24 +1921,17 @@ typedef struct ViemCompositionOverlayInfoV1 {
   uint64_t marked_end;
   uint64_t selected_start;
   uint64_t selected_end;
-} ViemCompositionOverlayInfoV1;
+} ViemCompositionOverlayInfo;
 
-#define VIEM_COMPOSITION_OVERLAY_INFO_V1_SIZE \
-  ((uint32_t)sizeof(ViemCompositionOverlayInfoV1))
 
-typedef struct ViemCompositionOverlayUtf8RangeV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
-  ViemCompositionOverlayIdentityV1 identity;
+typedef struct ViemCompositionOverlayUtf8Range {
+  ViemCompositionOverlayIdentity identity;
   uint64_t start;
   uint64_t end;
-} ViemCompositionOverlayUtf8RangeV1;
+} ViemCompositionOverlayUtf8Range;
 
-#define VIEM_COMPOSITION_OVERLAY_UTF8_RANGE_V1_SIZE \
-  ((uint32_t)sizeof(ViemCompositionOverlayUtf8RangeV1))
 
-typedef struct ViemCoreOutcomeV1 {
-  uint32_t struct_size;
+typedef struct ViemCoreOutcome {
   uint32_t command_status;
   uint32_t mode;
   uint32_t flags;
@@ -2226,9 +1942,8 @@ typedef struct ViemCoreOutcomeV1 {
   uint64_t configuration_generation;
   uint64_t measurement_environment_id;
   uint64_t metrics_generation;
-} ViemCoreOutcomeV1;
+} ViemCoreOutcome;
 
-#define VIEM_CORE_OUTCOME_V1_SIZE ((uint32_t)sizeof(ViemCoreOutcomeV1))
 
 uint32_t viem_core_abi_version(void);
 
@@ -2252,7 +1967,7 @@ ViemStatus viem_core_create(const uint8_t *source, uint64_t source_length,
 ViemStatus viem_core_destroy(ViemCoreHandle core);
 ViemStatus viem_core_revision(ViemCoreHandle core, uint64_t *out_revision);
 ViemStatus viem_core_document_state(ViemCoreHandle core,
-                                    ViemDocumentStateV1 *out_state);
+                                    ViemDocumentState *out_state);
 
 /*
  * Bounded access to the immutable formatted projection. Snapshot info returns
@@ -2263,23 +1978,23 @@ ViemStatus viem_core_document_state(ViemCoreHandle core,
  * identity mismatch returns STALE_REVISION.
  */
 ViemStatus viem_core_formatted_snapshot_info(
-    ViemCoreHandle core, ViemFormattedSnapshotInfoV1 *out_info);
+    ViemCoreHandle core, ViemFormattedSnapshotInfo *out_info);
 ViemStatus viem_core_copy_formatted_utf8_range(
-    ViemCoreHandle core, const ViemFormattedUtf8RangeV1 *request,
+    ViemCoreHandle core, const ViemFormattedUtf8Range *request,
     uint8_t *output, uint64_t output_capacity, uint64_t *out_required);
 ViemStatus viem_core_map_formatted_utf8_to_utf16(
-    ViemCoreHandle core, const ViemFormattedSnapshotIdentityV1 *identity,
+    ViemCoreHandle core, const ViemFormattedSnapshotIdentity *identity,
     const uint64_t *utf8_offsets, uint64_t offset_count,
     uint64_t *utf16_offsets, uint64_t output_capacity,
     uint64_t *out_required);
 ViemStatus viem_core_map_formatted_utf16_to_utf8(
-    ViemCoreHandle core, const ViemFormattedSnapshotIdentityV1 *identity,
+    ViemCoreHandle core, const ViemFormattedSnapshotIdentity *identity,
     const uint64_t *utf16_offsets, uint64_t offset_count,
     uint64_t *utf8_offsets, uint64_t output_capacity,
     uint64_t *out_required);
 ViemStatus viem_core_formatted_point_info(
-    ViemCoreHandle core, const ViemFormattedSnapshotIdentityV1 *identity,
-    uint64_t utf8_offset, ViemFormattedPointInfoV1 *out_info);
+    ViemCoreHandle core, const ViemFormattedSnapshotIdentity *identity,
+    uint64_t utf8_offset, ViemFormattedPointInfo *out_info);
 
 /* Snapshot-checked buffer policies; they do not modify source or undo state. */
 ViemStatus viem_core_set_read_only(ViemCoreHandle core, uint64_t expected_document, uint64_t expected_revision, uint32_t read_only);
@@ -2287,7 +2002,7 @@ ViemStatus viem_core_mark_recovered(ViemCoreHandle core, uint64_t expected_docum
 
 /* Call only after the native write of this exact source snapshot succeeds. */
 ViemStatus viem_core_mark_saved(ViemCoreHandle core,
-                                const ViemMarkSavedV1 *request);
+                                const ViemMarkSaved *request);
 
 /*
  * Query/copy one exact immutable normalized style sheet. The copy is all-or-
@@ -2297,24 +2012,24 @@ ViemStatus viem_core_mark_saved(ViemCoreHandle core,
  */
 /* Identity only: does not resolve or serialize styles. core=0 selects Code. */
 ViemStatus viem_core_style_sheet_identity(ViemCoreHandle core,
-                                          ViemStyleSheetIdentityV1 *out_identity);
+                                          ViemStyleSheetIdentity *out_identity);
 /* gutter_underlay=0 exports the full sheet. VIEM_LINE_NUMBER_DIFF_ADDED
  * or REMOVED exports only the two gutter styles over that diff line. */
 ViemStatus viem_core_style_sheet_info(ViemCoreHandle core, uint32_t gutter_underlay,
-                                      ViemStyleSheetInfoV1 *out_info);
+                                      ViemStyleSheetInfo *out_info);
 ViemStatus viem_core_copy_style_sheet(
-    ViemCoreHandle core, uint32_t gutter_underlay, const ViemStyleSheetIdentityV1 *expected,
-    ViemStyleDefinitionV1 *definitions, uint64_t definition_capacity,
-    ViemStylePropertyV1 *properties, uint64_t property_capacity,
-    ViemStyleValueItemV1 *value_items, uint64_t value_item_capacity,
-    ViemStyleDependencyV1 *dependencies, uint64_t dependency_capacity,
+    ViemCoreHandle core, uint32_t gutter_underlay, const ViemStyleSheetIdentity *expected,
+    ViemStyleDefinition *definitions, uint64_t definition_capacity,
+    ViemStyleProperty *properties, uint64_t property_capacity,
+    ViemStyleValueItem *value_items, uint64_t value_item_capacity,
+    ViemStyleDependency *dependencies, uint64_t dependency_capacity,
     uint8_t *string_bytes, uint64_t string_capacity,
-    ViemStyleSheetInfoV1 *out_info);
+    ViemStyleSheetInfo *out_info);
 
 ViemStatus viem_core_view_add(
-    ViemCoreHandle core, const ViemViewOptionsV1 *options,
-    const ViemTextMeasurementProviderV1 *provider, ViemViewId *out_view,
-    ViemCoreOutcomeV1 *out_outcome);
+    ViemCoreHandle core, const ViemViewOptions *options,
+    const ViemTextMeasurementProvider *provider, ViemViewId *out_view,
+    ViemCoreOutcome *out_outcome);
 ViemStatus viem_core_view_remove(ViemCoreHandle core, ViemViewId view);
 /* Bounded speculative layout. Prepare/install are serial coordinator calls.
  * Compute accesses only immutable captured inputs, on a worker with its own
@@ -2328,7 +2043,7 @@ ViemStatus viem_core_view_remove(ViemCoreHandle core, ViemViewId view);
 ViemStatus viem_core_view_prepare_prelayout(ViemCoreHandle core, ViemViewId view,
     int32_t direction, uint64_t *out_request);
 ViemStatus viem_layout_work_compute(uint64_t request,
-    const ViemTextMeasurementProviderV1 *provider, uint64_t *out_result);
+    const ViemTextMeasurementProvider *provider, uint64_t *out_result);
 ViemStatus viem_core_view_install_prelayout(ViemCoreHandle core, ViemViewId view,
     int32_t direction, uint64_t result, uint8_t *out_installed);
 /* Visible table width refinement uses the same immutable worker computation.
@@ -2343,16 +2058,16 @@ ViemStatus viem_core_view_install_table_refinement(ViemCoreHandle core, ViemView
 ViemStatus viem_layout_work_cancel(uint64_t request);
 ViemStatus viem_layout_work_release(uint64_t work);
 ViemStatus viem_core_view_state(ViemCoreHandle core, ViemViewId view,
-                                ViemCoreOutcomeV1 *out_outcome);
+                                ViemCoreOutcome *out_outcome);
 ViemStatus viem_core_view_capture_restoration(ViemCoreHandle core, ViemViewId view,
-    ViemViewRestorationV1 *out_state);
+    ViemViewRestoration *out_state);
 /* Stage positions in the explicitly identified replacement before publication.
  * Input and output must be aligned, readable/writable and mutually disjoint. */
 ViemStatus viem_core_view_restore(ViemCoreHandle core, ViemViewId view,
-    uint64_t document, uint64_t revision, const ViemViewRestorationV1 *state,
-    ViemCoreOutcomeV1 *out_outcome);
+    uint64_t document, uint64_t revision, const ViemViewRestoration *state,
+    ViemCoreOutcome *out_outcome);
 ViemStatus viem_core_view_viewport_state(ViemCoreHandle core, ViemViewId view,
-                                         ViemViewportStateV1 *out_state);
+                                         ViemViewportState *out_state);
 
 /*
  * Snapshot info is an atomic current-layout query. To copy geometry, pass its
@@ -2362,14 +2077,14 @@ ViemStatus viem_core_view_viewport_state(ViemCoreHandle core, ViemViewId view,
  * their provider generation/view lifetime and are not retained by this call.
  */
 ViemStatus viem_core_view_layout_snapshot_info(
-    ViemCoreHandle core, ViemViewId view, ViemLayoutSnapshotInfoV1 *out_info);
+    ViemCoreHandle core, ViemViewId view, ViemLayoutSnapshotInfo *out_info);
 ViemStatus viem_core_view_copy_layout_snapshot(
     ViemCoreHandle core, ViemViewId view,
-    const ViemLayoutSnapshotIdentityV1 *expected,
-    ViemVisualRowV1 *rows, uint64_t row_capacity,
-    ViemPositionedClusterV1 *clusters, uint64_t cluster_capacity,
-    ViemPositionedCaretV1 *carets, uint64_t caret_capacity,
-    ViemLayoutSnapshotInfoV1 *out_info);
+    const ViemLayoutSnapshotIdentity *expected,
+    ViemVisualRow *rows, uint64_t row_capacity,
+    ViemPositionedCluster *clusters, uint64_t cluster_capacity,
+    ViemPositionedCaret *carets, uint64_t caret_capacity,
+    ViemLayoutSnapshotInfo *out_info);
 
 /*
  * Paint info is an atomic query against the current immutable layout. Pass its
@@ -2378,31 +2093,31 @@ ViemStatus viem_core_view_copy_layout_snapshot(
  * state to out_info and writes no run elements.
  */
 ViemStatus viem_core_view_layout_paint_info(
-    ViemCoreHandle core, ViemViewId view, ViemLayoutPaintInfoV1 *out_info);
+    ViemCoreHandle core, ViemViewId view, ViemLayoutPaintInfo *out_info);
 /* Exact-layout, atomic decorations export; zero-capacity buffers query counts. */
 ViemStatus viem_core_view_copy_layout_decorations(
     ViemCoreHandle core, ViemViewId view,
-    const ViemLayoutSnapshotIdentityV1 *expected,
-    ViemLayoutDecorationV1 *decorations, uint64_t decoration_capacity,
+    const ViemLayoutSnapshotIdentity *expected,
+    ViemLayoutDecoration *decorations, uint64_t decoration_capacity,
     uint8_t *labels, uint64_t label_capacity,
-    ViemLayoutDecorationsInfoV1 *out_info);
+    ViemLayoutDecorationsInfo *out_info);
 ViemStatus viem_core_view_copy_layout_paint(
     ViemCoreHandle core, ViemViewId view,
-    const ViemLayoutSnapshotIdentityV1 *expected,
-    ViemPaintStyleRunV1 *runs, uint64_t run_capacity,
-    ViemLayoutPaintInfoV1 *out_info);
+    const ViemLayoutSnapshotIdentity *expected,
+    ViemPaintStyleRun *runs, uint64_t run_capacity,
+    ViemLayoutPaintInfo *out_info);
 
 ViemStatus viem_core_view_caret_geometry(
     ViemCoreHandle core, ViemViewId view,
-    const ViemLayoutCaretRequestV1 *request,
-    ViemLayoutCaretGeometryV1 *out_geometry);
+    const ViemLayoutCaretRequest *request,
+    ViemLayoutCaretGeometry *out_geometry);
 ViemStatus viem_core_view_layout_hit_test(
     ViemCoreHandle core, ViemViewId view,
-    const ViemLayoutHitTestRequestV1 *request,
-    ViemLayoutCaretPointV1 *out_point);
+    const ViemLayoutHitTestRequest *request,
+    ViemLayoutCaretPoint *out_point);
 ViemStatus viem_core_view_presentation(
     ViemCoreHandle core, ViemViewId view,
-    ViemViewPresentationV1 *out_presentation);
+    ViemViewPresentation *out_presentation);
 
 /*
  * Command-line info is an atomic current-state query. Copy requires its exact
@@ -2410,12 +2125,12 @@ ViemStatus viem_core_view_presentation(
  * BUFFER_TOO_SMALL writes the current required length and no bytes.
  */
 ViemStatus viem_core_view_command_line_info(
-    ViemCoreHandle core, ViemViewId view, ViemCommandLineInfoV1 *out_info);
+    ViemCoreHandle core, ViemViewId view, ViemCommandLineInfo *out_info);
 ViemStatus viem_core_view_copy_command_line(
     ViemCoreHandle core, ViemViewId view,
-    const ViemCommandLineIdentityV1 *expected,
+    const ViemCommandLineIdentity *expected,
     uint8_t *utf8, uint64_t utf8_capacity,
-    ViemCommandLineInfoV1 *out_info);
+    ViemCommandLineInfo *out_info);
 
 /*
  * Copy requires an unchanged info record from the atomic current-state query.
@@ -2426,14 +2141,14 @@ ViemStatus viem_core_view_copy_command_line(
  * input, output, and count regions must be aligned and pairwise disjoint.
  */
 ViemStatus viem_core_view_completion_info(
-    ViemCoreHandle core, ViemViewId view, ViemCompletionInfoV1 *out_info);
+    ViemCoreHandle core, ViemViewId view, ViemCompletionInfo *out_info);
 ViemStatus viem_core_view_copy_completion_items(
     ViemCoreHandle core, ViemViewId view,
-    const ViemCompletionInfoV1 *expected,
-    ViemCompletionItemV1 *items, uint64_t capacity, uint64_t *out_count);
+    const ViemCompletionInfo *expected,
+    ViemCompletionItem *items, uint64_t capacity, uint64_t *out_count);
 ViemStatus viem_core_view_copy_completion_utf8(
     ViemCoreHandle core, ViemViewId view,
-    const ViemCompletionInfoV1 *expected,
+    const ViemCompletionInfo *expected,
     uint8_t *bytes, uint64_t capacity, uint64_t *out_count);
 /*
  * Advance one bounded search slice without blocking on document-wide work.
@@ -2482,13 +2197,13 @@ ViemStatus viem_core_view_accept_completion(
  */
 ViemStatus viem_core_view_visual_selection_info(
     ViemCoreHandle core, ViemViewId view,
-    ViemVisualSelectionInfoV1 *out_info);
+    ViemVisualSelectionInfo *out_info);
 ViemStatus viem_core_view_copy_visual_selection(
     ViemCoreHandle core, ViemViewId view,
-    const ViemVisualSelectionIdentityV1 *expected,
-    ViemVisualSelectionSegmentV1 *segments, uint64_t segment_capacity,
-    ViemVisualSelectionRectangleV1 *rectangles, uint64_t rectangle_capacity,
-    ViemVisualSelectionInfoV1 *out_info);
+    const ViemVisualSelectionIdentity *expected,
+    ViemVisualSelectionSegment *segments, uint64_t segment_capacity,
+    ViemVisualSelectionRectangle *rectangles, uint64_t rectangle_capacity,
+    ViemVisualSelectionInfo *out_info);
 
 /*
  * Query source-backed Strong/Emphasis state and capability using only the
@@ -2496,13 +2211,13 @@ ViemStatus viem_core_view_copy_visual_selection(
  */
 ViemStatus viem_core_view_semantic_style_presentation(
     ViemCoreHandle core, ViemViewId view, uint32_t style,
-    ViemSemanticStylePresentationV1 *out_presentation);
+    ViemSemanticStylePresentation *out_presentation);
 
 /* Apply to the exact logical-selection identity returned by the query. */
 ViemStatus viem_core_view_set_semantic_style(
     ViemCoreHandle core, ViemViewId view,
-    const ViemSetSemanticStyleV1 *request,
-    ViemCoreOutcomeV1 *out_outcome);
+    const ViemSetSemanticStyle *request,
+    ViemCoreOutcome *out_outcome);
 
 /*
  * Bind an exact current Visual selection as the literal forward-search target.
@@ -2511,68 +2226,68 @@ ViemStatus viem_core_view_set_semantic_style(
  */
 ViemStatus viem_core_view_use_selection_for_find(
     ViemCoreHandle core, ViemViewId view,
-    const ViemVisualSelectionIdentityV1 *expected,
-    ViemCoreOutcomeV1 *out_outcome);
+    const ViemVisualSelectionIdentity *expected,
+    ViemCoreOutcome *out_outcome);
 
 /* Reveal the active endpoint of the core-owned Visual selection. */
 ViemStatus viem_core_view_reveal_selection(
     ViemCoreHandle core, ViemViewId view,
-    ViemCoreOutcomeV1 *out_outcome);
+    ViemCoreOutcome *out_outcome);
 
 /*
  * Host-context turns consume immutable per-turn clipboard snapshots and
  * writable capabilities. On success, out_effect_batch is zero or an owned
  * handle which must be released. The effect batch survives core destruction.
  */
-ViemStatus viem_core_view_send_key_with_host_context_v2(
-    ViemCoreHandle handle, ViemViewId view, const ViemKeyInputV1 *input,
-    const ViemCommandTurnContextV2 *context, ViemCoreOutcomeV1 *out_outcome,
+ViemStatus viem_core_view_send_key_with_host_context(
+    ViemCoreHandle handle, ViemViewId view, const ViemKeyInput *input,
+    const ViemCommandTurnContext *context, ViemCoreOutcome *out_outcome,
     ViemEffectBatchHandle *out_effect_batch);
-ViemStatus viem_core_view_send_text_with_host_context_v2(
+ViemStatus viem_core_view_send_text_with_host_context(
     ViemCoreHandle handle, ViemViewId view, const uint8_t *text, uint64_t text_length,
-    const ViemCommandTurnContextV2 *context, ViemCoreOutcomeV1 *out_outcome,
+    const ViemCommandTurnContext *context, ViemCoreOutcome *out_outcome,
     ViemEffectBatchHandle *out_effect_batch);
 
 /* Pending multi-key mapping state and timeout dispatch. Flush captures host
  * context and returns an owned effect batch just like send_key. */
 ViemStatus viem_core_view_has_pending_mapping(ViemCoreHandle core, ViemViewId view,
                                              uint8_t *pending);
-ViemStatus viem_core_view_flush_mapping_with_host_context_v2(
-    ViemCoreHandle core, ViemViewId view, const ViemCommandTurnContextV2 *context,
-    ViemCoreOutcomeV1 *outcome, ViemEffectBatchHandle *effects);
+ViemStatus viem_core_view_flush_mapping_with_host_context(
+    ViemCoreHandle core, ViemViewId view, const ViemCommandTurnContext *context,
+    ViemCoreOutcome *outcome, ViemEffectBatchHandle *effects);
 
 ViemStatus viem_effect_batch_info(ViemEffectBatchHandle batch,
-                                  ViemEffectBatchInfoV1 *out_info);
+                                  ViemEffectBatchInfo *out_info);
 /* One read-only descriptor; pointers remain valid until batch release.
  * The caller must keep the handle alive while reading; concurrent release is
  * prohibited. Copy any data needed after release. Zero-count arrays are empty.
  * Raw file requests perform no I/O and do not establish a save point. */
-typedef struct ViemEffectBatchViewV1 {
-  ViemEffectBatchInfoV1 info;
-  const ViemClipboardWriteV1 *clipboard_writes;
-  const ViemExFrontendRequestV1 *ex_requests;
-  const ViemExOptionDisplayV1 *ex_options;
-  const ViemExMarkV1 *ex_marks;
-  const ViemExRegisterV1 *ex_registers;
-  const ViemExJumpV1 *ex_jumps;
-  const ViemExTextLineV1 *ex_text_lines;
+typedef struct ViemEffectBatchView {
+  ViemEffectBatchInfo info;
+  const ViemClipboardWrite *clipboard_writes;
+  const ViemExFrontendRequest *ex_requests;
+  const ViemExOptionDisplay *ex_options;
+  const ViemExMark *ex_marks;
+  const ViemExRegister *ex_registers;
+  const ViemExJump *ex_jumps;
+  const ViemExTextLine *ex_text_lines;
   const uint32_t *file_formats;
   const uint64_t *hard_breaks;
   const uint8_t *strings;
-} ViemEffectBatchViewV1;
+} ViemEffectBatchView;
 ViemStatus viem_effect_batch_read(ViemEffectBatchHandle batch,
-                                ViemEffectBatchViewV1 *out_batch);
+                                ViemEffectBatchView *out_batch);
 ViemStatus viem_effect_batch_release(ViemEffectBatchHandle batch);
 
 ViemStatus viem_core_view_place_cursor(
     ViemCoreHandle core, ViemViewId view,
-    const ViemPlaceCursorV1 *request, ViemCoreOutcomeV1 *out_outcome);
+    const ViemPlaceCursor *request, ViemCoreOutcome *out_outcome);
 
 /* Select all logical content through EOF, independently of line policy. */
 ViemStatus viem_core_view_select_all(
     ViemCoreHandle core, ViemViewId view,
     uint64_t document_id, uint64_t document_revision,
-    ViemCoreOutcomeV1 *out_outcome);
+    ViemCoreOutcome *out_outcome);
 
 /* Selection optionKind is VIEM_EX_OPTION_KEYMODEL/SELECTMODE/AUTOSELECT.
  * AUTOSELECT uses the UTF-8 boolean spelling "1" or "0".
@@ -2603,11 +2318,11 @@ ViemStatus viem_core_set_selection_option(ViemCoreHandle core, uint32_t option_k
  * INSERT/REPLACE resume typing and all other valid modes resume NORMAL. */
 ViemStatus viem_core_view_native_actions(ViemCoreHandle core, ViemViewId view, uint64_t *out_actions);
 ViemStatus viem_core_view_native_action(ViemCoreHandle core, ViemViewId view, uint32_t action,
-    uint32_t origin, uint32_t return_mode, ViemCoreOutcomeV1 *out_outcome, ViemEffectBatchHandle *out_effects);
+    uint32_t origin, uint32_t return_mode, ViemCoreOutcome *out_outcome, ViemEffectBatchHandle *out_effects);
 
 ViemStatus viem_core_view_set_selection_origin(
     ViemCoreHandle core, ViemViewId view, uint32_t origin, uint32_t return_mode,
-    ViemCoreOutcomeV1 *out_outcome);
+    ViemCoreOutcome *out_outcome);
 
 /* Enter Normal mode and reveal the first nonblank grapheme on a physical source
  * line in the exact document revision. Lines are one-based; zero selects the
@@ -2616,22 +2331,20 @@ ViemStatus viem_core_view_set_selection_origin(
 ViemStatus viem_core_view_go_to_line(
     ViemCoreHandle core, ViemViewId view,
     uint64_t document_id, uint64_t document_revision, uint64_t line,
-    ViemCoreOutcomeV1 *out_outcome);
+    ViemCoreOutcome *out_outcome);
 
 /* Session file marks are bounded to A-Z. Query generation zero, then use the
  * returned generation for path copying and navigation. Outputs are disjoint. */
-typedef struct ViemFileMarkTargetV1 {
-    uint32_t struct_size;
+typedef struct ViemFileMarkTarget {
     uint32_t name;
     uint64_t generation;
     uint64_t document_id;
     uint64_t path_length;
-} ViemFileMarkTargetV1;
-#define VIEM_FILE_MARK_TARGET_V1_SIZE ((uint32_t)sizeof(ViemFileMarkTargetV1))
+} ViemFileMarkTarget;
 ViemStatus viem_file_mark_target(uint32_t name, uint64_t generation,
-    ViemFileMarkTargetV1 *out_info, uint8_t *path, uint64_t capacity);
+    ViemFileMarkTarget *out_info, uint8_t *path, uint64_t capacity);
 ViemStatus viem_core_view_jump_file_mark(ViemCoreHandle core, ViemViewId view,
-    uint32_t name, uint64_t generation, uint32_t linewise, ViemCoreOutcomeV1 *out_outcome);
+    uint32_t name, uint64_t generation, uint32_t linewise, ViemCoreOutcome *out_outcome);
 /* Exact UTF-8 input, copied before return; # is view-local, ~ is an accepted drop. */
 ViemStatus viem_core_view_set_host_register(ViemCoreHandle core, ViemViewId view,
     uint32_t name, const uint8_t *text, uint64_t length);
@@ -2639,14 +2352,14 @@ ViemStatus viem_core_view_set_host_register(ViemCoreHandle core, ViemViewId view
 /* Explicit native drop; all regions disjoint, ownership of returned effects
  * follows other host-context turns. Successful drops publish the ~ register. */
 ViemStatus viem_core_view_drop_text(ViemCoreHandle core, ViemViewId view,
-    const uint8_t *text, uint64_t length, const ViemCommandTurnContextV2 *context,
-    ViemCoreOutcomeV1 *out_outcome, ViemEffectBatchHandle *out_effect_batch);
+    const uint8_t *text, uint64_t length, const ViemCommandTurnContext *context,
+    ViemCoreOutcome *out_outcome, ViemEffectBatchHandle *out_effect_batch);
 
 /* Native Edit-menu history navigation; behavior is independent of Vim mode. */
 ViemStatus viem_core_view_undo(ViemCoreHandle core, ViemViewId view,
-                               ViemCoreOutcomeV1 *out_outcome);
+                               ViemCoreOutcome *out_outcome);
 ViemStatus viem_core_view_redo(ViemCoreHandle core, ViemViewId view,
-                               ViemCoreOutcomeV1 *out_outcome);
+                               ViemCoreOutcome *out_outcome);
 
 /*
  * Composition requests are exact-revision operations. Begin replacement and
@@ -2658,23 +2371,23 @@ ViemStatus viem_core_view_redo(ViemCoreHandle core, ViemViewId view,
  */
 ViemStatus viem_core_view_composition_begin(
     ViemCoreHandle core, ViemViewId view,
-    const ViemCompositionBeginV1 *request, ViemCoreOutcomeV1 *out_outcome);
+    const ViemCompositionBegin *request, ViemCoreOutcome *out_outcome);
 ViemStatus viem_core_view_composition_update(
     ViemCoreHandle core, ViemViewId view,
-    const ViemCompositionUpdateV1 *request, ViemCoreOutcomeV1 *out_outcome);
+    const ViemCompositionUpdate *request, ViemCoreOutcome *out_outcome);
 ViemStatus viem_core_view_composition_overlay_info(
     ViemCoreHandle core, ViemViewId view,
-    ViemCompositionOverlayInfoV1 *out_info);
+    ViemCompositionOverlayInfo *out_info);
 ViemStatus viem_core_view_copy_composition_utf8_range(
     ViemCoreHandle core, ViemViewId view,
-    const ViemCompositionOverlayUtf8RangeV1 *request, uint8_t *output,
+    const ViemCompositionOverlayUtf8Range *request, uint8_t *output,
     uint64_t output_capacity, uint64_t *out_required);
 ViemStatus viem_core_view_composition_commit(
     ViemCoreHandle core, ViemViewId view,
-    const ViemCompositionCommitV1 *request, ViemCoreOutcomeV1 *out_outcome);
+    const ViemCompositionCommit *request, ViemCoreOutcome *out_outcome);
 ViemStatus viem_core_view_composition_cancel(
     ViemCoreHandle core, ViemViewId view,
-    const ViemCompositionCancelV1 *request, ViemCoreOutcomeV1 *out_outcome);
+    const ViemCompositionCancel *request, ViemCoreOutcome *out_outcome);
 
 /*
  * Horizontal-only origin changes do not shape, reflow, or replace immutable
@@ -2683,7 +2396,7 @@ ViemStatus viem_core_view_composition_cancel(
  */
 ViemStatus viem_core_view_set_viewport_origin(
     ViemCoreHandle core, ViemViewId view,
-    const ViemViewportOriginV1 *request, ViemCoreOutcomeV1 *out_outcome);
+    const ViemViewportOrigin *request, ViemCoreOutcome *out_outcome);
 
 /* Theme padding is presentation-only and scrolls with the document canvas. */
 ViemStatus viem_core_view_set_padding(ViemCoreHandle core, ViemViewId view,
@@ -2701,7 +2414,7 @@ ViemStatus viem_core_image_resources_changed(ViemCoreHandle core, ViemViewId vie
 
 ViemStatus viem_core_view_resize(ViemCoreHandle core, ViemViewId view,
                                  float width, float height,
-                                 ViemCoreOutcomeV1 *out_outcome);
+                                 ViemCoreOutcome *out_outcome);
 /*
  * Change only this view's magnification. The scale must be finite and within
  * 0.25 through 5.0 inclusive. Shaping/wrapping/layout are refreshed synchronously; source and
@@ -2714,22 +2427,19 @@ ViemStatus viem_core_adjacent_zoom_scale(float scale, uint32_t increasing,
 /* Arbitrary finite view scales within 0.25..5.0 are accepted. */
 ViemStatus viem_core_view_set_scale(ViemCoreHandle core, ViemViewId view,
                                     float scale,
-                                    ViemCoreOutcomeV1 *out_outcome);
+                                    ViemCoreOutcome *out_outcome);
 #define VIEM_LINE_LOCATION_GLOBAL_LINE_EXACT 1u
 #define VIEM_LINE_LOCATION_FRAGMENT_EXACT 2u
-typedef struct ViemViewLineLocationV1 {
-    uint32_t struct_size;
+typedef struct ViemViewLineLocation {
     uint32_t mode;
     uint32_t flags;
-    uint32_t reserved;
     uint64_t line;
     uint64_t column;
     uint64_t hard_line;
     uint64_t fragment;
-} ViemViewLineLocationV1;
-#define VIEM_VIEW_LINE_LOCATION_V1_SIZE ((uint32_t)sizeof(ViemViewLineLocationV1))
+} ViemViewLineLocation;
 /* Exact physical source coordinates regardless of command line mode; no layout is forced. */
-ViemStatus viem_core_view_line_location(ViemCoreHandle handle, ViemViewId view, ViemViewLineLocationV1 *out_location);
+ViemStatus viem_core_view_line_location(ViemCoreHandle handle, ViemViewId view, ViemViewLineLocation *out_location);
 
 
 #define VIEM_LINE_NUMBER_SNAPSHOT_ENABLED 1u
@@ -2738,23 +2448,20 @@ ViemStatus viem_core_view_line_location(ViemCoreHandle handle, ViemViewId view, 
 #define VIEM_LINE_NUMBER_REGION_CURRENT (1u << 1)
 #define VIEM_LINE_NUMBER_DIFF_ADDED (1u << 2)
 #define VIEM_LINE_NUMBER_DIFF_REMOVED (1u << 3)
-typedef struct ViemLineNumberSnapshotInfoV1 {
-  uint32_t struct_size;
+typedef struct ViemLineNumberSnapshotInfo {
   uint32_t flags;
-  ViemLayoutSnapshotIdentityV1 identity;
-  ViemLayoutRectV1 viewport;
+  ViemLayoutSnapshotIdentity identity;
+  ViemLayoutRect viewport;
   uint64_t source_line_count;
   uint64_t current_source_line;
   uint64_t region_count;
-} ViemLineNumberSnapshotInfoV1;
-#define VIEM_LINE_NUMBER_SNAPSHOT_INFO_V1_SIZE ((uint32_t)sizeof(ViemLineNumberSnapshotInfoV1))
-typedef struct ViemLineNumberRegionV1 {
+} ViemLineNumberSnapshotInfo;
+typedef struct ViemLineNumberRegion {
   uint64_t source_line;
   uint32_t flags;
-  uint32_t reserved;
   float top;
   float bottom;
-} ViemLineNumberRegionV1;
+} ViemLineNumberRegion;
 /* View-local native preference. It changes no source, history or layout. */
 ViemStatus viem_core_view_number(ViemCoreHandle core, ViemViewId view, uint32_t *out_enabled);
 ViemStatus viem_core_view_set_number(ViemCoreHandle core, ViemViewId view, uint32_t enabled);
@@ -2763,22 +2470,22 @@ ViemStatus viem_core_view_set_number(ViemCoreHandle core, ViemViewId view, uint3
  * margin reaches its table's left edge, where native row controls also appear.
  * Native number columns remain independent fixed hot areas. */
 ViemStatus viem_core_view_row_selection_hit_test(ViemCoreHandle core, ViemViewId view,
-    const ViemLayoutSnapshotIdentityV1 *expected, float x, float y, uint32_t *out_hit);
+    const ViemLayoutSnapshotIdentity *expected, float x, float y, uint32_t *out_hit);
 /* Select a complete displayed row at document-layout y. Table gutter gestures
  * select the entire semantic table row. Extension retains the initial row. */
 ViemStatus viem_core_view_select_pointer_row(ViemCoreHandle core, ViemViewId view,
-    const ViemLayoutSnapshotIdentityV1 *expected, float y, uint32_t extend_selection,
-    ViemCoreOutcomeV1 *out_outcome);
+    const ViemLayoutSnapshotIdentity *expected, float y, uint32_t extend_selection,
+    ViemCoreOutcome *out_outcome);
 /* One-based physical source lines independent of command line mode. Regions
  * intersect the viewport but retain their full wrapped line bounds. Entirely
  * hidden syntax has no independent glyph band; visible folded source lines
  * share their rendered band. ESTIMATED marks huge partially measured lines.
  * These queries perform no shaping or text materialization. */
 ViemStatus viem_core_view_line_number_snapshot_info(ViemCoreHandle core, ViemViewId view,
-                                                  ViemLineNumberSnapshotInfoV1 *out_info);
+                                                  ViemLineNumberSnapshotInfo *out_info);
 ViemStatus viem_core_view_copy_line_number_regions(ViemCoreHandle core, ViemViewId view,
-    const ViemLayoutSnapshotIdentityV1 *expected, const ViemLayoutRectV1 *expected_viewport,
-    ViemLineNumberRegionV1 *regions, uint64_t capacity, uint64_t *out_count);
+    const ViemLayoutSnapshotIdentity *expected, const ViemLayoutRect *expected_viewport,
+    ViemLineNumberRegion *regions, uint64_t capacity, uint64_t *out_count);
 
 #define VIEM_LINE_MODE_VISUAL 0u
 #define VIEM_LINE_MODE_PHYSICAL_SOURCE 1u
@@ -2790,7 +2497,7 @@ ViemStatus viem_core_view_line_mode(ViemCoreHandle core, ViemViewId view, uint32
  * Does not perform layout or consult the visible text's styles/font metrics. */
 ViemStatus viem_core_view_default_line_height(ViemCoreHandle core, ViemViewId view, float *out_height);
 ViemStatus viem_core_view_default_column_width(ViemCoreHandle handle, ViemViewId view, float *out_width);
-ViemStatus viem_core_view_set_line_mode(ViemCoreHandle core, ViemViewId view, uint32_t mode, ViemCoreOutcomeV1 *out_outcome);
+ViemStatus viem_core_view_set_line_mode(ViemCoreHandle core, ViemViewId view, uint32_t mode, ViemCoreOutcome *out_outcome);
 /* Application input preference; enabled must be 0 or 1. No source/undo change. */
 ViemStatus viem_core_view_set_smart_quotes(ViemCoreHandle core, ViemViewId view, uint32_t enabled);
 ViemStatus viem_core_view_set_markdown_autodetect(ViemCoreHandle core, ViemViewId view, uint32_t enabled);
@@ -2798,68 +2505,68 @@ ViemStatus viem_core_view_set_markdown_autodetect(ViemCoreHandle core, ViemViewI
 ViemStatus viem_core_view_set_smart_home(ViemCoreHandle core, ViemViewId view, uint32_t enabled);
 ViemStatus viem_core_view_set_wrap(ViemCoreHandle core, ViemViewId view,
                                    uint32_t wrap,
-                                   ViemCoreOutcomeV1 *out_outcome);
+                                   ViemCoreOutcome *out_outcome);
 ViemStatus viem_core_view_set_file_format(
     ViemCoreHandle core, ViemViewId view,
-    const ViemSetFileFormatV1 *request, ViemCoreOutcomeV1 *out_outcome);
+    const ViemSetFileFormat *request, ViemCoreOutcome *out_outcome);
 
 ViemStatus viem_core_view_list_selection(
     ViemCoreHandle core, ViemViewId view,
-    ViemLogicalSelectionIdentityV1 *out_selection);
+    ViemLogicalSelectionIdentity *out_selection);
 ViemStatus viem_core_view_table_context(ViemCoreHandle core, ViemViewId view,
-    ViemTableContextV1 *out_context);
+    ViemTableContext *out_context);
 ViemStatus viem_core_view_table_context_at(ViemCoreHandle core, ViemViewId view,
     uint64_t document_id, uint64_t document_revision, uint64_t text_offset,
-    ViemTableContextV1 *out_context);
+    ViemTableContext *out_context);
 ViemStatus viem_core_view_insert_table(ViemCoreHandle core, ViemViewId view,
-    const ViemInsertTableV1 *request, ViemCoreOutcomeV1 *out_outcome);
+    const ViemInsertTable *request, ViemCoreOutcome *out_outcome);
 ViemStatus viem_core_view_table_action(ViemCoreHandle core, ViemViewId view,
-    const ViemTableActionV1 *request, ViemCoreOutcomeV1 *out_outcome);
+    const ViemTableAction *request, ViemCoreOutcome *out_outcome);
 ViemStatus viem_core_view_copy_table_cells(ViemCoreHandle core, ViemViewId view,
-    const ViemLayoutSnapshotIdentityV1 *expected, ViemTableCellV1 *output,
+    const ViemLayoutSnapshotIdentity *expected, ViemTableCell *output,
     uint64_t output_capacity, uint64_t *out_required);
 ViemStatus viem_core_view_table_selection(ViemCoreHandle core, ViemViewId view,
-    ViemTableSelectionV1 *out_selection);
+    ViemTableSelection *out_selection);
 ViemStatus viem_core_view_select_table_cells(ViemCoreHandle core, ViemViewId view,
-    const ViemTableSelectionV1 *request, ViemCoreOutcomeV1 *out_outcome);
+    const ViemTableSelection *request, ViemCoreOutcome *out_outcome);
 /* Complete exact cell selection: no clipboard effects; row-major ranges include
  * offscreen/empty cells. Pointer regions must be pairwise disjoint. */
 ViemStatus viem_core_view_copy_table_selection_text(ViemCoreHandle core, ViemViewId view,
-    const ViemTableSelectionV1 *expected, uint8_t *output,
+    const ViemTableSelection *expected, uint8_t *output,
     uint64_t output_capacity, uint64_t *out_required);
 ViemStatus viem_core_view_copy_table_selection_ranges(ViemCoreHandle core, ViemViewId view,
-    const ViemTableSelectionV1 *expected, ViemFormattedUtf8RangeV1 *output,
+    const ViemTableSelection *expected, ViemFormattedUtf8Range *output,
     uint64_t output_capacity, uint64_t *out_required);
 ViemStatus viem_core_view_set_block_quote(
     ViemCoreHandle core, ViemViewId view,
-    const ViemSetBlockQuoteV1 *request, ViemCoreOutcomeV1 *out_outcome);
+    const ViemSetBlockQuote *request, ViemCoreOutcome *out_outcome);
 /* Make the exact selection an alert of request->kind, quoting unquoted blocks,
  * or turn its alerts back into plain quotes. Visible text never changes. */
 ViemStatus viem_core_view_set_alert(
     ViemCoreHandle core, ViemViewId view,
-    const ViemSetAlertV1 *request, ViemCoreOutcomeV1 *out_outcome);
+    const ViemSetAlert *request, ViemCoreOutcome *out_outcome);
 ViemStatus viem_core_view_set_list_style(
     ViemCoreHandle core, ViemViewId view,
-    const ViemSetListStyleV1 *request, ViemCoreOutcomeV1 *out_outcome);
+    const ViemSetListStyle *request, ViemCoreOutcome *out_outcome);
 /* Exact current selection; capability bits reflect verified structural edits. */
 ViemStatus viem_core_view_list_indent_capabilities(
     ViemCoreHandle core, ViemViewId view,
-    const ViemLogicalSelectionIdentityV1 *expected_selection, uint32_t *out_flags);
+    const ViemLogicalSelectionIdentity *expected_selection, uint32_t *out_flags);
 /* Insert a paragraph in the same Markdown WYSIWYG list item. Requires an exact
  * collapsed eligible caret; Normal mode enters Insert. */
 ViemStatus viem_core_view_insert_list_paragraph(
     ViemCoreHandle core, ViemViewId view,
-    const ViemLogicalSelectionIdentityV1 *expected_selection, ViemCoreOutcomeV1 *out_outcome);
+    const ViemLogicalSelectionIdentity *expected_selection, ViemCoreOutcome *out_outcome);
 /* unindent is 0 or 1. A top-level item cannot be unindented. */
 ViemStatus viem_core_view_indent_list(
     ViemCoreHandle core, ViemViewId view,
-    const ViemListIndentV1 *request, ViemCoreOutcomeV1 *out_outcome);
+    const ViemListIndent *request, ViemCoreOutcome *out_outcome);
 ViemStatus viem_core_view_set_paragraph_style(
     ViemCoreHandle core, ViemViewId view,
-    const ViemSetParagraphStyleV1 *request, ViemCoreOutcomeV1 *out_outcome);
+    const ViemSetParagraphStyle *request, ViemCoreOutcome *out_outcome);
 ViemStatus viem_core_view_assign_style(
     ViemCoreHandle handle, ViemViewId view,
-    const ViemAssignStyleV1 *request, ViemCoreOutcomeV1 *out_outcome);
+    const ViemAssignStyle *request, ViemCoreOutcome *out_outcome);
 /*
  * Begin one exact frontend-owned style gesture. Only one may be active in a
  * core. An empty group creates no history entry. Any ordinary coordinator
@@ -2868,13 +2575,13 @@ ViemStatus viem_core_view_assign_style(
  */
 ViemStatus viem_core_view_begin_style_edit_group(
     ViemCoreHandle core, ViemViewId view,
-    const ViemStyleSheetIdentityV1 *expected,
-    ViemStyleEditGroupV1 *out_group);
+    const ViemStyleSheetIdentity *expected,
+    ViemStyleEditGroup *out_group);
 /* One exact editable-definition field edit through its source/configuration
  * authority, with a standalone undo unit. */
 ViemStatus viem_core_view_edit_style(
     ViemCoreHandle core, ViemViewId view,
-    const ViemStyleEditV1 *request, ViemCoreOutcomeV1 *out_outcome);
+    const ViemStyleEdit *request, ViemCoreOutcome *out_outcome);
 /*
  * Commit one immediately visible exact edit into group. request must carry the
  * current style-sheet identity on every call. A failed/no-op edit leaves the
@@ -2882,28 +2589,28 @@ ViemStatus viem_core_view_edit_style(
  */
 ViemStatus viem_core_view_edit_style_in_group(
     ViemCoreHandle core, ViemViewId view,
-    const ViemStyleEditGroupV1 *group,
-    const ViemStyleEditV1 *request, ViemCoreOutcomeV1 *out_outcome);
+    const ViemStyleEditGroup *group,
+    const ViemStyleEdit *request, ViemCoreOutcome *out_outcome);
 /*
  * Consume group and close its successful edits as one undo/redo unit. This
  * never rolls back. Reuse after end returns INVALID_STYLE_EDIT_GROUP.
  */
 ViemStatus viem_core_view_end_style_edit_group(
     ViemCoreHandle core, ViemViewId view,
-    const ViemStyleEditGroupV1 *group);
+    const ViemStyleEditGroup *group);
 
 /* Set/read Markdown underline, superscript or subscript. */
 ViemStatus viem_core_view_set_inline_property(
     ViemCoreHandle handle, ViemViewId view,
-    const ViemLogicalSelectionIdentityV1 *expected_selection,
-    uint32_t property, uint8_t enabled, ViemCoreOutcomeV1 *out_outcome);
+    const ViemLogicalSelectionIdentity *expected_selection,
+    uint32_t property, uint8_t enabled, ViemCoreOutcome *out_outcome);
 ViemStatus viem_core_view_inline_property_state(
     ViemCoreHandle handle, ViemViewId view, uint32_t property, uint32_t *out_state);
 
 /* Set Markdown strikethrough at an exact selection or typing caret. */
 ViemStatus viem_core_view_set_strikethrough(ViemCoreHandle core, ViemViewId view,
-    const ViemLogicalSelectionIdentityV1 *expected_selection, uint8_t enabled,
-    ViemCoreOutcomeV1 *out_outcome);
+    const ViemLogicalSelectionIdentity *expected_selection, uint8_t enabled,
+    ViemCoreOutcome *out_outcome);
 /* Unscaled caret en width for the exact document revision, including empty lines. */
 ViemStatus viem_core_view_font_en_width(ViemCoreHandle core, ViemViewId view,
     uint64_t expected_revision, float *out_width);
@@ -2954,18 +2661,17 @@ ViemStatus viem_core_copy_formatted_utf8(ViemCoreHandle core,
 /* Structural table membership, for layout; formatting availability and state
  * come from viem_core_view_formatting_actions. */
 #define VIEM_SELECTED_STYLE_HAS_TABLE (1u << 2)
-typedef struct ViemSelectedStylesInfoV1 {
-  uint32_t struct_size;
+typedef struct ViemSelectedStylesInfo {
   uint32_t flags;
   uint64_t document_id;
   uint64_t document_revision;
   uint64_t style_sheet_revision;
   uint64_t paragraph_id_bytes;
   uint64_t character_id_bytes;
-} ViemSelectedStylesInfoV1;
+} ViemSelectedStylesInfo;
 ViemStatus viem_core_view_selected_styles_export(ViemCoreHandle core,
     ViemViewId view, uint64_t expected_revision,
-    ViemSelectedStylesInfoV1 *out_info, uint8_t *out_utf8, uint64_t capacity);
+    ViemSelectedStylesInfo *out_info, uint8_t *out_utf8, uint64_t capacity);
 
 /* Native formatting actions offered by toolbars, menus and accelerators.
  * Core decides each action's availability and on/off/mixed state for the
@@ -3006,19 +2712,16 @@ ViemStatus viem_core_view_selected_styles_export(ViemCoreHandle core,
 #define VIEM_FORMATTING_TABLE 32u
 #define VIEM_FORMATTING_PARAGRAPH_STYLES 33u
 #define VIEM_FORMATTING_CHARACTER_STYLES 34u
-typedef struct ViemFormattingActionsV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
+typedef struct ViemFormattingActions {
   uint64_t enabled;
   uint64_t on;
   uint64_t mixed;
-} ViemFormattingActionsV1;
-#define VIEM_FORMATTING_ACTIONS_V1_SIZE ((uint32_t)sizeof(ViemFormattingActionsV1))
+} ViemFormattingActions;
 /* Only actions in `requested` are evaluated, so validating one menu item stays
  * cheap; the rest report disabled and off. Unknown bits are ignored, so
  * UINT64_MAX requests every action. */
 ViemStatus viem_core_view_formatting_actions(ViemCoreHandle core, ViemViewId view,
-    uint64_t requested, ViemFormattingActionsV1 *out_actions);
+    uint64_t requested, ViemFormattingActions *out_actions);
 
 /* Version 1 UTF-8 JSON defaults. Initialization requires a pristine core with no views;
  * it does not change source, revision, dirty state, or history. Export is two-pass,
@@ -3058,20 +2761,18 @@ ViemStatus viem_theme_import_vim(const uint8_t *source, uint64_t length, uint8_t
 ViemStatus viem_theme_unique_name(const uint8_t *stem, uint64_t stem_length, const uint8_t *existing, uint64_t existing_length, uint8_t *output, uint64_t capacity, uint64_t *required);
 
 /* Command prompt selection and editing carry the exact exported prompt identity. */
-typedef struct ViemCommandLineSelectionV1 {
-  uint32_t struct_size;
-  uint32_t reserved;
+typedef struct ViemCommandLineSelection {
   uint64_t anchor_utf8_offset;
   uint64_t active_utf8_offset;
-} ViemCommandLineSelectionV1;
+} ViemCommandLineSelection;
 ViemStatus viem_core_view_command_line_selection(ViemCoreHandle core, ViemViewId view,
-    const ViemCommandLineIdentityV1 *expected, ViemCommandLineSelectionV1 *out_selection);
+    const ViemCommandLineIdentity *expected, ViemCommandLineSelection *out_selection);
 ViemStatus viem_core_view_edit_command_line(ViemCoreHandle core, ViemViewId view,
-    const ViemCommandLineIdentityV1 *expected, uint32_t operation,
+    const ViemCommandLineIdentity *expected, uint32_t operation,
     uint64_t start, uint64_t end, const uint8_t *utf8, uint64_t length,
-    ViemCoreOutcomeV1 *out_outcome);
+    ViemCoreOutcome *out_outcome);
 
-ViemStatus viem_core_view_set_encoding_with_effects(ViemCoreHandle core, ViemViewId view, const ViemSetEncodingV1 *request, ViemCoreOutcomeV1 *out_outcome, ViemEffectBatchHandle *out_effects);
+ViemStatus viem_core_view_set_encoding_with_effects(ViemCoreHandle core, ViemViewId view, const ViemSetEncoding *request, ViemCoreOutcome *out_outcome, ViemEffectBatchHandle *out_effects);
 /* Copy exact half-open source-byte bounds from the named source revision. */
 ViemStatus viem_core_copy_source_range_bytes(ViemCoreHandle core, uint64_t document, uint64_t revision, uint64_t source_start, uint64_t source_end, uint8_t *output, uint64_t capacity, uint64_t *out_required, uint32_t *out_complete);
 
@@ -3086,7 +2787,7 @@ ViemStatus viem_import_clipboard_json(uint32_t format, const uint8_t *source,
     uint64_t *out_required);
 
 ViemStatus viem_core_copy_clipboard_json(
-    ViemCoreHandle handle, const ViemFormattedUtf8RangeV1 *request,
+    ViemCoreHandle handle, const ViemFormattedUtf8Range *request,
     uint8_t *output, uint64_t output_capacity, uint64_t *out_required);
 ViemStatus viem_effect_batch_copy_clipboard_json(
     ViemEffectBatchHandle batch, uint64_t clipboard_index,
@@ -3104,23 +2805,23 @@ ViemStatus viem_application_config(const uint8_t *input, uint64_t input_length,
     uint8_t *output, uint64_t capacity, uint64_t *required);
 
 ViemStatus viem_core_style_parent_candidates(ViemCoreHandle core,
-    const ViemStyleSheetIdentityV1 *expected, uint32_t namespace_id, ViemUtf8Slice child,
+    const ViemStyleSheetIdentity *expected, uint32_t namespace_id, ViemUtf8Slice child,
     uint8_t *output, uint64_t capacity, uint64_t *required);
-ViemStatus viem_code_style_sheet_info(ViemStyleSheetInfoV1 *output);
-ViemStatus viem_code_copy_style_sheet(const ViemStyleSheetIdentityV1 *expected,
-    ViemStyleDefinitionV1 *definitions, uint64_t definition_capacity,
-    ViemStylePropertyV1 *properties, uint64_t property_capacity,
-    ViemStyleValueItemV1 *value_items, uint64_t value_item_capacity,
-    ViemStyleDependencyV1 *dependencies, uint64_t dependency_capacity,
-    uint8_t *string_bytes, uint64_t string_capacity, ViemStyleSheetInfoV1 *out_info);
-ViemStatus viem_code_edit_style(const ViemStyleEditV1 *request, ViemStyleSheetInfoV1 *output);
-ViemStatus viem_code_create_style(const ViemCreateStyleV1 *request, ViemStyleSheetInfoV1 *output);
-ViemStatus viem_code_delete_style(const ViemDeleteStyleV1 *request, ViemStyleSheetInfoV1 *output);
+ViemStatus viem_code_style_sheet_info(ViemStyleSheetInfo *output);
+ViemStatus viem_code_copy_style_sheet(const ViemStyleSheetIdentity *expected,
+    ViemStyleDefinition *definitions, uint64_t definition_capacity,
+    ViemStyleProperty *properties, uint64_t property_capacity,
+    ViemStyleValueItem *value_items, uint64_t value_item_capacity,
+    ViemStyleDependency *dependencies, uint64_t dependency_capacity,
+    uint8_t *string_bytes, uint64_t string_capacity, ViemStyleSheetInfo *out_info);
+ViemStatus viem_code_edit_style(const ViemStyleEdit *request, ViemStyleSheetInfo *output);
+ViemStatus viem_code_create_style(const ViemCreateStyle *request, ViemStyleSheetInfo *output);
+ViemStatus viem_code_delete_style(const ViemDeleteStyle *request, ViemStyleSheetInfo *output);
 /* Generates the implicit definition for one syntax name, and its missing
  * dotted ancestors, when it has no definition. Fails with ResourceExhausted
  * when the implicit-definition limit leaves the name undefined. */
 ViemStatus viem_code_materialize_style(const uint8_t *name, uint64_t length,
-    ViemStyleSheetInfoV1 *output);
+    ViemStyleSheetInfo *output);
 ViemStatus viem_code_replace_style_json(const uint8_t *input, uint64_t length);
 ViemStatus viem_code_export_style_json(uint8_t *output, uint64_t capacity, uint64_t *required);
 /* Buffer-local source-preserving mode override. Auto returns to detection. */
@@ -3128,19 +2829,17 @@ ViemStatus viem_code_export_style_json(uint8_t *output, uint64_t capacity, uint6
 #define VIEM_DOCUMENT_MODE_PLAIN_TEXT 1u
 #define VIEM_DOCUMENT_MODE_MARKDOWN 2u
 #define VIEM_DOCUMENT_MODE_CODE 3u
-typedef struct ViemSetDocumentModeV1 {
-    uint32_t struct_size;
+typedef struct ViemSetDocumentMode {
     uint32_t mode;
     uint64_t document_id;
     uint64_t document_revision;
-} ViemSetDocumentModeV1;
-#define VIEM_SET_DOCUMENT_MODE_V1_SIZE ((uint32_t)sizeof(ViemSetDocumentModeV1))
+} ViemSetDocumentMode;
 /* Code with an empty language retains the current language selection and always
    selects Code format. Only Code accepts a nonempty language ID, which selects
    that language explicitly. All input/output regions must be disjoint. */
 ViemStatus viem_core_view_set_document_mode_with_effects(ViemCoreHandle core, ViemViewId view,
-    const ViemSetDocumentModeV1 *request, const uint8_t *language, uint64_t length,
-    ViemCoreOutcomeV1 *out_outcome, ViemEffectBatchHandle *out_effects);
+    const ViemSetDocumentMode *request, const uint8_t *language, uint64_t length,
+    ViemCoreOutcome *out_outcome, ViemEffectBatchHandle *out_effects);
 /* Two-pass UTF-8 JSON queries. Output regions must be disjoint. Mode reads
    cached detection; language enumeration does not load or execute providers. */
 ViemStatus viem_core_copy_document_mode_json(ViemCoreHandle core, uint8_t *output, uint64_t capacity, uint64_t *required);
@@ -3166,17 +2865,17 @@ ViemStatus viem_core_view_copy_link_context(ViemCoreHandle core, ViemViewId view
  * 3 exits link treatment for future typing, 4 removes selected link treatment.
  * Every mutation validates the complete expected logical selection identity. */
 ViemStatus viem_core_view_edit_link(ViemCoreHandle core, ViemViewId view,
-                                   const ViemLogicalSelectionIdentityV1 *expected,
+                                   const ViemLogicalSelectionIdentity *expected,
                                    uint32_t action, uint64_t link_start,
                                    uint64_t link_end, ViemUtf8Slice text,
                                    ViemUtf8Slice destination,
-                                   ViemCoreOutcomeV1 *outcome);
+                                   ViemCoreOutcome *outcome);
 /* Reference actions use bounded UTF-8 JSON with action and offset; edits also
  * carry their named fields. Validates the complete expected selection identity.
  * Link context additionally exports nullable reference settings and uses. */
 ViemStatus viem_core_view_reference_action(ViemCoreHandle core, ViemViewId view,
-    const ViemLogicalSelectionIdentityV1 *expected, ViemUtf8Slice request,
-    ViemCoreOutcomeV1 *outcome);
+    const ViemLogicalSelectionIdentity *expected, ViemUtf8Slice request,
+    ViemCoreOutcome *outcome);
 /* Image popup has the link-context schema with "image" instead of "link".
  * The range is one atomic U+FFFC object in Markdown Preview.
  * Image entries also contain nullable width/height pixel sizes.
@@ -3187,16 +2886,16 @@ ViemStatus viem_core_view_copy_image_context(ViemCoreHandle core, ViemViewId vie
 /* action: 0 inserts, 1 edits, 2 removes the whole image.
  * Width/height are positive pixel sizes; zero clears that explicit dimension. */
 ViemStatus viem_core_view_edit_image(ViemCoreHandle core, ViemViewId view,
-                                    const ViemLogicalSelectionIdentityV1 *expected,
+                                    const ViemLogicalSelectionIdentity *expected,
                                     uint32_t action, uint64_t image_start,
                                     uint64_t image_end, ViemUtf8Slice text,
                                     ViemUtf8Slice destination,
                                     uint32_t width, uint32_t height,
-                                    ViemCoreOutcomeV1 *outcome);
+                                    ViemCoreOutcome *outcome);
 /* Select the complete WYSIWYG image independently of pointer preferences. */
 ViemStatus viem_core_view_select_image(ViemCoreHandle core, ViemViewId view,
                                       uint64_t document_id, uint64_t revision,
-                                      uint64_t text_offset, ViemCoreOutcomeV1 *outcome);
+                                      uint64_t text_offset, ViemCoreOutcome *outcome);
 /* Explicit heading picker: {headings:[{text,destination,level,offset}],truncated}.
  * Exact revision, two-pass UTF-8 JSON. Enumerated only on user request. */
 ViemStatus viem_core_copy_reference_choices(ViemCoreHandle core, uint64_t document_id,
@@ -3210,7 +2909,7 @@ ViemStatus viem_core_copy_link_headings(ViemCoreHandle core, uint64_t document_i
 ViemStatus viem_core_view_set_code_block_language(
     ViemCoreHandle core, ViemViewId view, uint64_t document_id,
     uint64_t document_revision, uint64_t offset, ViemUtf8Slice language,
-    ViemCoreOutcomeV1 *output);
+    ViemCoreOutcome *output);
 
 /* Explicit navigation in this exact document revision. fragment is percent-
  * decoded and excludes '#'. L<number> targets a one-based physical source line,
@@ -3218,7 +2917,7 @@ ViemStatus viem_core_view_set_code_block_language(
  * Missing targets set found=0 and leave the view unchanged. */
 ViemStatus viem_core_view_navigate_link_fragment(
     ViemCoreHandle core, ViemViewId view, uint64_t document_id, uint64_t revision,
-    ViemUtf8Slice fragment, uint8_t *found, ViemCoreOutcomeV1 *outcome);
+    ViemUtf8Slice fragment, uint8_t *found, ViemCoreOutcome *outcome);
 
 /* Exact snapshot, two-pass UTF-8. Outputs must be disjoint. found distinguishes
  * no link from a link with an empty destination. No source or view mutation. */
@@ -3241,7 +2940,7 @@ ViemStatus viem_core_view_set_align_indents_to_previous_line(ViemCoreHandle core
    finite viewport (nonnegative origin and dimensions). A changed viewport
    returns VIEM_STATUS_STALE_REVISION even when cached layout is reused. */
 ViemStatus viem_core_view_copy_whitespace_markers(ViemCoreHandle core, ViemViewId view,
-    const ViemLayoutSnapshotIdentityV1 *expected, const ViemLayoutRectV1 *expected_viewport,
+    const ViemLayoutSnapshotIdentity *expected, const ViemLayoutRect *expected_viewport,
     uint8_t *output, uint64_t capacity, uint64_t *out_length);
 ViemStatus viem_core_poll_syntax(ViemCoreHandle core, uint8_t *changed);
 /* Wait up to the shared 100 ms syntax grace period, without holding the core.
@@ -3251,7 +2950,7 @@ ViemStatus viem_core_view_wait_for_syntax(ViemCoreHandle core, ViemViewId view, 
 ViemStatus viem_core_copy_syntax_diagnostics(ViemCoreHandle core, uint8_t *output, uint64_t capacity, uint64_t *required);
 /* Read up to 8 KiB of distinct warnings for this exact immutable layout.
  * Standard two-pass UTF-8 output; stale snapshots are rejected, never replaced. */
-ViemStatus viem_core_view_copy_layout_diagnostics(ViemCoreHandle core, ViemViewId view, const ViemLayoutSnapshotIdentityV1 *expected, uint8_t *output, uint64_t capacity, uint64_t *required);
+ViemStatus viem_core_view_copy_layout_diagnostics(ViemCoreHandle core, ViemViewId view, const ViemLayoutSnapshotIdentity *expected, uint8_t *output, uint64_t capacity, uint64_t *required);
 /* Read-only two-pass UTF-8 JSON array of unique sorted names in accepted syntax
    runs, including undefined names. Does not parse, publish, or scan source. */
 ViemStatus viem_core_copy_syntax_style_names(ViemCoreHandle core, uint8_t *output, uint64_t capacity, uint64_t *required);
@@ -3259,12 +2958,12 @@ ViemStatus viem_core_copy_syntax_style_names(ViemCoreHandle core, uint8_t *outpu
 /* Host-loaded `:read` continuation. */
 ViemStatus viem_core_view_read_file(ViemCoreHandle core, ViemViewId view,
     uint64_t document_id, uint64_t revision, uint32_t source, uint64_t after_offset,
-    const uint8_t *bytes, uint64_t length, ViemCoreOutcomeV1 *out_outcome);
+    const uint8_t *bytes, uint64_t length, ViemCoreOutcome *out_outcome);
 /* Run one command line as if typed after `:` (Vim script: `|`-separated
    commands, :let, :call, :source). The view must be in Normal mode. */
 ViemStatus viem_core_view_execute_command_line(ViemCoreHandle core, ViemViewId view,
     const uint8_t *text, uint64_t length,
-    const ViemCommandTurnContextV2 *context, ViemCoreOutcomeV1 *out_outcome,
+    const ViemCommandTurnContext *context, ViemCoreOutcome *out_outcome,
     ViemEffectBatchHandle *out_effects);
 /* Fire a native lifecycle event. Call BufWritePre before capturing save
    bytes and BufWritePost only after a successful write. Empty match uses
@@ -3272,24 +2971,24 @@ ViemStatus viem_core_view_execute_command_line(ViemCoreHandle core, ViemViewId v
 ViemStatus viem_core_view_fire_autocmd(ViemCoreHandle core, ViemViewId view,
     const uint8_t *event, uint64_t event_length,
     const uint8_t *matched, uint64_t matched_length,
-    const ViemCommandTurnContextV2 *context, ViemCoreOutcomeV1 *out_outcome,
+    const ViemCommandTurnContext *context, ViemCoreOutcome *out_outcome,
     ViemEffectBatchHandle *out_effects);
 /* Resume after all preceding native requests succeed, or cancel on failure.
    Pass the original core/view and returned token. Stale tokens are rejected. */
 ViemStatus viem_core_view_resume_script(ViemCoreHandle core, ViemViewId view,
-    uint64_t token, uint32_t success, const ViemCommandTurnContextV2 *context,
-    ViemCoreOutcomeV1 *out_outcome, ViemEffectBatchHandle *out_effects);
+    uint64_t token, uint32_t success, const ViemCommandTurnContext *context,
+    ViemCoreOutcome *out_outcome, ViemEffectBatchHandle *out_effects);
 /* Drain startup application effects once the first native view exists. */
 ViemStatus viem_core_view_take_startup_effects(ViemCoreHandle core, ViemViewId view,
-    ViemCoreOutcomeV1 *out_outcome, ViemEffectBatchHandle *out_effects);
+    ViemCoreOutcome *out_outcome, ViemEffectBatchHandle *out_effects);
 /* Replace the theme names `:colorscheme` matches, ignoring case: UTF-8
    names separated by NUL bytes. Call at startup and when themes change. */
 ViemStatus viem_set_theme_names(const uint8_t *names, uint64_t length);
 
 /* The paragraph must have a checkbox in this exact current layout snapshot. */
 ViemStatus viem_core_view_toggle_checkbox(ViemCoreHandle core, ViemViewId view,
-    const ViemLayoutSnapshotIdentityV1 *expected, uint64_t paragraph_id,
-    ViemCoreOutcomeV1 *out_outcome);
+    const ViemLayoutSnapshotIdentity *expected, uint64_t paragraph_id,
+    ViemCoreOutcome *out_outcome);
 
 /* Diff mode (docs/diff_mode.md). A session compares a read-only base core
  * with a live core and installs each side's presentation in a view. Base
@@ -3344,8 +3043,7 @@ typedef uint64_t ViemDiffCancellationHandle;
 #define VIEM_DIFF_FILE_RENAMED 3u
 #define VIEM_DIFF_FILE_UNSAVED 4u
 
-typedef struct ViemDiffBaseRequestV1 {
-  uint32_t struct_size;
+typedef struct ViemDiffBaseRequest {
   uint32_t kind;
   /* Absolute UTF-8 path of the document, the chosen base file, or a renamed
    * file's base path. */
@@ -3362,63 +3060,52 @@ typedef struct ViemDiffBaseRequestV1 {
   /* File lists only: an absolute folder whose files alone are listed, as
    * `git diff -- <folder>` does. Empty lists the whole repository. */
   ViemUtf8Slice scope_path;
-} ViemDiffBaseRequestV1;
-#define VIEM_DIFF_BASE_REQUEST_V1_SIZE ((uint32_t)sizeof(ViemDiffBaseRequestV1))
+} ViemDiffBaseRequest;
 
-typedef struct ViemDiffResultInfoV1 {
-  uint32_t struct_size;
+typedef struct ViemDiffResultInfo {
   uint32_t flags;
   /* A VIEM_DIFF_RESULT_* code. */
   uint32_t result;
-  uint32_t reserved;
   uint64_t byte_count;
   uint64_t item_count;
   uint64_t message_bytes;
-} ViemDiffResultInfoV1;
-#define VIEM_DIFF_RESULT_INFO_V1_SIZE ((uint32_t)sizeof(ViemDiffResultInfoV1))
+} ViemDiffResultInfo;
 
 /* A list item's path (or branch name) bytes, then its base path bytes, are
  * copied back to back into the caller's text buffer. */
-typedef struct ViemDiffListItemV1 {
-  uint32_t struct_size;
+typedef struct ViemDiffListItem {
   uint32_t change;
   uint64_t path_bytes;
   uint64_t base_path_bytes;
   uint64_t added;
   uint64_t removed;
-} ViemDiffListItemV1;
-#define VIEM_DIFF_LIST_ITEM_V1_SIZE ((uint32_t)sizeof(ViemDiffListItemV1))
+} ViemDiffListItem;
 
-typedef struct ViemDiffSessionInfoV1 {
-  uint32_t struct_size;
+typedef struct ViemDiffSessionInfo {
   uint32_t flags;
   uint64_t hunk_count;
   uint64_t added;
   uint64_t removed;
   uint64_t base_line_count;
   uint64_t new_line_count;
-} ViemDiffSessionInfoV1;
-#define VIEM_DIFF_SESSION_INFO_V1_SIZE ((uint32_t)sizeof(ViemDiffSessionInfoV1))
+} ViemDiffSessionInfo;
 
-typedef struct ViemDiffNavigationV1 {
-  uint32_t struct_size;
+typedef struct ViemDiffNavigation {
   /* VIEM_DIFF_NAVIGATION_* flags. */
   uint32_t flags;
   uint64_t change_index;
   uint64_t change_count;
   /* The new side's zero-based hard line that received the caret. */
   uint64_t caret_line;
-} ViemDiffNavigationV1;
-#define VIEM_DIFF_NAVIGATION_V1_SIZE ((uint32_t)sizeof(ViemDiffNavigationV1))
+} ViemDiffNavigation;
 
 /* One stretch of a scrollbar track, in layout units from the document top. */
-typedef struct ViemDiffScrollbarMarkV1 {
+typedef struct ViemDiffScrollbarMark {
   float top;
   float bottom;
   /* VIEM_DIFF_MARK_* flags. */
   uint32_t flags;
-  uint32_t reserved;
-} ViemDiffScrollbarMarkV1;
+} ViemDiffScrollbarMark;
 
 ViemStatus viem_diff_session_create(ViemCoreHandle base_core, ViemCoreHandle new_core,
     uint32_t flags, ViemDiffSessionHandle *out_session);
@@ -3449,7 +3136,7 @@ ViemStatus viem_diff_session_sync_scroll(ViemDiffSessionHandle session,
     ViemCoreHandle base_core, ViemViewId base_view, ViemCoreHandle new_core,
     ViemViewId new_view, uint32_t from_new, uint32_t *out_changed);
 ViemStatus viem_diff_session_info(ViemDiffSessionHandle session,
-    ViemDiffSessionInfoV1 *out_info);
+    ViemDiffSessionInfo *out_info);
 /* Move both sides to the next or previous change (a VIEM_DIFF_NAVIGATE_*
  * direction), wrapping within the file: the new view's caret moves to the
  * change, and both views scroll unless it is already visible on both. Then
@@ -3457,16 +3144,16 @@ ViemStatus viem_diff_session_info(ViemDiffSessionHandle session,
 ViemStatus viem_diff_session_navigate(ViemDiffSessionHandle session,
     ViemCoreHandle base_core, ViemViewId base_view,
     ViemCoreHandle new_core, ViemViewId new_view, uint32_t direction,
-    ViemDiffNavigationV1 *out_navigation);
+    ViemDiffNavigation *out_navigation);
 /* The backgrounds of the Added line and Removed line Code styles, for
  * scrollbar marks; the built-in defaults when a style declares none. */
-ViemStatus viem_diff_line_colors(ViemRgbaV1 *out_added, ViemRgbaV1 *out_removed);
+ViemStatus viem_diff_line_colors(ViemRgba *out_added, ViemRgba *out_removed);
 /* Two-pass copy of one side's scrollbar marks, sorted by top, and the
  * document extent they are measured against; is_new is one for the live
  * side. A short buffer reports the count with VIEM_STATUS_BUFFER_TOO_SMALL. */
 ViemStatus viem_diff_session_scrollbar_marks(ViemDiffSessionHandle session,
     ViemCoreHandle core, ViemViewId view, uint32_t is_new,
-    ViemDiffScrollbarMarkV1 *marks, uint64_t capacity, uint64_t *out_count,
+    ViemDiffScrollbarMark *marks, uint64_t capacity, uint64_t *out_count,
     float *out_extent);
 /* Set the buffer-local `modifiable` policy; zero rejects every edit path. */
 ViemStatus viem_core_set_modifiable(ViemCoreHandle core, uint32_t modifiable);
@@ -3486,25 +3173,25 @@ ViemStatus viem_diff_cancellation_create(ViemDiffCancellationHandle *out_cancell
 ViemStatus viem_diff_cancellation_cancel(ViemDiffCancellationHandle cancellation);
 ViemStatus viem_diff_cancellation_release(ViemDiffCancellationHandle cancellation);
 
-ViemStatus viem_diff_load_base(const ViemDiffBaseRequestV1 *request,
+ViemStatus viem_diff_load_base(const ViemDiffBaseRequest *request,
     ViemDiffResultHandle *out_result);
 /* Git bases list tracked changes as `git diff` does plus unsaved buffers in
  * the repository; Last saved lists only the document; FILE lists nothing. */
-ViemStatus viem_diff_list_files(const ViemDiffBaseRequestV1 *request,
+ViemStatus viem_diff_list_files(const ViemDiffBaseRequest *request,
     ViemDiffResultHandle *out_result);
 /* Returns UTF-8 JSON via result_copy_bytes: [{hash, short, title}].
  * HEAD lists up to 50 commits. COMMIT resolves one hexadecimal hash. */
-ViemStatus viem_diff_query_commits(const ViemDiffBaseRequestV1 *request,
+ViemStatus viem_diff_query_commits(const ViemDiffBaseRequest *request,
                                   ViemDiffResultHandle *out_result);
-ViemStatus viem_diff_list_branches(const ViemDiffBaseRequestV1 *request,
+ViemStatus viem_diff_list_branches(const ViemDiffBaseRequest *request,
     ViemDiffResultHandle *out_result);
-ViemStatus viem_diff_result_info(ViemDiffResultHandle result, ViemDiffResultInfoV1 *out_info);
+ViemStatus viem_diff_result_info(ViemDiffResultHandle result, ViemDiffResultInfo *out_info);
 ViemStatus viem_diff_result_copy_bytes(ViemDiffResultHandle result, uint8_t *output,
     uint64_t output_capacity, uint64_t *out_required);
 ViemStatus viem_diff_result_copy_message(ViemDiffResultHandle result, uint8_t *output,
     uint64_t output_capacity, uint64_t *out_required);
 ViemStatus viem_diff_result_copy_item(ViemDiffResultHandle result, uint64_t index,
-    ViemDiffListItemV1 *out_item, uint8_t *text, uint64_t text_capacity,
+    ViemDiffListItem *out_item, uint8_t *text, uint64_t text_capacity,
     uint64_t *out_required);
 ViemStatus viem_diff_result_release(ViemDiffResultHandle result);
 

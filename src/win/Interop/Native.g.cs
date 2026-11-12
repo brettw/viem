@@ -32,16 +32,14 @@ internal unsafe struct ViemPaneSnapshot
 [StructLayout(LayoutKind.Sequential)]
 internal unsafe struct ViemDocumentOptions
 {
-    public uint @struct_size;
     public uint @encoding;
     public uint @format;
     public uint @file_format;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemDocumentStateV1
+internal unsafe struct ViemDocumentState
 {
-    public uint @struct_size;
     public uint @flags;
     public ulong @document_id;
     public ulong @document_revision;
@@ -53,45 +51,36 @@ internal unsafe struct ViemDocumentStateV1
     public uint @file_format_origin;
     public uint @undo_action_category;
     public uint @redo_action_category;
-    public fixed uint @reserved[2];
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemFormattedSnapshotIdentityV1
+internal unsafe struct ViemFormattedSnapshotIdentity
 {
-    public uint @struct_size;
-    public uint @reserved;
     public ulong @document_id;
     public ulong @document_revision;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemFormattedSnapshotInfoV1
+internal unsafe struct ViemFormattedSnapshotInfo
 {
-    public uint @struct_size;
-    public uint @reserved;
-    public ViemFormattedSnapshotIdentityV1 @identity;
+    public ViemFormattedSnapshotIdentity @identity;
     public ulong @utf8_length;
     public ulong @utf16_length;
     public ulong @hard_line_count;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemFormattedUtf8RangeV1
+internal unsafe struct ViemFormattedUtf8Range
 {
-    public uint @struct_size;
-    public uint @reserved;
-    public ViemFormattedSnapshotIdentityV1 @identity;
+    public ViemFormattedSnapshotIdentity @identity;
     public ulong @utf8_start;
     public ulong @utf8_end;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemFormattedPointInfoV1
+internal unsafe struct ViemFormattedPointInfo
 {
-    public uint @struct_size;
-    public uint @reserved;
-    public ViemFormattedSnapshotIdentityV1 @identity;
+    public ViemFormattedSnapshotIdentity @identity;
     public ulong @utf8_offset;
     public ulong @utf16_offset;
     public ulong @hard_line_index;
@@ -104,7 +93,6 @@ internal unsafe struct ViemFormattedPointInfoV1
 internal unsafe struct ViemArgumentResolution
 {
     public uint @status;
-    public uint @reserved;
     public ulong @index;
 }
 
@@ -116,88 +104,78 @@ internal unsafe struct ViemUtf8Slice
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemClipboardTurnEntryV2
+internal unsafe struct ViemClipboardTurnEntry
 {
-    public uint @struct_size;
     public uint @flags;
     public uint @target;
-    public uint @reserved;
     public ulong @generation;
     public ViemUtf8Slice @plain_text;
     public ViemUtf8Slice @fragment_json;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemCommandTurnContextV2
+internal unsafe struct ViemCommandTurnContext
 {
-    public uint @struct_size;
-    public uint @reserved;
-    public ViemClipboardTurnEntryV2* @clipboards;
+    public ViemClipboardTurnEntry* @clipboards;
     public ulong @clipboard_count;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemEffectBytesRefV1
+internal unsafe struct ViemEffectBytesRef
 {
     public ulong @offset;
     public ulong @length;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemClipboardWriteV1
+internal unsafe struct ViemClipboardWrite
 {
-    public uint @struct_size;
     public uint @flags;
     public uint @target;
     public uint @register_kind;
     public ulong @document_id;
     public ulong @document_revision;
-    public ViemEffectBytesRefV1 @plain_text;
+    public ViemEffectBytesRef @plain_text;
     public ulong @first_hard_break;
     public ulong @hard_break_count;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemExOptionDisplayV1
+internal unsafe struct ViemExOptionDisplay
 {
-    public uint @struct_size;
     public uint @name;
     public uint @value_kind;
     public uint @scalar_value;
     public ulong @first_file_format;
     public ulong @file_format_count;
-    public ViemEffectBytesRefV1 @text;
+    public ViemEffectBytesRef @text;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemExMarkV1
+internal unsafe struct ViemExMark
 {
-    public uint @struct_size;
     public uint @name;
     public ulong @utf8_offset;
     public ulong @hard_line_index;
     public ulong @hard_line_start;
     public ulong @hard_line_end;
     public ulong @grapheme_column;
-    public ViemEffectBytesRefV1 @line_text;
+    public ViemEffectBytesRef @line_text;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemExRegisterV1
+internal unsafe struct ViemExRegister
 {
-    public uint @struct_size;
     public uint @name;
     public uint @register_kind;
-    public uint @reserved;
-    public ViemEffectBytesRefV1 @text;
+    public ViemEffectBytesRef @text;
     public ulong @first_hard_break;
     public ulong @hard_break_count;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemExJumpV1
+internal unsafe struct ViemExJump
 {
-    public uint @struct_size;
     public uint @flags;
     public ulong @list_index;
     public ulong @utf8_offset;
@@ -205,30 +183,27 @@ internal unsafe struct ViemExJumpV1
     public ulong @hard_line_start;
     public ulong @hard_line_end;
     public ulong @grapheme_column;
-    public ViemEffectBytesRefV1 @line_text;
+    public ViemEffectBytesRef @line_text;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemExTextLineV1
+internal unsafe struct ViemExTextLine
 {
-    public uint @struct_size;
-    public uint @reserved;
     public ulong @hard_line_index;
     public ulong @utf8_start;
     public ulong @utf8_end;
-    public ViemEffectBytesRefV1 @text;
+    public ViemEffectBytesRef @text;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemExFrontendRequestV1
+internal unsafe struct ViemExFrontendRequest
 {
-    public uint @struct_size;
     public uint @kind;
     public uint @flags;
     public uint @window_command;
     public ulong @document_id;
     public ulong @document_revision;
-    public ViemEffectBytesRefV1 @text;
+    public ViemEffectBytesRef @text;
     public ulong @hard_line_start;
     public ulong @hard_line_end;
     public ulong @first_option;
@@ -237,16 +212,14 @@ internal unsafe struct ViemExFrontendRequestV1
     public ulong @payload_count;
     public ulong @window_count;
     public uint @argument_command;
-    public uint @reserved;
     public ulong @argument_count;
     public ulong @argument_line;
-    public ViemEffectBytesRefV1 @display_text;
+    public ViemEffectBytesRef @display_text;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemEffectBatchInfoV1
+internal unsafe struct ViemEffectBatchInfo
 {
-    public uint @struct_size;
     public uint @flags;
     public ulong @batch_handle;
     public ulong @document_id;
@@ -266,7 +239,7 @@ internal unsafe struct ViemEffectBatchInfoV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemTextMetricsV1
+internal unsafe struct ViemTextMetrics
 {
     public float @cap_height;
     public float @ascent;
@@ -275,7 +248,7 @@ internal unsafe struct ViemTextMetricsV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemShapedBoundsV1
+internal unsafe struct ViemShapedBounds
 {
     public float @x;
     public float @y;
@@ -284,21 +257,20 @@ internal unsafe struct ViemShapedBoundsV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemOpenTypeFeatureV1
+internal unsafe struct ViemOpenTypeFeature
 {
     public fixed byte @tag[4];
     public uint @value;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemResolvedTextStyleV1
+internal unsafe struct ViemResolvedTextStyle
 {
-    public uint @struct_size;
     public uint @slant;
     public uint @direction;
     public uint @has_language;
     public uint @has_script;
-    public uint @reserved;
+    public uint @relative_bold;
     public float @size;
     public float @weight;
     public float @letter_spacing;
@@ -307,34 +279,31 @@ internal unsafe struct ViemResolvedTextStyleV1
     public ulong @font_family_count;
     public ViemUtf8Slice @language;
     public ViemUtf8Slice @script;
-    public ViemOpenTypeFeatureV1* @features;
+    public ViemOpenTypeFeature* @features;
     public ulong @feature_count;
     public ViemUtf8Slice @font_axes;
     public ViemUtf8Slice @font_face;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemShapeStyleRunV1
+internal unsafe struct ViemShapeStyleRun
 {
-    public uint @struct_size;
-    public uint @reserved;
     public ulong @text_start;
     public ulong @text_end;
-    public ViemResolvedTextStyleV1 @style;
+    public ViemResolvedTextStyle @style;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemRenderRunHandleV1
+internal unsafe struct ViemRenderRunHandle
 {
     public ulong @owner;
     public ulong @identifier;
     public ulong @metrics_generation;
     public uint @threading;
-    public uint @reserved;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemClusterCaretStopV1
+internal unsafe struct ViemClusterCaretStop
 {
     public ulong @text_offset;
     public float @inline_offset;
@@ -342,36 +311,32 @@ internal unsafe struct ViemClusterCaretStopV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemShapedClusterV1
+internal unsafe struct ViemShapedCluster
 {
-    public uint @struct_size;
-    public uint @reserved;
     public ulong @text_start;
     public ulong @text_end;
     public float @advance;
-    public ViemTextMetricsV1 @metrics;
-    public ViemShapedBoundsV1 @typographic_bounds;
-    public ViemShapedBoundsV1 @ink_bounds;
+    public ViemTextMetrics @metrics;
+    public ViemShapedBounds @typographic_bounds;
+    public ViemShapedBounds @ink_bounds;
     public uint @bidi_level;
     public uint @has_render_run;
     public ViemUtf8Slice @fallback_font;
-    public ViemClusterCaretStopV1* @caret_stops;
+    public ViemClusterCaretStop* @caret_stops;
     public ulong @caret_stop_count;
-    public ViemRenderRunHandleV1 @render_run;
+    public ViemRenderRunHandle @render_run;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemShapingDiagnosticV1
+internal unsafe struct ViemShapingDiagnostic
 {
-    public uint @struct_size;
-    public uint @reserved;
     public ulong @text_start;
     public ulong @text_end;
     public ViemUtf8Slice @message;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemInlineImageV1
+internal unsafe struct ViemInlineImage
 {
     public ulong @text_start;
     public ulong @text_end;
@@ -379,9 +344,8 @@ internal unsafe struct ViemInlineImageV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemShapeRequestV1
+internal unsafe struct ViemShapeRequest
 {
-    public uint @struct_size;
     public uint @purpose;
     public ulong @document_id;
     public ulong @document_revision;
@@ -392,22 +356,21 @@ internal unsafe struct ViemShapeRequestV1
     public ViemUtf8Slice @text;
     public ViemUtf8Slice @context_before;
     public ViemUtf8Slice @context_after;
-    public ViemShapeStyleRunV1* @style_runs;
+    public ViemShapeStyleRun* @style_runs;
     public ulong @style_run_count;
-    public ViemResolvedTextStyleV1 @default_style;
+    public ViemResolvedTextStyle @default_style;
     public float @scale;
     public uint @has_render_run_policy;
     public ulong @render_run_owner;
     public uint @render_run_threading;
     public uint @paragraph_base_direction;
-    public ViemInlineImageV1* @inline_images;
+    public ViemInlineImage* @inline_images;
     public ulong @inline_image_count;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemShapeResponseV1
+internal unsafe struct ViemShapeResponse
 {
-    public uint @struct_size;
     public uint @default_font_is_monospaced;
     public ulong @document_id;
     public ulong @document_revision;
@@ -415,19 +378,18 @@ internal unsafe struct ViemShapeResponseV1
     public ulong @metrics_generation;
     public ulong @text_start;
     public ulong @text_end;
-    public ViemShapedClusterV1* @clusters;
+    public ViemShapedCluster* @clusters;
     public ulong @cluster_count;
     public ulong* @visual_order;
     public ulong @visual_order_count;
-    public ViemTextMetricsV1 @default_metrics;
-    public ViemShapingDiagnosticV1* @diagnostics;
+    public ViemTextMetrics @default_metrics;
+    public ViemShapingDiagnostic* @diagnostics;
     public ulong @diagnostic_count;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemTextMeasurementProviderV1
+internal unsafe struct ViemTextMeasurementProvider
 {
-    public uint @struct_size;
     public uint @abi_version;
     public void* @context;
     public ulong @measurement_environment_id;
@@ -435,7 +397,6 @@ internal unsafe struct ViemTextMeasurementProviderV1
     public uint @has_render_run_policy;
     public ulong @render_run_owner;
     public uint @render_run_threading;
-    public uint @reserved;
     public nint @metrics_generation;
     public nint @shape_batch;
     public nint @retain_render_runs;
@@ -443,9 +404,8 @@ internal unsafe struct ViemTextMeasurementProviderV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemViewOptionsV1
+internal unsafe struct ViemViewOptions
 {
-    public uint @struct_size;
     public uint @execution_context;
     public float @width;
     public float @height;
@@ -456,9 +416,8 @@ internal unsafe struct ViemViewOptionsV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemViewportOriginV1
+internal unsafe struct ViemViewportOrigin
 {
-    public uint @struct_size;
     public uint @flags;
     public float @left;
     public float @top;
@@ -471,9 +430,8 @@ internal unsafe struct ViemViewportOriginV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemViewRestorationV1
+internal unsafe struct ViemViewRestoration
 {
-    public uint @struct_size;
     public uint @cursor_affinity;
     public ulong @cursor_line;
     public ulong @cursor_column;
@@ -484,9 +442,8 @@ internal unsafe struct ViemViewRestorationV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemViewportStateV1
+internal unsafe struct ViemViewportState
 {
-    public uint @struct_size;
     public uint @flags;
     public float @left;
     public float @top;
@@ -502,10 +459,8 @@ internal unsafe struct ViemViewportStateV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemLayoutSnapshotIdentityV1
+internal unsafe struct ViemLayoutSnapshotIdentity
 {
-    public uint @struct_size;
-    public uint @reserved;
     public ulong @view_id;
     public ulong @document_id;
     public ulong @document_revision;
@@ -516,7 +471,7 @@ internal unsafe struct ViemLayoutSnapshotIdentityV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemLayoutInsetsV1
+internal unsafe struct ViemLayoutInsets
 {
     public float @top;
     public float @left;
@@ -525,7 +480,7 @@ internal unsafe struct ViemLayoutInsetsV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemLayoutRectV1
+internal unsafe struct ViemLayoutRect
 {
     public float @x;
     public float @y;
@@ -534,7 +489,7 @@ internal unsafe struct ViemLayoutRectV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemRgbaV1
+internal unsafe struct ViemRgba
 {
     public float @red;
     public float @green;
@@ -543,28 +498,24 @@ internal unsafe struct ViemRgbaV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemStyleSheetIdentityV1
+internal unsafe struct ViemStyleSheetIdentity
 {
-    public uint @struct_size;
-    public uint @reserved;
     public ulong @document_id;
     public ulong @document_revision;
     public ulong @style_sheet_revision;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemStyleStringRefV1
+internal unsafe struct ViemStyleStringRef
 {
     public ulong @offset;
     public ulong @length;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemStyleSheetInfoV1
+internal unsafe struct ViemStyleSheetInfo
 {
-    public uint @struct_size;
-    public uint @reserved;
-    public ViemStyleSheetIdentityV1 @identity;
+    public ViemStyleSheetIdentity @identity;
     public ulong @definition_count;
     public ulong @property_count;
     public ulong @value_item_count;
@@ -573,116 +524,98 @@ internal unsafe struct ViemStyleSheetInfoV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemStyleValueV1
+internal unsafe struct ViemStyleValue
 {
-    public uint @struct_size;
     public uint @kind;
     public uint @enum_value;
-    public uint @reserved;
     public float @number;
-    public float @number_reserved;
-    public ViemRgbaV1 @color;
-    public ViemStyleStringRefV1 @string;
+    public ViemRgba @color;
+    public ViemStyleStringRef @string;
     public ulong @first_item;
     public ulong @item_count;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemStyleValueItemV1
+internal unsafe struct ViemStyleValueItem
 {
-    public uint @struct_size;
     public uint @kind;
-    public ViemStyleStringRefV1 @string;
+    public ViemStyleStringRef @string;
     public uint @unsigned_value;
-    public uint @reserved;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemStyleDependencyV1
+internal unsafe struct ViemStyleDependency
 {
-    public uint @struct_size;
     public uint @namespace_id;
-    public ViemStyleStringRefV1 @style_id;
+    public ViemStyleStringRef @style_id;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemStyleDefinitionV1
+internal unsafe struct ViemStyleDefinition
 {
-    public uint @struct_size;
     public uint @flags;
     public uint @namespace_id;
     public uint @role;
     public uint @origin;
     public uint @capabilities;
     public uint @parent_variant;
-    public uint @reserved;
-    public ViemStyleStringRefV1 @stable_id;
-    public ViemStyleStringRefV1 @display_name;
-    public ViemStyleStringRefV1 @parent_id;
-    public ViemStyleStringRefV1 @next_style_id;
+    public ViemStyleStringRef @stable_id;
+    public ViemStyleStringRef @display_name;
+    public ViemStyleStringRef @parent_id;
+    public ViemStyleStringRef @next_style_id;
     public ulong @first_property;
     public ulong @property_count;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemStylePropertyV1
+internal unsafe struct ViemStyleProperty
 {
-    public uint @struct_size;
     public uint @flags;
     public uint @property;
     public uint @contributor_kind;
     public uint @contributor_namespace;
-    public uint @reserved;
-    public ViemStyleValueV1 @declared;
-    public ViemStyleValueV1 @effective;
-    public ViemStyleStringRefV1 @contributor_style_id;
+    public ViemStyleValue @declared;
+    public ViemStyleValue @effective;
+    public ViemStyleStringRef @contributor_style_id;
     public ulong @first_dependency;
     public ulong @dependency_count;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemStyleEditValueItemV1
+internal unsafe struct ViemStyleEditValueItem
 {
-    public uint @struct_size;
     public uint @kind;
     public ViemUtf8Slice @text;
     public uint @unsigned_value;
-    public uint @reserved;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemStyleEditValueV1
+internal unsafe struct ViemStyleEditValue
 {
-    public uint @struct_size;
     public uint @kind;
     public uint @enum_value;
-    public uint @reserved;
     public float @number;
-    public float @number_reserved;
-    public ViemRgbaV1 @color;
+    public ViemRgba @color;
     public ViemUtf8Slice @text;
-    public ViemStyleEditValueItemV1* @items;
+    public ViemStyleEditValueItem* @items;
     public ulong @item_count;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemStyleEditV1
+internal unsafe struct ViemStyleEdit
 {
-    public uint @struct_size;
     public uint @flags;
-    public ViemStyleSheetIdentityV1 @identity;
+    public ViemStyleSheetIdentity @identity;
     public uint @namespace_id;
     public uint @operation;
     public uint @property;
-    public uint @reserved;
     public ViemUtf8Slice @style_id;
-    public ViemStyleEditValueV1 @value;
+    public ViemStyleEditValue @value;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemStyleEditGroupV1
+internal unsafe struct ViemStyleEditGroup
 {
-    public uint @struct_size;
     public uint @flags;
     public ulong @token;
     public ulong @view_id;
@@ -692,48 +625,43 @@ internal unsafe struct ViemStyleEditGroupV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemTextPaintV1
+internal unsafe struct ViemTextPaint
 {
-    public uint @struct_size;
     public uint @flags;
-    public ViemRgbaV1 @foreground;
-    public ViemRgbaV1 @background;
+    public ViemRgba @foreground;
+    public ViemRgba @background;
     public float @baseline_offset;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemLayoutPaintInfoV1
+internal unsafe struct ViemLayoutPaintInfo
 {
-    public uint @struct_size;
     public uint @flags;
-    public ViemLayoutSnapshotIdentityV1 @identity;
-    public ViemRgbaV1 @canvas_background;
-    public ViemTextPaintV1 @default_paint;
+    public ViemLayoutSnapshotIdentity @identity;
+    public ViemRgba @canvas_background;
+    public ViemTextPaint @default_paint;
     public ulong @paint_run_count;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemPaintStyleRunV1
+internal unsafe struct ViemPaintStyleRun
 {
-    public uint @struct_size;
-    public uint @reserved;
     public ulong @text_start;
     public ulong @text_end;
-    public ViemTextPaintV1 @paint;
+    public ViemTextPaint @paint;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemLayoutSnapshotInfoV1
+internal unsafe struct ViemLayoutSnapshotInfo
 {
-    public uint @struct_size;
     public uint @flags;
-    public ViemLayoutSnapshotIdentityV1 @identity;
+    public ViemLayoutSnapshotIdentity @identity;
     public float @viewport_width;
     public float @viewport_height;
     public float @usable_width;
     public float @content_width;
     public float @total_height;
-    public ViemLayoutInsetsV1 @content_insets;
+    public ViemLayoutInsets @content_insets;
     public ulong @coverage_hard_line_start;
     public ulong @coverage_hard_line_end;
     public ulong @document_hard_line_count;
@@ -745,9 +673,8 @@ internal unsafe struct ViemLayoutSnapshotInfoV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemVisualRowV1
+internal unsafe struct ViemVisualRow
 {
-    public uint @struct_size;
     public uint @flags;
     public ulong @row_index;
     public ulong @paragraph_id;
@@ -772,27 +699,24 @@ internal unsafe struct ViemVisualRowV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemPositionedClusterV1
+internal unsafe struct ViemPositionedCluster
 {
-    public uint @struct_size;
     public uint @flags;
     public ulong @row_index;
     public ulong @text_start;
     public ulong @text_end;
     public float @x;
     public float @advance;
-    public ViemLayoutRectV1 @typographic_bounds;
-    public ViemLayoutRectV1 @ink_bounds;
+    public ViemLayoutRect @typographic_bounds;
+    public ViemLayoutRect @ink_bounds;
     public uint @bidi_level;
-    public uint @reserved;
-    public ViemRenderRunHandleV1 @render_run;
+    public ViemRenderRunHandle @render_run;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemLayoutDecorationV1
+internal unsafe struct ViemLayoutDecoration
 {
     public ulong @paragraph_id;
-    public uint @struct_size;
     public uint @flags;
     public ulong @row_index;
     public ulong @label_byte_start;
@@ -801,56 +725,49 @@ internal unsafe struct ViemLayoutDecorationV1
     public float @advance;
     public float @font_size;
     public float @baseline;
-    public ViemLayoutRectV1 @typographic_bounds;
-    public ViemLayoutRectV1 @ink_bounds;
-    public ViemRenderRunHandleV1 @render_run;
-    public ViemTextPaintV1 @paint;
+    public ViemLayoutRect @typographic_bounds;
+    public ViemLayoutRect @ink_bounds;
+    public ViemRenderRunHandle @render_run;
+    public ViemTextPaint @paint;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemLayoutDecorationsInfoV1
+internal unsafe struct ViemLayoutDecorationsInfo
 {
-    public uint @struct_size;
-    public uint @reserved;
-    public ViemLayoutSnapshotIdentityV1 @identity;
+    public ViemLayoutSnapshotIdentity @identity;
     public ulong @decoration_count;
     public ulong @label_bytes;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemPositionedCaretV1
+internal unsafe struct ViemPositionedCaret
 {
-    public uint @struct_size;
     public uint @affinity;
     public ulong @row_index;
     public ulong @text_offset;
     public float @x;
-    public float @reserved;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemLayoutCaretRequestV1
+internal unsafe struct ViemLayoutCaretRequest
 {
-    public uint @struct_size;
     public uint @affinity;
-    public ViemLayoutSnapshotIdentityV1 @identity;
+    public ViemLayoutSnapshotIdentity @identity;
     public ulong @text_offset;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemLayoutHitTestRequestV1
+internal unsafe struct ViemLayoutHitTestRequest
 {
-    public uint @struct_size;
     public uint @flags;
-    public ViemLayoutSnapshotIdentityV1 @identity;
+    public ViemLayoutSnapshotIdentity @identity;
     public float @x;
     public float @y;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemLayoutCaretPointV1
+internal unsafe struct ViemLayoutCaretPoint
 {
-    public uint @struct_size;
     public uint @affinity;
     public ulong @document_id;
     public ulong @document_revision;
@@ -859,19 +776,17 @@ internal unsafe struct ViemLayoutCaretPointV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemLayoutCaretGeometryV1
+internal unsafe struct ViemLayoutCaretGeometry
 {
-    public uint @struct_size;
     public uint @flags;
-    public ViemLayoutCaretPointV1 @point;
-    public ViemLayoutRectV1 @rect;
+    public ViemLayoutCaretPoint @point;
+    public ViemLayoutRect @rect;
     public ulong @row_index;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemPointerCaretV1
+internal unsafe struct ViemPointerCaret
 {
-    public uint @struct_size;
     public uint @flags;
     public uint @mode;
     public uint @caret_shape;
@@ -882,9 +797,8 @@ internal unsafe struct ViemPointerCaretV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemViewPresentationV1
+internal unsafe struct ViemViewPresentation
 {
-    public uint @struct_size;
     public uint @flags;
     public uint @mode;
     public uint @cursor_affinity;
@@ -897,7 +811,6 @@ internal unsafe struct ViemViewPresentationV1
     public float @visual_block_left_x;
     public float @visual_block_right_x;
     public float @desired_x;
-    public float @reserved_float;
     public ulong @command_line_utf8_length;
     public ulong @command_line_cursor_utf8_offset;
     public ulong @caret_utf8_start;
@@ -909,9 +822,8 @@ internal unsafe struct ViemViewPresentationV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemCommandLineIdentityV1
+internal unsafe struct ViemCommandLineIdentity
 {
-    public uint @struct_size;
     public uint @kind;
     public ulong @view_id;
     public ulong @document_id;
@@ -920,19 +832,16 @@ internal unsafe struct ViemCommandLineIdentityV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemCommandLineInfoV1
+internal unsafe struct ViemCommandLineInfo
 {
-    public uint @struct_size;
-    public uint @reserved;
-    public ViemCommandLineIdentityV1 @identity;
+    public ViemCommandLineIdentity @identity;
     public ulong @utf8_length;
     public ulong @cursor_utf8_offset;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemCompletionInfoV1
+internal unsafe struct ViemCompletionInfo
 {
-    public uint @struct_size;
     public uint @flags;
     public ulong @session_id;
     public ulong @generation;
@@ -942,40 +851,36 @@ internal unsafe struct ViemCompletionInfoV1
     public long @selected_index;
     public ulong @item_count;
     public ulong @utf8_length;
-    public ViemLayoutSnapshotIdentityV1 @anchor_layout;
-    public ViemLayoutRectV1 @anchor_rect;
+    public ViemLayoutSnapshotIdentity @anchor_layout;
+    public ViemLayoutRect @anchor_rect;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemCompletionItemV1
+internal unsafe struct ViemCompletionItem
 {
     public ulong @text_offset;
     public ulong @text_length;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemVisualSelectionIdentityV1
+internal unsafe struct ViemVisualSelectionIdentity
 {
-    public uint @struct_size;
     public uint @kind;
-    public ViemLayoutSnapshotIdentityV1 @layout;
+    public ViemLayoutSnapshotIdentity @layout;
     public fixed byte @state_identity[32];
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemVisualSelectionInfoV1
+internal unsafe struct ViemVisualSelectionInfo
 {
-    public uint @struct_size;
-    public uint @reserved;
-    public ViemVisualSelectionIdentityV1 @identity;
+    public ViemVisualSelectionIdentity @identity;
     public ulong @segment_count;
     public ulong @rectangle_count;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemVisualSelectionSegmentV1
+internal unsafe struct ViemVisualSelectionSegment
 {
-    public uint @struct_size;
     public uint @flags;
     public ulong @text_start;
     public ulong @text_end;
@@ -986,19 +891,16 @@ internal unsafe struct ViemVisualSelectionSegmentV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemVisualSelectionRectangleV1
+internal unsafe struct ViemVisualSelectionRectangle
 {
-    public uint @struct_size;
-    public uint @reserved;
     public ulong @row_index;
     public ulong @segment_index;
-    public ViemLayoutRectV1 @rect;
+    public ViemLayoutRect @rect;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemLogicalSelectionIdentityV1
+internal unsafe struct ViemLogicalSelectionIdentity
 {
-    public uint @struct_size;
     public uint @kind;
     public ulong @view_id;
     public ulong @document_id;
@@ -1009,11 +911,10 @@ internal unsafe struct ViemLogicalSelectionIdentityV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemTableContextV1
+internal unsafe struct ViemTableContext
 {
-    public uint @struct_size;
     public uint @flags;
-    public ViemLogicalSelectionIdentityV1 @selection;
+    public ViemLogicalSelectionIdentity @selection;
     public ulong @table_id;
     public ulong @row;
     public ulong @column;
@@ -1022,31 +923,26 @@ internal unsafe struct ViemTableContextV1
     public ulong @row_end;
     public ulong @column_end;
     public uint @alignment;
-    public uint @reserved;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemInsertTableV1
+internal unsafe struct ViemInsertTable
 {
-    public uint @struct_size;
-    public uint @reserved;
-    public ViemLogicalSelectionIdentityV1 @expected_selection;
+    public ViemLogicalSelectionIdentity @expected_selection;
     public uint @columns;
     public uint @body_rows;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemTableActionV1
+internal unsafe struct ViemTableAction
 {
-    public uint @struct_size;
     public uint @action;
-    public ViemTableContextV1 @expected;
+    public ViemTableContext @expected;
     public uint @alignment;
-    public uint @reserved;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemTableCellV1
+internal unsafe struct ViemTableCell
 {
     public ulong @table_id;
     public ulong @row;
@@ -1054,16 +950,15 @@ internal unsafe struct ViemTableCellV1
     public ulong @cell_id;
     public ulong @text_start;
     public ulong @text_end;
-    public ViemLayoutRectV1 @rect;
-    public ViemLayoutRectV1 @table_rect;
+    public ViemLayoutRect @rect;
+    public ViemLayoutRect @table_rect;
     public uint @alignment;
     public uint @flags;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemTableSelectionV1
+internal unsafe struct ViemTableSelection
 {
-    public uint @struct_size;
     public uint @active;
     public ulong @document_id;
     public ulong @document_revision;
@@ -1075,110 +970,96 @@ internal unsafe struct ViemTableSelectionV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemSemanticStylePresentationV1
+internal unsafe struct ViemSemanticStylePresentation
 {
-    public uint @struct_size;
     public uint @style;
     public uint @state;
     public uint @flags;
-    public ViemLogicalSelectionIdentityV1 @selection;
+    public ViemLogicalSelectionIdentity @selection;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemSetSemanticStyleV1
+internal unsafe struct ViemSetSemanticStyle
 {
-    public uint @struct_size;
     public uint @style;
     public uint @enabled;
-    public uint @reserved;
-    public ViemLogicalSelectionIdentityV1 @expected_selection;
+    public ViemLogicalSelectionIdentity @expected_selection;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemPlaceCursorV1
+internal unsafe struct ViemPlaceCursor
 {
-    public uint @struct_size;
     public uint @flags;
     public ulong @document_revision;
     public ulong @text_offset;
     public uint @affinity;
-    public uint @reserved;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemSetFileFormatV1
+internal unsafe struct ViemSetFileFormat
 {
-    public uint @struct_size;
     public uint @file_format;
     public ulong @document_id;
     public ulong @document_revision;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemSetEncodingV1
+internal unsafe struct ViemSetEncoding
 {
-    public uint @struct_size;
     public uint @encoding;
     public ulong @document_id;
     public ulong @document_revision;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemSetListStyleV1
+internal unsafe struct ViemSetListStyle
 {
-    public uint @struct_size;
     public uint @style;
-    public ViemLogicalSelectionIdentityV1 @expected_selection;
+    public ViemLogicalSelectionIdentity @expected_selection;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemSetBlockQuoteV1
+internal unsafe struct ViemSetBlockQuote
 {
-    public uint @struct_size;
     public uint @enabled;
-    public ViemLogicalSelectionIdentityV1 @expected_selection;
+    public ViemLogicalSelectionIdentity @expected_selection;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemSetAlertV1
+internal unsafe struct ViemSetAlert
 {
-    public uint @struct_size;
     public uint @kind;
-    public ViemLogicalSelectionIdentityV1 @expected_selection;
+    public ViemLogicalSelectionIdentity @expected_selection;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemListIndentV1
+internal unsafe struct ViemListIndent
 {
-    public uint @struct_size;
     public uint @unindent;
-    public ViemLogicalSelectionIdentityV1 @expected_selection;
+    public ViemLogicalSelectionIdentity @expected_selection;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemSetParagraphStyleV1
+internal unsafe struct ViemSetParagraphStyle
 {
-    public uint @struct_size;
     public uint @level;
-    public ViemLogicalSelectionIdentityV1 @expected_selection;
+    public ViemLogicalSelectionIdentity @expected_selection;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemAssignStyleV1
+internal unsafe struct ViemAssignStyle
 {
-    public uint @struct_size;
     public uint @namespace;
-    public ViemStyleSheetIdentityV1 @identity;
-    public ViemLogicalSelectionIdentityV1 @expected_selection;
+    public ViemStyleSheetIdentity @identity;
+    public ViemLogicalSelectionIdentity @expected_selection;
     public ViemUtf8Slice @style_id;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemCreateStyleV1
+internal unsafe struct ViemCreateStyle
 {
-    public uint @struct_size;
     public uint @namespace;
-    public ViemStyleSheetIdentityV1 @identity;
+    public ViemStyleSheetIdentity @identity;
     public ViemUtf8Slice @style_id;
     public ViemUtf8Slice @display_name;
     public ViemUtf8Slice @parent_id;
@@ -1186,47 +1067,39 @@ internal unsafe struct ViemCreateStyleV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemDeleteStyleV1
+internal unsafe struct ViemDeleteStyle
 {
-    public uint @struct_size;
     public uint @namespace;
-    public ViemStyleSheetIdentityV1 @identity;
+    public ViemStyleSheetIdentity @identity;
     public ViemUtf8Slice @style_id;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemMarkSavedV1
+internal unsafe struct ViemMarkSaved
 {
-    public uint @struct_size;
-    public uint @reserved;
     public ulong @document_id;
     public ulong @document_revision;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemKeyInputV1
+internal unsafe struct ViemKeyInput
 {
-    public uint @struct_size;
     public uint @kind;
     public uint @codepoint;
     public uint @modifiers;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemCompositionBeginV1
+internal unsafe struct ViemCompositionBegin
 {
-    public uint @struct_size;
-    public uint @reserved;
     public ulong @document_revision;
     public ulong @replacement_start;
     public ulong @replacement_end;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemCompositionUpdateV1
+internal unsafe struct ViemCompositionUpdate
 {
-    public uint @struct_size;
-    public uint @reserved;
     public ulong @document_revision;
     public ViemUtf8Slice @marked_text;
     public ulong @selected_start;
@@ -1234,27 +1107,21 @@ internal unsafe struct ViemCompositionUpdateV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemCompositionCommitV1
+internal unsafe struct ViemCompositionCommit
 {
-    public uint @struct_size;
-    public uint @reserved;
     public ulong @document_revision;
     public ViemUtf8Slice @committed_text;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemCompositionCancelV1
+internal unsafe struct ViemCompositionCancel
 {
-    public uint @struct_size;
-    public uint @reserved;
     public ulong @document_revision;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemCompositionOverlayIdentityV1
+internal unsafe struct ViemCompositionOverlayIdentity
 {
-    public uint @struct_size;
-    public uint @reserved;
     public ulong @view_id;
     public ulong @document_id;
     public ulong @document_revision;
@@ -1262,11 +1129,10 @@ internal unsafe struct ViemCompositionOverlayIdentityV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemCompositionOverlayInfoV1
+internal unsafe struct ViemCompositionOverlayInfo
 {
-    public uint @struct_size;
     public uint @flags;
-    public ViemCompositionOverlayIdentityV1 @identity;
+    public ViemCompositionOverlayIdentity @identity;
     public ulong @utf8_length;
     public ulong @replacement_start;
     public ulong @replacement_end;
@@ -1277,19 +1143,16 @@ internal unsafe struct ViemCompositionOverlayInfoV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemCompositionOverlayUtf8RangeV1
+internal unsafe struct ViemCompositionOverlayUtf8Range
 {
-    public uint @struct_size;
-    public uint @reserved;
-    public ViemCompositionOverlayIdentityV1 @identity;
+    public ViemCompositionOverlayIdentity @identity;
     public ulong @start;
     public ulong @end;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemCoreOutcomeV1
+internal unsafe struct ViemCoreOutcome
 {
-    public uint @struct_size;
     public uint @command_status;
     public uint @mode;
     public uint @flags;
@@ -1303,25 +1166,24 @@ internal unsafe struct ViemCoreOutcomeV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemEffectBatchViewV1
+internal unsafe struct ViemEffectBatchView
 {
-    public ViemEffectBatchInfoV1 @info;
-    public ViemClipboardWriteV1* @clipboard_writes;
-    public ViemExFrontendRequestV1* @ex_requests;
-    public ViemExOptionDisplayV1* @ex_options;
-    public ViemExMarkV1* @ex_marks;
-    public ViemExRegisterV1* @ex_registers;
-    public ViemExJumpV1* @ex_jumps;
-    public ViemExTextLineV1* @ex_text_lines;
+    public ViemEffectBatchInfo @info;
+    public ViemClipboardWrite* @clipboard_writes;
+    public ViemExFrontendRequest* @ex_requests;
+    public ViemExOptionDisplay* @ex_options;
+    public ViemExMark* @ex_marks;
+    public ViemExRegister* @ex_registers;
+    public ViemExJump* @ex_jumps;
+    public ViemExTextLine* @ex_text_lines;
     public uint* @file_formats;
     public ulong* @hard_breaks;
     public byte* @strings;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemFileMarkTargetV1
+internal unsafe struct ViemFileMarkTarget
 {
-    public uint @struct_size;
     public uint @name;
     public ulong @generation;
     public ulong @document_id;
@@ -1329,12 +1191,10 @@ internal unsafe struct ViemFileMarkTargetV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemViewLineLocationV1
+internal unsafe struct ViemViewLineLocation
 {
-    public uint @struct_size;
     public uint @mode;
     public uint @flags;
-    public uint @reserved;
     public ulong @line;
     public ulong @column;
     public ulong @hard_line;
@@ -1342,31 +1202,28 @@ internal unsafe struct ViemViewLineLocationV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemLineNumberSnapshotInfoV1
+internal unsafe struct ViemLineNumberSnapshotInfo
 {
-    public uint @struct_size;
     public uint @flags;
-    public ViemLayoutSnapshotIdentityV1 @identity;
-    public ViemLayoutRectV1 @viewport;
+    public ViemLayoutSnapshotIdentity @identity;
+    public ViemLayoutRect @viewport;
     public ulong @source_line_count;
     public ulong @current_source_line;
     public ulong @region_count;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemLineNumberRegionV1
+internal unsafe struct ViemLineNumberRegion
 {
     public ulong @source_line;
     public uint @flags;
-    public uint @reserved;
     public float @top;
     public float @bottom;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemSelectedStylesInfoV1
+internal unsafe struct ViemSelectedStylesInfo
 {
-    public uint @struct_size;
     public uint @flags;
     public ulong @document_id;
     public ulong @document_revision;
@@ -1376,37 +1233,31 @@ internal unsafe struct ViemSelectedStylesInfoV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemFormattingActionsV1
+internal unsafe struct ViemFormattingActions
 {
-    public uint @struct_size;
-    public uint @reserved;
     public ulong @enabled;
     public ulong @on;
     public ulong @mixed;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemCommandLineSelectionV1
+internal unsafe struct ViemCommandLineSelection
 {
-    public uint @struct_size;
-    public uint @reserved;
     public ulong @anchor_utf8_offset;
     public ulong @active_utf8_offset;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemSetDocumentModeV1
+internal unsafe struct ViemSetDocumentMode
 {
-    public uint @struct_size;
     public uint @mode;
     public ulong @document_id;
     public ulong @document_revision;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemDiffBaseRequestV1
+internal unsafe struct ViemDiffBaseRequest
 {
-    public uint @struct_size;
     public uint @kind;
     public ViemUtf8Slice @file_path;
     public ViemUtf8Slice @revision;
@@ -1418,21 +1269,18 @@ internal unsafe struct ViemDiffBaseRequestV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemDiffResultInfoV1
+internal unsafe struct ViemDiffResultInfo
 {
-    public uint @struct_size;
     public uint @flags;
     public uint @result;
-    public uint @reserved;
     public ulong @byte_count;
     public ulong @item_count;
     public ulong @message_bytes;
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemDiffListItemV1
+internal unsafe struct ViemDiffListItem
 {
-    public uint @struct_size;
     public uint @change;
     public ulong @path_bytes;
     public ulong @base_path_bytes;
@@ -1441,9 +1289,8 @@ internal unsafe struct ViemDiffListItemV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemDiffSessionInfoV1
+internal unsafe struct ViemDiffSessionInfo
 {
-    public uint @struct_size;
     public uint @flags;
     public ulong @hunk_count;
     public ulong @added;
@@ -1453,9 +1300,8 @@ internal unsafe struct ViemDiffSessionInfoV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemDiffNavigationV1
+internal unsafe struct ViemDiffNavigation
 {
-    public uint @struct_size;
     public uint @flags;
     public ulong @change_index;
     public ulong @change_count;
@@ -1463,19 +1309,17 @@ internal unsafe struct ViemDiffNavigationV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
-internal unsafe struct ViemDiffScrollbarMarkV1
+internal unsafe struct ViemDiffScrollbarMark
 {
     public float @top;
     public float @bottom;
     public uint @flags;
-    public uint @reserved;
 }
 
 internal static unsafe partial class Native
 {
-    public const uint VIEM_CORE_ABI_VERSION = 8u;
-    public const uint VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V4 = 4u;
-    public const uint VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION = VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION_V4;
+    public const uint VIEM_CORE_ABI_VERSION = 9u;
+    public const uint VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION = 4u;
     public const uint VIEM_STATUS_OK = 0u;
     public const uint VIEM_STATUS_INVALID_ARGUMENT = 1u;
     public const uint VIEM_STATUS_NULL_POINTER = 2u;
@@ -1549,12 +1393,6 @@ internal static unsafe partial class Native
     public const uint VIEM_DOCUMENT_STATE_READ_ONLY = (1u << 4);
     public const uint VIEM_DOCUMENT_STATE_RECOVERED = (1u << 5);
     public const uint VIEM_DOCUMENT_STATE_MARKDOWN_SOURCE = (1u << 6);
-    public const uint VIEM_DOCUMENT_OPTIONS_SIZE = 16u;
-    public static readonly uint VIEM_DOCUMENT_STATE_V1_SIZE = ((uint)sizeof(ViemDocumentStateV1));
-    public static readonly uint VIEM_FORMATTED_SNAPSHOT_IDENTITY_V1_SIZE = ((uint)sizeof(ViemFormattedSnapshotIdentityV1));
-    public static readonly uint VIEM_FORMATTED_SNAPSHOT_INFO_V1_SIZE = ((uint)sizeof(ViemFormattedSnapshotInfoV1));
-    public static readonly uint VIEM_FORMATTED_UTF8_RANGE_V1_SIZE = ((uint)sizeof(ViemFormattedUtf8RangeV1));
-    public static readonly uint VIEM_FORMATTED_POINT_INFO_V1_SIZE = ((uint)sizeof(ViemFormattedPointInfoV1));
     public const uint VIEM_PROVIDER_THREADING_ANY_WORKER = 1u;
     public const uint VIEM_PROVIDER_THREADING_DEDICATED_SERIAL = 2u;
     public const uint VIEM_PROVIDER_THREADING_FRONTEND_MAIN = 3u;
@@ -1772,26 +1610,7 @@ internal static unsafe partial class Native
     public const uint VIEM_OUTCOME_HAS_LAYOUT = (1u << 6);
     public const uint VIEM_OUTCOME_HAS_EXTERNAL_EFFECTS = (1u << 7);
     public const uint VIEM_OUTCOME_HAS_COMPOSITION_CHANGES = (1u << 8);
-    public static readonly uint VIEM_CLIPBOARD_TURN_ENTRY_V2_SIZE = ((uint)sizeof(ViemClipboardTurnEntryV2));
-    public static readonly uint VIEM_COMMAND_TURN_CONTEXT_V2_SIZE = ((uint)sizeof(ViemCommandTurnContextV2));
-    public static readonly uint VIEM_CLIPBOARD_WRITE_V1_SIZE = ((uint)sizeof(ViemClipboardWriteV1));
-    public static readonly uint VIEM_EX_OPTION_DISPLAY_V1_SIZE = ((uint)sizeof(ViemExOptionDisplayV1));
-    public static readonly uint VIEM_EX_MARK_V1_SIZE = ((uint)sizeof(ViemExMarkV1));
-    public static readonly uint VIEM_EX_REGISTER_V1_SIZE = ((uint)sizeof(ViemExRegisterV1));
-    public static readonly uint VIEM_EX_JUMP_V1_SIZE = ((uint)sizeof(ViemExJumpV1));
-    public static readonly uint VIEM_EX_TEXT_LINE_V1_SIZE = ((uint)sizeof(ViemExTextLineV1));
-    public static readonly uint VIEM_EX_FRONTEND_REQUEST_V1_SIZE = ((uint)sizeof(ViemExFrontendRequestV1));
-    public static readonly uint VIEM_EFFECT_BATCH_INFO_V1_SIZE = ((uint)sizeof(ViemEffectBatchInfoV1));
     public const uint VIEM_RESOLVED_TEXT_STYLE_RELATIVE_BOLD = (1u << 0);
-    public static readonly uint VIEM_RESOLVED_TEXT_STYLE_V1_SIZE = ((uint)sizeof(ViemResolvedTextStyleV1));
-    public static readonly uint VIEM_SHAPE_STYLE_RUN_V1_SIZE = ((uint)sizeof(ViemShapeStyleRunV1));
-    public static readonly uint VIEM_SHAPED_CLUSTER_V1_SIZE = ((uint)sizeof(ViemShapedClusterV1));
-    public static readonly uint VIEM_SHAPING_DIAGNOSTIC_V1_SIZE = ((uint)sizeof(ViemShapingDiagnosticV1));
-    public static readonly uint VIEM_SHAPE_REQUEST_V1_SIZE = ((uint)sizeof(ViemShapeRequestV1));
-    public static readonly uint VIEM_SHAPE_RESPONSE_V1_SIZE = ((uint)sizeof(ViemShapeResponseV1));
-    public static readonly uint VIEM_TEXT_MEASUREMENT_PROVIDER_V1_SIZE = ((uint)sizeof(ViemTextMeasurementProviderV1));
-    public static readonly uint VIEM_VIEW_OPTIONS_V1_SIZE = ((uint)sizeof(ViemViewOptionsV1));
-    public static readonly uint VIEM_VIEWPORT_ORIGIN_V1_SIZE = ((uint)sizeof(ViemViewportOriginV1));
     public const uint VIEM_VIEWPORT_ORIGIN_HAS_TOP = (1u << 0);
     public const uint VIEM_VIEWPORT_STATE_WRAP = (1u << 0);
     public const uint VIEM_VIEWPORT_STATE_MAXIMUM_LEFT_EXACT = (1u << 1);
@@ -1799,9 +1618,6 @@ internal static unsafe partial class Native
     public const uint VIEM_VIEWPORT_STATE_HAS_LAYOUT = (1u << 3);
     public const uint VIEM_VIEWPORT_STATE_LINEBREAK = (1u << 4);
     public const uint VIEM_VIEWPORT_STATE_MAXIMUM_TOP_EXACT = (1u << 5);
-    public static readonly uint VIEM_VIEW_RESTORATION_V1_SIZE = ((uint)sizeof(ViemViewRestorationV1));
-    public static readonly uint VIEM_VIEWPORT_STATE_V1_SIZE = ((uint)sizeof(ViemViewportStateV1));
-    public static readonly uint VIEM_LAYOUT_SNAPSHOT_IDENTITY_V1_SIZE = ((uint)sizeof(ViemLayoutSnapshotIdentityV1));
     public const uint VIEM_STYLE_NAMESPACE_BLOCK = 1u;
     public const uint VIEM_STYLE_NAMESPACE_CHARACTER = 2u;
     public const uint VIEM_STYLE_ROLE_NONE = 0u;
@@ -1915,36 +1731,19 @@ internal static unsafe partial class Native
     public const uint VIEM_STYLE_EDIT_CLEAR_NEXT_STYLE = 6u;
     public const uint VIEM_STYLE_EDIT_SET_DISPLAY_NAME = 7;
     public const uint VIEM_STYLE_EDIT_SET_PARENT_VARIANT = 8u;
-    public static readonly uint VIEM_STYLE_SHEET_IDENTITY_V1_SIZE = ((uint)sizeof(ViemStyleSheetIdentityV1));
-    public static readonly uint VIEM_STYLE_SHEET_INFO_V1_SIZE = ((uint)sizeof(ViemStyleSheetInfoV1));
-    public static readonly uint VIEM_STYLE_VALUE_V1_SIZE = ((uint)sizeof(ViemStyleValueV1));
-    public static readonly uint VIEM_STYLE_VALUE_ITEM_V1_SIZE = ((uint)sizeof(ViemStyleValueItemV1));
-    public static readonly uint VIEM_STYLE_DEPENDENCY_V1_SIZE = ((uint)sizeof(ViemStyleDependencyV1));
-    public static readonly uint VIEM_STYLE_DEFINITION_V1_SIZE = ((uint)sizeof(ViemStyleDefinitionV1));
-    public static readonly uint VIEM_STYLE_PROPERTY_V1_SIZE = ((uint)sizeof(ViemStylePropertyV1));
-    public static readonly uint VIEM_STYLE_EDIT_VALUE_ITEM_V1_SIZE = ((uint)sizeof(ViemStyleEditValueItemV1));
-    public static readonly uint VIEM_STYLE_EDIT_VALUE_V1_SIZE = ((uint)sizeof(ViemStyleEditValueV1));
-    public static readonly uint VIEM_STYLE_EDIT_V1_SIZE = ((uint)sizeof(ViemStyleEditV1));
-    public static readonly uint VIEM_STYLE_EDIT_GROUP_V1_SIZE = ((uint)sizeof(ViemStyleEditGroupV1));
     public const uint VIEM_TEXT_PAINT_HAS_BACKGROUND = (1u << 0);
     public const uint VIEM_TEXT_PAINT_UNDERLINE = (1u << 1);
     public const uint VIEM_TEXT_PAINT_STRIKETHROUGH = (1u << 2);
     public const uint VIEM_TEXT_PAINT_DEFAULT_FOREGROUND = (1u << 3);
     public const uint VIEM_LAYOUT_PAINT_DEFAULT_CANVAS = (1u << 0);
-    public static readonly uint VIEM_TEXT_PAINT_V1_SIZE = ((uint)sizeof(ViemTextPaintV1));
-    public static readonly uint VIEM_LAYOUT_PAINT_INFO_V1_SIZE = ((uint)sizeof(ViemLayoutPaintInfoV1));
-    public static readonly uint VIEM_PAINT_STYLE_RUN_V1_SIZE = ((uint)sizeof(ViemPaintStyleRunV1));
     public const uint VIEM_LAYOUT_SNAPSHOT_FULL_DOCUMENT = (1u << 0);
     public const uint VIEM_LAYOUT_SNAPSHOT_PREFIX_EXACT = (1u << 1);
     public const uint VIEM_LAYOUT_SNAPSHOT_CONTENT_WIDTH_EXACT = (1u << 2);
     public const uint VIEM_LAYOUT_SNAPSHOT_TOTAL_HEIGHT_EXACT = (1u << 3);
-    public static readonly uint VIEM_LAYOUT_SNAPSHOT_INFO_V1_SIZE = ((uint)sizeof(ViemLayoutSnapshotInfoV1));
     public const uint VIEM_VISUAL_ROW_HAS_PARAGRAPH = (1u << 0);
     public const uint VIEM_VISUAL_ROW_WRAPPED_FROM_PREVIOUS = (1u << 1);
     public const uint VIEM_VISUAL_ROW_WRAPS_TO_NEXT = (1u << 2);
-    public static readonly uint VIEM_VISUAL_ROW_V1_SIZE = ((uint)sizeof(ViemVisualRowV1));
     public const uint VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN = (1u << 0);
-    public static readonly uint VIEM_POSITIONED_CLUSTER_V1_SIZE = ((uint)sizeof(ViemPositionedClusterV1));
     public const uint VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER = (1u << 1);
     public const uint VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND = (1u << 2);
     public const uint VIEM_LAYOUT_DECORATION_BLOCK_BORDER = (1u << 3);
@@ -1957,17 +1756,9 @@ internal static unsafe partial class Native
     public const uint VIEM_LAYOUT_DECORATION_ALERT_KIND_SHIFT = 10u;
     public const uint VIEM_LAYOUT_DECORATION_ALERT_KIND_MASK = (7u << 10);
     public const uint VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT = (1u << 13);
-    public static readonly uint VIEM_LAYOUT_DECORATION_V1_SIZE = ((uint)sizeof(ViemLayoutDecorationV1));
-    public static readonly uint VIEM_LAYOUT_DECORATIONS_INFO_V1_SIZE = ((uint)sizeof(ViemLayoutDecorationsInfoV1));
-    public static readonly uint VIEM_POSITIONED_CARET_V1_SIZE = ((uint)sizeof(ViemPositionedCaretV1));
-    public static readonly uint VIEM_LAYOUT_CARET_REQUEST_V1_SIZE = ((uint)sizeof(ViemLayoutCaretRequestV1));
     public const uint VIEM_LAYOUT_HIT_TEST_POINTER_DOWN = (1u << 0);
-    public static readonly uint VIEM_LAYOUT_HIT_TEST_REQUEST_V1_SIZE = ((uint)sizeof(ViemLayoutHitTestRequestV1));
-    public static readonly uint VIEM_LAYOUT_CARET_POINT_V1_SIZE = ((uint)sizeof(ViemLayoutCaretPointV1));
     public const uint VIEM_CARET_GEOMETRY_CLUSTER_FALLBACK = (1u << 0);
-    public static readonly uint VIEM_LAYOUT_CARET_GEOMETRY_V1_SIZE = ((uint)sizeof(ViemLayoutCaretGeometryV1));
     public const uint VIEM_POINTER_CARET_CURRENT = (1u << 0);
-    public static readonly uint VIEM_POINTER_CARET_V1_SIZE = ((uint)sizeof(ViemPointerCaretV1));
     public const uint VIEM_VIEW_PRESENTATION_HAS_VISUAL_ANCHOR = (1u << 0);
     public const uint VIEM_VIEW_PRESENTATION_VISUAL_ANCHOR_AFFINITY_EXACT = (1u << 1);
     public const uint VIEM_VIEW_PRESENTATION_HAS_VISUAL_BLOCK = (1u << 2);
@@ -1976,7 +1767,6 @@ internal static unsafe partial class Native
     public const uint VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING = (1u << 5);
     public const uint VIEM_VIEW_PRESENTATION_COMMAND_LINE_REGISTER_PENDING = (1u << 6);
     public const uint VIEM_VIEW_PRESENTATION_COMMAND_INPUT_PENDING = (1u << 7);
-    public static readonly uint VIEM_VIEW_PRESENTATION_V1_SIZE = ((uint)sizeof(ViemViewPresentationV1));
     public const uint VIEM_CARET_SHAPE_CELL = 1u;
     public const uint VIEM_CARET_SHAPE_BOUNDARY = 2u;
     public const uint VIEM_COMMAND_LINE_KIND_NONE = 0u;
@@ -1984,15 +1774,11 @@ internal static unsafe partial class Native
     public const uint VIEM_COMMAND_LINE_KIND_SEARCH_FORWARD = 2u;
     public const uint VIEM_COMMAND_LINE_KIND_SEARCH_BACKWARD = 3u;
     public const uint VIEM_COMMAND_LINE_KIND_EXPRESSION = 4u;
-    public static readonly uint VIEM_COMMAND_LINE_IDENTITY_V1_SIZE = ((uint)sizeof(ViemCommandLineIdentityV1));
-    public static readonly uint VIEM_COMMAND_LINE_INFO_V1_SIZE = ((uint)sizeof(ViemCommandLineInfoV1));
     public const uint VIEM_COMPLETION_ACTIVE = (1u << 0);
     public const uint VIEM_COMPLETION_SEARCHING = (1u << 1);
     public const uint VIEM_COMPLETION_TRUNCATED = (1u << 2);
     public const uint VIEM_COMPLETION_HAS_ANCHOR = (1u << 3);
     public const uint VIEM_COMPLETION_RIGHT_TO_LEFT = (1u << 4);
-    public static readonly uint VIEM_COMPLETION_INFO_V1_SIZE = ((uint)sizeof(ViemCompletionInfoV1));
-    public static readonly uint VIEM_COMPLETION_ITEM_V1_SIZE = ((uint)sizeof(ViemCompletionItemV1));
     public const uint VIEM_VISUAL_SELECTION_KIND_NONE = 0u;
     public const uint VIEM_VISUAL_SELECTION_KIND_CHARACTER = 1u;
     public const uint VIEM_VISUAL_SELECTION_KIND_LINE = 2u;
@@ -2000,10 +1786,6 @@ internal static unsafe partial class Native
     public const uint VIEM_VISUAL_SELECTION_SEGMENT_HAS_VISUAL_ROW = (1u << 0);
     public const uint VIEM_VISUAL_SELECTION_SEGMENT_HAS_HARD_LINE = (1u << 1);
     public const uint VIEM_VISUAL_SELECTION_SEGMENT_HAS_EDGE_AFFINITIES = (1u << 2);
-    public static readonly uint VIEM_VISUAL_SELECTION_IDENTITY_V1_SIZE = ((uint)sizeof(ViemVisualSelectionIdentityV1));
-    public static readonly uint VIEM_VISUAL_SELECTION_INFO_V1_SIZE = ((uint)sizeof(ViemVisualSelectionInfoV1));
-    public static readonly uint VIEM_VISUAL_SELECTION_SEGMENT_V1_SIZE = ((uint)sizeof(ViemVisualSelectionSegmentV1));
-    public static readonly uint VIEM_VISUAL_SELECTION_RECTANGLE_V1_SIZE = ((uint)sizeof(ViemVisualSelectionRectangleV1));
     public const uint VIEM_LOGICAL_SELECTION_KIND_NONE = 0u;
     public const uint VIEM_LOGICAL_SELECTION_KIND_CHARACTER = 1u;
     public const uint VIEM_LOGICAL_SELECTION_KIND_LINE = 2u;
@@ -2018,7 +1800,6 @@ internal static unsafe partial class Native
     public const uint VIEM_SEMANTIC_STYLE_CAN_SET = (1u << 1);
     public const uint VIEM_SEMANTIC_STYLE_CAN_CLEAR = (1u << 2);
     public const uint VIEM_SEMANTIC_STYLE_TYPING_CONTEXT = (1u << 3);
-    public static readonly uint VIEM_LOGICAL_SELECTION_IDENTITY_V1_SIZE = ((uint)sizeof(ViemLogicalSelectionIdentityV1));
     public const uint VIEM_TABLE_CAN_INSERT = 1u;
     public const uint VIEM_TABLE_IN_TABLE = 2u;
     public const uint VIEM_TABLE_HEADER = 4u;
@@ -2038,51 +1819,23 @@ internal static unsafe partial class Native
     public const uint VIEM_TABLE_DELETE_COLUMN = 6u;
     public const uint VIEM_TABLE_SET_ALIGNMENT = 7u;
     public const uint VIEM_TABLE_CLEAR_CELL = 8u;
-    public static readonly uint VIEM_TABLE_CONTEXT_V1_SIZE = ((uint)sizeof(ViemTableContextV1));
-    public static readonly uint VIEM_INSERT_TABLE_V1_SIZE = ((uint)sizeof(ViemInsertTableV1));
-    public static readonly uint VIEM_TABLE_ACTION_V1_SIZE = ((uint)sizeof(ViemTableActionV1));
-    public static readonly uint VIEM_TABLE_CELL_V1_SIZE = ((uint)sizeof(ViemTableCellV1));
-    public static readonly uint VIEM_TABLE_SELECTION_V1_SIZE = ((uint)sizeof(ViemTableSelectionV1));
-    public static readonly uint VIEM_SEMANTIC_STYLE_PRESENTATION_V1_SIZE = ((uint)sizeof(ViemSemanticStylePresentationV1));
-    public static readonly uint VIEM_SET_SEMANTIC_STYLE_V1_SIZE = ((uint)sizeof(ViemSetSemanticStyleV1));
     public const uint VIEM_PLACE_CURSOR_EXTEND_SELECTION = (1u << 0);
     public const uint VIEM_PLACE_CURSOR_WORD_SELECTION = (1u << 1);
     public const uint VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE = (1u << 2);
-    public static readonly uint VIEM_PLACE_CURSOR_V1_SIZE = ((uint)sizeof(ViemPlaceCursorV1));
-    public static readonly uint VIEM_SET_FILE_FORMAT_V1_SIZE = ((uint)sizeof(ViemSetFileFormatV1));
-    public static readonly uint VIEM_SET_ENCODING_V1_SIZE = ((uint)sizeof(ViemSetEncodingV1));
     public const uint VIEM_LIST_STYLE_NONE = 0u;
     public const uint VIEM_LIST_STYLE_BULLET = 1u;
     public const uint VIEM_LIST_STYLE_NUMBERED = 2u;
     public const uint VIEM_LIST_STYLE_TASK = 3u;
-    public static readonly uint VIEM_SET_LIST_STYLE_V1_SIZE = ((uint)sizeof(ViemSetListStyleV1));
-    public static readonly uint VIEM_SET_BLOCK_QUOTE_V1_SIZE = ((uint)sizeof(ViemSetBlockQuoteV1));
     public const uint VIEM_ALERT_NONE = 0u;
     public const uint VIEM_ALERT_NOTE = 1u;
     public const uint VIEM_ALERT_TIP = 2u;
     public const uint VIEM_ALERT_IMPORTANT = 3u;
     public const uint VIEM_ALERT_WARNING = 4u;
     public const uint VIEM_ALERT_CAUTION = 5u;
-    public static readonly uint VIEM_SET_ALERT_V1_SIZE = ((uint)sizeof(ViemSetAlertV1));
     public const uint VIEM_LIST_CAN_INDENT = 1u;
     public const uint VIEM_LIST_CAN_UNINDENT = 2u;
     public const uint VIEM_LIST_CAN_INSERT_PARAGRAPH = 4u;
-    public static readonly uint VIEM_LIST_INDENT_V1_SIZE = ((uint)sizeof(ViemListIndentV1));
-    public static readonly uint VIEM_SET_PARAGRAPH_STYLE_V1_SIZE = ((uint)sizeof(ViemSetParagraphStyleV1));
-    public static readonly uint VIEM_ASSIGN_STYLE_V1_SIZE = ((uint)sizeof(ViemAssignStyleV1));
-    public static readonly uint VIEM_CREATE_STYLE_V1_SIZE = ((uint)sizeof(ViemCreateStyleV1));
-    public static readonly uint VIEM_DELETE_STYLE_V1_SIZE = ((uint)sizeof(ViemDeleteStyleV1));
-    public static readonly uint VIEM_MARK_SAVED_V1_SIZE = ((uint)sizeof(ViemMarkSavedV1));
-    public static readonly uint VIEM_KEY_INPUT_V1_SIZE = ((uint)sizeof(ViemKeyInputV1));
-    public static readonly uint VIEM_COMPOSITION_BEGIN_V1_SIZE = ((uint)sizeof(ViemCompositionBeginV1));
-    public static readonly uint VIEM_COMPOSITION_UPDATE_V1_SIZE = ((uint)sizeof(ViemCompositionUpdateV1));
-    public static readonly uint VIEM_COMPOSITION_COMMIT_V1_SIZE = ((uint)sizeof(ViemCompositionCommitV1));
-    public static readonly uint VIEM_COMPOSITION_CANCEL_V1_SIZE = ((uint)sizeof(ViemCompositionCancelV1));
     public const uint VIEM_COMPOSITION_OVERLAY_ACTIVE = (1u << 0);
-    public static readonly uint VIEM_COMPOSITION_OVERLAY_IDENTITY_V1_SIZE = ((uint)sizeof(ViemCompositionOverlayIdentityV1));
-    public static readonly uint VIEM_COMPOSITION_OVERLAY_INFO_V1_SIZE = ((uint)sizeof(ViemCompositionOverlayInfoV1));
-    public static readonly uint VIEM_COMPOSITION_OVERLAY_UTF8_RANGE_V1_SIZE = ((uint)sizeof(ViemCompositionOverlayUtf8RangeV1));
-    public static readonly uint VIEM_CORE_OUTCOME_V1_SIZE = ((uint)sizeof(ViemCoreOutcomeV1));
     public const uint VIEM_SELECTION_ORIGIN_MOUSE = 1u;
     public const uint VIEM_SELECTION_ORIGIN_KEY = 2u;
     public const uint VIEM_SELECTION_ORIGIN_COMMAND = 3u;
@@ -2096,16 +1849,13 @@ internal static unsafe partial class Native
     public const uint VIEM_NATIVE_FIND_REPLACE = 8;
     public const uint VIEM_NATIVE_FIND_NEXT = 9;
     public const uint VIEM_NATIVE_FIND_PREVIOUS = 10;
-    public static readonly uint VIEM_FILE_MARK_TARGET_V1_SIZE = ((uint)sizeof(ViemFileMarkTargetV1));
     public const uint VIEM_LINE_LOCATION_GLOBAL_LINE_EXACT = 1u;
     public const uint VIEM_LINE_LOCATION_FRAGMENT_EXACT = 2u;
-    public static readonly uint VIEM_VIEW_LINE_LOCATION_V1_SIZE = ((uint)sizeof(ViemViewLineLocationV1));
     public const uint VIEM_LINE_NUMBER_SNAPSHOT_ENABLED = 1u;
     public const uint VIEM_LINE_NUMBER_REGION_ESTIMATED = 1u;
     public const uint VIEM_LINE_NUMBER_REGION_CURRENT = (1u << 1);
     public const uint VIEM_LINE_NUMBER_DIFF_ADDED = (1u << 2);
     public const uint VIEM_LINE_NUMBER_DIFF_REMOVED = (1u << 3);
-    public static readonly uint VIEM_LINE_NUMBER_SNAPSHOT_INFO_V1_SIZE = ((uint)sizeof(ViemLineNumberSnapshotInfoV1));
     public const uint VIEM_LINE_MODE_VISUAL = 0u;
     public const uint VIEM_LINE_MODE_PHYSICAL_SOURCE = 1u;
     public const uint VIEM_SELECTED_STYLE_PARAGRAPH_MIXED = (1u << 0);
@@ -2145,7 +1895,6 @@ internal static unsafe partial class Native
     public const uint VIEM_FORMATTING_TABLE = 32u;
     public const uint VIEM_FORMATTING_PARAGRAPH_STYLES = 33u;
     public const uint VIEM_FORMATTING_CHARACTER_STYLES = 34u;
-    public static readonly uint VIEM_FORMATTING_ACTIONS_V1_SIZE = ((uint)sizeof(ViemFormattingActionsV1));
     public const uint VIEM_THEME_PRESET_MIDNIGHT = 0u;
     public const uint VIEM_THEME_PRESET_PAPER = 1u;
     public const uint VIEM_CLIPBOARD_FORMAT_HTML = 1u;
@@ -2153,7 +1902,6 @@ internal static unsafe partial class Native
     public const uint VIEM_DOCUMENT_MODE_PLAIN_TEXT = 1u;
     public const uint VIEM_DOCUMENT_MODE_MARKDOWN = 2u;
     public const uint VIEM_DOCUMENT_MODE_CODE = 3u;
-    public static readonly uint VIEM_SET_DOCUMENT_MODE_V1_SIZE = ((uint)sizeof(ViemSetDocumentModeV1));
     public const uint VIEM_DIFF_SESSION_ALIGNED = (1u << 0);
     public const uint VIEM_DIFF_SESSION_COLLAPSED = (1u << 1);
     public const uint VIEM_DIFF_SYNC_UNCHANGED = 0u;
@@ -2184,11 +1932,6 @@ internal static unsafe partial class Native
     public const uint VIEM_DIFF_FILE_DELETED = 2u;
     public const uint VIEM_DIFF_FILE_RENAMED = 3u;
     public const uint VIEM_DIFF_FILE_UNSAVED = 4u;
-    public static readonly uint VIEM_DIFF_BASE_REQUEST_V1_SIZE = ((uint)sizeof(ViemDiffBaseRequestV1));
-    public static readonly uint VIEM_DIFF_RESULT_INFO_V1_SIZE = ((uint)sizeof(ViemDiffResultInfoV1));
-    public static readonly uint VIEM_DIFF_LIST_ITEM_V1_SIZE = ((uint)sizeof(ViemDiffListItemV1));
-    public static readonly uint VIEM_DIFF_SESSION_INFO_V1_SIZE = ((uint)sizeof(ViemDiffSessionInfoV1));
-    public static readonly uint VIEM_DIFF_NAVIGATION_V1_SIZE = ((uint)sizeof(ViemDiffNavigationV1));
     public const uint VIEM_DIFF_SCROLL_BASE_CHANGED = 1u;
     public const uint VIEM_DIFF_SCROLL_NEW_CHANGED = 2u;
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -2230,7 +1973,7 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_external_file_review_finish(ulong @handle, byte* @token, ulong @token_length, uint @acknowledge);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_pointer_caret(ulong @handle, ulong @view, ViemLayoutHitTestRequestV1* @request, ViemPointerCaretV1* @out_caret);
+    public static extern uint viem_core_view_pointer_caret(ulong @handle, ulong @view, ViemLayoutHitTestRequest* @request, ViemPointerCaret* @out_caret);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_abi_version();
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -2240,37 +1983,37 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_revision(ulong @core, ulong* @out_revision);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_document_state(ulong @core, ViemDocumentStateV1* @out_state);
+    public static extern uint viem_core_document_state(ulong @core, ViemDocumentState* @out_state);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_formatted_snapshot_info(ulong @core, ViemFormattedSnapshotInfoV1* @out_info);
+    public static extern uint viem_core_formatted_snapshot_info(ulong @core, ViemFormattedSnapshotInfo* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_copy_formatted_utf8_range(ulong @core, ViemFormattedUtf8RangeV1* @request, byte* @output, ulong @output_capacity, ulong* @out_required);
+    public static extern uint viem_core_copy_formatted_utf8_range(ulong @core, ViemFormattedUtf8Range* @request, byte* @output, ulong @output_capacity, ulong* @out_required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_map_formatted_utf8_to_utf16(ulong @core, ViemFormattedSnapshotIdentityV1* @identity, ulong* @utf8_offsets, ulong @offset_count, ulong* @utf16_offsets, ulong @output_capacity, ulong* @out_required);
+    public static extern uint viem_core_map_formatted_utf8_to_utf16(ulong @core, ViemFormattedSnapshotIdentity* @identity, ulong* @utf8_offsets, ulong @offset_count, ulong* @utf16_offsets, ulong @output_capacity, ulong* @out_required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_map_formatted_utf16_to_utf8(ulong @core, ViemFormattedSnapshotIdentityV1* @identity, ulong* @utf16_offsets, ulong @offset_count, ulong* @utf8_offsets, ulong @output_capacity, ulong* @out_required);
+    public static extern uint viem_core_map_formatted_utf16_to_utf8(ulong @core, ViemFormattedSnapshotIdentity* @identity, ulong* @utf16_offsets, ulong @offset_count, ulong* @utf8_offsets, ulong @output_capacity, ulong* @out_required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_formatted_point_info(ulong @core, ViemFormattedSnapshotIdentityV1* @identity, ulong @utf8_offset, ViemFormattedPointInfoV1* @out_info);
+    public static extern uint viem_core_formatted_point_info(ulong @core, ViemFormattedSnapshotIdentity* @identity, ulong @utf8_offset, ViemFormattedPointInfo* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_set_read_only(ulong @core, ulong @expected_document, ulong @expected_revision, uint @read_only);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_mark_recovered(ulong @core, ulong @expected_document, ulong @expected_revision);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_mark_saved(ulong @core, ViemMarkSavedV1* @request);
+    public static extern uint viem_core_mark_saved(ulong @core, ViemMarkSaved* @request);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_style_sheet_identity(ulong @core, ViemStyleSheetIdentityV1* @out_identity);
+    public static extern uint viem_core_style_sheet_identity(ulong @core, ViemStyleSheetIdentity* @out_identity);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_style_sheet_info(ulong @core, uint @gutter_underlay, ViemStyleSheetInfoV1* @out_info);
+    public static extern uint viem_core_style_sheet_info(ulong @core, uint @gutter_underlay, ViemStyleSheetInfo* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_copy_style_sheet(ulong @core, uint @gutter_underlay, ViemStyleSheetIdentityV1* @expected, ViemStyleDefinitionV1* @definitions, ulong @definition_capacity, ViemStylePropertyV1* @properties, ulong @property_capacity, ViemStyleValueItemV1* @value_items, ulong @value_item_capacity, ViemStyleDependencyV1* @dependencies, ulong @dependency_capacity, byte* @string_bytes, ulong @string_capacity, ViemStyleSheetInfoV1* @out_info);
+    public static extern uint viem_core_copy_style_sheet(ulong @core, uint @gutter_underlay, ViemStyleSheetIdentity* @expected, ViemStyleDefinition* @definitions, ulong @definition_capacity, ViemStyleProperty* @properties, ulong @property_capacity, ViemStyleValueItem* @value_items, ulong @value_item_capacity, ViemStyleDependency* @dependencies, ulong @dependency_capacity, byte* @string_bytes, ulong @string_capacity, ViemStyleSheetInfo* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_add(ulong @core, ViemViewOptionsV1* @options, ViemTextMeasurementProviderV1* @provider, ulong* @out_view, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_add(ulong @core, ViemViewOptions* @options, ViemTextMeasurementProvider* @provider, ulong* @out_view, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_remove(ulong @core, ulong @view);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_prepare_prelayout(ulong @core, ulong @view, int @direction, ulong* @out_request);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_layout_work_compute(ulong @request, ViemTextMeasurementProviderV1* @provider, ulong* @out_result);
+    public static extern uint viem_layout_work_compute(ulong @request, ViemTextMeasurementProvider* @provider, ulong* @out_result);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_install_prelayout(ulong @core, ulong @view, int @direction, ulong @result, byte* @out_installed);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -2282,39 +2025,39 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_layout_work_release(ulong @work);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_state(ulong @core, ulong @view, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_state(ulong @core, ulong @view, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_capture_restoration(ulong @core, ulong @view, ViemViewRestorationV1* @out_state);
+    public static extern uint viem_core_view_capture_restoration(ulong @core, ulong @view, ViemViewRestoration* @out_state);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_restore(ulong @core, ulong @view, ulong @document, ulong @revision, ViemViewRestorationV1* @state, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_restore(ulong @core, ulong @view, ulong @document, ulong @revision, ViemViewRestoration* @state, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_viewport_state(ulong @core, ulong @view, ViemViewportStateV1* @out_state);
+    public static extern uint viem_core_view_viewport_state(ulong @core, ulong @view, ViemViewportState* @out_state);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_layout_snapshot_info(ulong @core, ulong @view, ViemLayoutSnapshotInfoV1* @out_info);
+    public static extern uint viem_core_view_layout_snapshot_info(ulong @core, ulong @view, ViemLayoutSnapshotInfo* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_copy_layout_snapshot(ulong @core, ulong @view, ViemLayoutSnapshotIdentityV1* @expected, ViemVisualRowV1* @rows, ulong @row_capacity, ViemPositionedClusterV1* @clusters, ulong @cluster_capacity, ViemPositionedCaretV1* @carets, ulong @caret_capacity, ViemLayoutSnapshotInfoV1* @out_info);
+    public static extern uint viem_core_view_copy_layout_snapshot(ulong @core, ulong @view, ViemLayoutSnapshotIdentity* @expected, ViemVisualRow* @rows, ulong @row_capacity, ViemPositionedCluster* @clusters, ulong @cluster_capacity, ViemPositionedCaret* @carets, ulong @caret_capacity, ViemLayoutSnapshotInfo* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_layout_paint_info(ulong @core, ulong @view, ViemLayoutPaintInfoV1* @out_info);
+    public static extern uint viem_core_view_layout_paint_info(ulong @core, ulong @view, ViemLayoutPaintInfo* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_copy_layout_decorations(ulong @core, ulong @view, ViemLayoutSnapshotIdentityV1* @expected, ViemLayoutDecorationV1* @decorations, ulong @decoration_capacity, byte* @labels, ulong @label_capacity, ViemLayoutDecorationsInfoV1* @out_info);
+    public static extern uint viem_core_view_copy_layout_decorations(ulong @core, ulong @view, ViemLayoutSnapshotIdentity* @expected, ViemLayoutDecoration* @decorations, ulong @decoration_capacity, byte* @labels, ulong @label_capacity, ViemLayoutDecorationsInfo* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_copy_layout_paint(ulong @core, ulong @view, ViemLayoutSnapshotIdentityV1* @expected, ViemPaintStyleRunV1* @runs, ulong @run_capacity, ViemLayoutPaintInfoV1* @out_info);
+    public static extern uint viem_core_view_copy_layout_paint(ulong @core, ulong @view, ViemLayoutSnapshotIdentity* @expected, ViemPaintStyleRun* @runs, ulong @run_capacity, ViemLayoutPaintInfo* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_caret_geometry(ulong @core, ulong @view, ViemLayoutCaretRequestV1* @request, ViemLayoutCaretGeometryV1* @out_geometry);
+    public static extern uint viem_core_view_caret_geometry(ulong @core, ulong @view, ViemLayoutCaretRequest* @request, ViemLayoutCaretGeometry* @out_geometry);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_layout_hit_test(ulong @core, ulong @view, ViemLayoutHitTestRequestV1* @request, ViemLayoutCaretPointV1* @out_point);
+    public static extern uint viem_core_view_layout_hit_test(ulong @core, ulong @view, ViemLayoutHitTestRequest* @request, ViemLayoutCaretPoint* @out_point);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_presentation(ulong @core, ulong @view, ViemViewPresentationV1* @out_presentation);
+    public static extern uint viem_core_view_presentation(ulong @core, ulong @view, ViemViewPresentation* @out_presentation);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_command_line_info(ulong @core, ulong @view, ViemCommandLineInfoV1* @out_info);
+    public static extern uint viem_core_view_command_line_info(ulong @core, ulong @view, ViemCommandLineInfo* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_copy_command_line(ulong @core, ulong @view, ViemCommandLineIdentityV1* @expected, byte* @utf8, ulong @utf8_capacity, ViemCommandLineInfoV1* @out_info);
+    public static extern uint viem_core_view_copy_command_line(ulong @core, ulong @view, ViemCommandLineIdentity* @expected, byte* @utf8, ulong @utf8_capacity, ViemCommandLineInfo* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_completion_info(ulong @core, ulong @view, ViemCompletionInfoV1* @out_info);
+    public static extern uint viem_core_view_completion_info(ulong @core, ulong @view, ViemCompletionInfo* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_copy_completion_items(ulong @core, ulong @view, ViemCompletionInfoV1* @expected, ViemCompletionItemV1* @items, ulong @capacity, ulong* @out_count);
+    public static extern uint viem_core_view_copy_completion_items(ulong @core, ulong @view, ViemCompletionInfo* @expected, ViemCompletionItem* @items, ulong @capacity, ulong* @out_count);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_copy_completion_utf8(ulong @core, ulong @view, ViemCompletionInfoV1* @expected, byte* @bytes, ulong @capacity, ulong* @out_count);
+    public static extern uint viem_core_view_copy_completion_utf8(ulong @core, ulong @view, ViemCompletionInfo* @expected, byte* @bytes, ulong @capacity, ulong* @out_count);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_poll_completion(ulong @core, ulong @view, byte* @out_changed);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -2326,35 +2069,35 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_accept_completion(ulong @core, ulong @view, byte* @out_changed);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_visual_selection_info(ulong @core, ulong @view, ViemVisualSelectionInfoV1* @out_info);
+    public static extern uint viem_core_view_visual_selection_info(ulong @core, ulong @view, ViemVisualSelectionInfo* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_copy_visual_selection(ulong @core, ulong @view, ViemVisualSelectionIdentityV1* @expected, ViemVisualSelectionSegmentV1* @segments, ulong @segment_capacity, ViemVisualSelectionRectangleV1* @rectangles, ulong @rectangle_capacity, ViemVisualSelectionInfoV1* @out_info);
+    public static extern uint viem_core_view_copy_visual_selection(ulong @core, ulong @view, ViemVisualSelectionIdentity* @expected, ViemVisualSelectionSegment* @segments, ulong @segment_capacity, ViemVisualSelectionRectangle* @rectangles, ulong @rectangle_capacity, ViemVisualSelectionInfo* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_semantic_style_presentation(ulong @core, ulong @view, uint @style, ViemSemanticStylePresentationV1* @out_presentation);
+    public static extern uint viem_core_view_semantic_style_presentation(ulong @core, ulong @view, uint @style, ViemSemanticStylePresentation* @out_presentation);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_set_semantic_style(ulong @core, ulong @view, ViemSetSemanticStyleV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_set_semantic_style(ulong @core, ulong @view, ViemSetSemanticStyle* @request, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_use_selection_for_find(ulong @core, ulong @view, ViemVisualSelectionIdentityV1* @expected, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_use_selection_for_find(ulong @core, ulong @view, ViemVisualSelectionIdentity* @expected, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_reveal_selection(ulong @core, ulong @view, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_reveal_selection(ulong @core, ulong @view, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_send_key_with_host_context_v2(ulong @handle, ulong @view, ViemKeyInputV1* @input, ViemCommandTurnContextV2* @context, ViemCoreOutcomeV1* @out_outcome, ulong* @out_effect_batch);
+    public static extern uint viem_core_view_send_key_with_host_context(ulong @handle, ulong @view, ViemKeyInput* @input, ViemCommandTurnContext* @context, ViemCoreOutcome* @out_outcome, ulong* @out_effect_batch);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_send_text_with_host_context_v2(ulong @handle, ulong @view, byte* @text, ulong @text_length, ViemCommandTurnContextV2* @context, ViemCoreOutcomeV1* @out_outcome, ulong* @out_effect_batch);
+    public static extern uint viem_core_view_send_text_with_host_context(ulong @handle, ulong @view, byte* @text, ulong @text_length, ViemCommandTurnContext* @context, ViemCoreOutcome* @out_outcome, ulong* @out_effect_batch);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_has_pending_mapping(ulong @core, ulong @view, byte* @pending);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_flush_mapping_with_host_context_v2(ulong @core, ulong @view, ViemCommandTurnContextV2* @context, ViemCoreOutcomeV1* @outcome, ulong* @effects);
+    public static extern uint viem_core_view_flush_mapping_with_host_context(ulong @core, ulong @view, ViemCommandTurnContext* @context, ViemCoreOutcome* @outcome, ulong* @effects);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_effect_batch_info(ulong @batch, ViemEffectBatchInfoV1* @out_info);
+    public static extern uint viem_effect_batch_info(ulong @batch, ViemEffectBatchInfo* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_effect_batch_read(ulong @batch, ViemEffectBatchViewV1* @out_batch);
+    public static extern uint viem_effect_batch_read(ulong @batch, ViemEffectBatchView* @out_batch);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_effect_batch_release(ulong @batch);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_place_cursor(ulong @core, ulong @view, ViemPlaceCursorV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_place_cursor(ulong @core, ulong @view, ViemPlaceCursor* @request, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_select_all(ulong @core, ulong @view, ulong @document_id, ulong @document_revision, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_select_all(ulong @core, ulong @view, ulong @document_id, ulong @document_revision, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_copy_selection_option(ulong @core, uint @option_kind, byte* @output, ulong @output_capacity, ulong* @out_required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -2362,61 +2105,61 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_native_actions(ulong @core, ulong @view, ulong* @out_actions);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_native_action(ulong @core, ulong @view, uint @action, uint @origin, uint @return_mode, ViemCoreOutcomeV1* @out_outcome, ulong* @out_effects);
+    public static extern uint viem_core_view_native_action(ulong @core, ulong @view, uint @action, uint @origin, uint @return_mode, ViemCoreOutcome* @out_outcome, ulong* @out_effects);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_set_selection_origin(ulong @core, ulong @view, uint @origin, uint @return_mode, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_set_selection_origin(ulong @core, ulong @view, uint @origin, uint @return_mode, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_go_to_line(ulong @core, ulong @view, ulong @document_id, ulong @document_revision, ulong @line, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_go_to_line(ulong @core, ulong @view, ulong @document_id, ulong @document_revision, ulong @line, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_file_mark_target(uint @name, ulong @generation, ViemFileMarkTargetV1* @out_info, byte* @path, ulong @capacity);
+    public static extern uint viem_file_mark_target(uint @name, ulong @generation, ViemFileMarkTarget* @out_info, byte* @path, ulong @capacity);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_jump_file_mark(ulong @core, ulong @view, uint @name, ulong @generation, uint @linewise, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_jump_file_mark(ulong @core, ulong @view, uint @name, ulong @generation, uint @linewise, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_host_register(ulong @core, ulong @view, uint @name, byte* @text, ulong @length);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_drop_text(ulong @core, ulong @view, byte* @text, ulong @length, ViemCommandTurnContextV2* @context, ViemCoreOutcomeV1* @out_outcome, ulong* @out_effect_batch);
+    public static extern uint viem_core_view_drop_text(ulong @core, ulong @view, byte* @text, ulong @length, ViemCommandTurnContext* @context, ViemCoreOutcome* @out_outcome, ulong* @out_effect_batch);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_undo(ulong @core, ulong @view, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_undo(ulong @core, ulong @view, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_redo(ulong @core, ulong @view, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_redo(ulong @core, ulong @view, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_composition_begin(ulong @core, ulong @view, ViemCompositionBeginV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_composition_begin(ulong @core, ulong @view, ViemCompositionBegin* @request, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_composition_update(ulong @core, ulong @view, ViemCompositionUpdateV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_composition_update(ulong @core, ulong @view, ViemCompositionUpdate* @request, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_composition_overlay_info(ulong @core, ulong @view, ViemCompositionOverlayInfoV1* @out_info);
+    public static extern uint viem_core_view_composition_overlay_info(ulong @core, ulong @view, ViemCompositionOverlayInfo* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_copy_composition_utf8_range(ulong @core, ulong @view, ViemCompositionOverlayUtf8RangeV1* @request, byte* @output, ulong @output_capacity, ulong* @out_required);
+    public static extern uint viem_core_view_copy_composition_utf8_range(ulong @core, ulong @view, ViemCompositionOverlayUtf8Range* @request, byte* @output, ulong @output_capacity, ulong* @out_required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_composition_commit(ulong @core, ulong @view, ViemCompositionCommitV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_composition_commit(ulong @core, ulong @view, ViemCompositionCommit* @request, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_composition_cancel(ulong @core, ulong @view, ViemCompositionCancelV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_composition_cancel(ulong @core, ulong @view, ViemCompositionCancel* @request, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_set_viewport_origin(ulong @core, ulong @view, ViemViewportOriginV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_set_viewport_origin(ulong @core, ulong @view, ViemViewportOrigin* @request, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_padding(ulong @core, ulong @view, float @top, float @left, float @bottom, float @right);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_image_resources_changed(ulong @core, ulong @view, ulong @previous_metrics_generation, ViemUtf8Slice* @destinations, ulong @count);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_resize(ulong @core, ulong @view, float @width, float @height, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_resize(ulong @core, ulong @view, float @width, float @height, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_adjacent_zoom_scale(float @scale, uint @increasing, float* @out_scale);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_set_scale(ulong @core, ulong @view, float @scale, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_set_scale(ulong @core, ulong @view, float @scale, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_line_location(ulong @handle, ulong @view, ViemViewLineLocationV1* @out_location);
+    public static extern uint viem_core_view_line_location(ulong @handle, ulong @view, ViemViewLineLocation* @out_location);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_number(ulong @core, ulong @view, uint* @out_enabled);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_number(ulong @core, ulong @view, uint @enabled);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_row_selection_hit_test(ulong @core, ulong @view, ViemLayoutSnapshotIdentityV1* @expected, float @x, float @y, uint* @out_hit);
+    public static extern uint viem_core_view_row_selection_hit_test(ulong @core, ulong @view, ViemLayoutSnapshotIdentity* @expected, float @x, float @y, uint* @out_hit);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_select_pointer_row(ulong @core, ulong @view, ViemLayoutSnapshotIdentityV1* @expected, float @y, uint @extend_selection, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_select_pointer_row(ulong @core, ulong @view, ViemLayoutSnapshotIdentity* @expected, float @y, uint @extend_selection, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_line_number_snapshot_info(ulong @core, ulong @view, ViemLineNumberSnapshotInfoV1* @out_info);
+    public static extern uint viem_core_view_line_number_snapshot_info(ulong @core, ulong @view, ViemLineNumberSnapshotInfo* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_copy_line_number_regions(ulong @core, ulong @view, ViemLayoutSnapshotIdentityV1* @expected, ViemLayoutRectV1* @expected_viewport, ViemLineNumberRegionV1* @regions, ulong @capacity, ulong* @out_count);
+    public static extern uint viem_core_view_copy_line_number_regions(ulong @core, ulong @view, ViemLayoutSnapshotIdentity* @expected, ViemLayoutRect* @expected_viewport, ViemLineNumberRegion* @regions, ulong @capacity, ulong* @out_count);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_line_mode(ulong @core, ulong @view, uint* @out_mode, uint* @out_fixed);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -2424,7 +2167,7 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_default_column_width(ulong @handle, ulong @view, float* @out_width);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_set_line_mode(ulong @core, ulong @view, uint @mode, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_set_line_mode(ulong @core, ulong @view, uint @mode, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_smart_quotes(ulong @core, ulong @view, uint @enabled);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -2432,59 +2175,59 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_smart_home(ulong @core, ulong @view, uint @enabled);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_set_wrap(ulong @core, ulong @view, uint @wrap, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_set_wrap(ulong @core, ulong @view, uint @wrap, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_set_file_format(ulong @core, ulong @view, ViemSetFileFormatV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_set_file_format(ulong @core, ulong @view, ViemSetFileFormat* @request, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_list_selection(ulong @core, ulong @view, ViemLogicalSelectionIdentityV1* @out_selection);
+    public static extern uint viem_core_view_list_selection(ulong @core, ulong @view, ViemLogicalSelectionIdentity* @out_selection);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_table_context(ulong @core, ulong @view, ViemTableContextV1* @out_context);
+    public static extern uint viem_core_view_table_context(ulong @core, ulong @view, ViemTableContext* @out_context);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_table_context_at(ulong @core, ulong @view, ulong @document_id, ulong @document_revision, ulong @text_offset, ViemTableContextV1* @out_context);
+    public static extern uint viem_core_view_table_context_at(ulong @core, ulong @view, ulong @document_id, ulong @document_revision, ulong @text_offset, ViemTableContext* @out_context);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_insert_table(ulong @core, ulong @view, ViemInsertTableV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_insert_table(ulong @core, ulong @view, ViemInsertTable* @request, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_table_action(ulong @core, ulong @view, ViemTableActionV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_table_action(ulong @core, ulong @view, ViemTableAction* @request, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_copy_table_cells(ulong @core, ulong @view, ViemLayoutSnapshotIdentityV1* @expected, ViemTableCellV1* @output, ulong @output_capacity, ulong* @out_required);
+    public static extern uint viem_core_view_copy_table_cells(ulong @core, ulong @view, ViemLayoutSnapshotIdentity* @expected, ViemTableCell* @output, ulong @output_capacity, ulong* @out_required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_table_selection(ulong @core, ulong @view, ViemTableSelectionV1* @out_selection);
+    public static extern uint viem_core_view_table_selection(ulong @core, ulong @view, ViemTableSelection* @out_selection);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_select_table_cells(ulong @core, ulong @view, ViemTableSelectionV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_select_table_cells(ulong @core, ulong @view, ViemTableSelection* @request, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_copy_table_selection_text(ulong @core, ulong @view, ViemTableSelectionV1* @expected, byte* @output, ulong @output_capacity, ulong* @out_required);
+    public static extern uint viem_core_view_copy_table_selection_text(ulong @core, ulong @view, ViemTableSelection* @expected, byte* @output, ulong @output_capacity, ulong* @out_required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_copy_table_selection_ranges(ulong @core, ulong @view, ViemTableSelectionV1* @expected, ViemFormattedUtf8RangeV1* @output, ulong @output_capacity, ulong* @out_required);
+    public static extern uint viem_core_view_copy_table_selection_ranges(ulong @core, ulong @view, ViemTableSelection* @expected, ViemFormattedUtf8Range* @output, ulong @output_capacity, ulong* @out_required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_set_block_quote(ulong @core, ulong @view, ViemSetBlockQuoteV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_set_block_quote(ulong @core, ulong @view, ViemSetBlockQuote* @request, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_set_alert(ulong @core, ulong @view, ViemSetAlertV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_set_alert(ulong @core, ulong @view, ViemSetAlert* @request, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_set_list_style(ulong @core, ulong @view, ViemSetListStyleV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_set_list_style(ulong @core, ulong @view, ViemSetListStyle* @request, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_list_indent_capabilities(ulong @core, ulong @view, ViemLogicalSelectionIdentityV1* @expected_selection, uint* @out_flags);
+    public static extern uint viem_core_view_list_indent_capabilities(ulong @core, ulong @view, ViemLogicalSelectionIdentity* @expected_selection, uint* @out_flags);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_insert_list_paragraph(ulong @core, ulong @view, ViemLogicalSelectionIdentityV1* @expected_selection, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_insert_list_paragraph(ulong @core, ulong @view, ViemLogicalSelectionIdentity* @expected_selection, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_indent_list(ulong @core, ulong @view, ViemListIndentV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_indent_list(ulong @core, ulong @view, ViemListIndent* @request, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_set_paragraph_style(ulong @core, ulong @view, ViemSetParagraphStyleV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_set_paragraph_style(ulong @core, ulong @view, ViemSetParagraphStyle* @request, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_assign_style(ulong @handle, ulong @view, ViemAssignStyleV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_assign_style(ulong @handle, ulong @view, ViemAssignStyle* @request, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_begin_style_edit_group(ulong @core, ulong @view, ViemStyleSheetIdentityV1* @expected, ViemStyleEditGroupV1* @out_group);
+    public static extern uint viem_core_view_begin_style_edit_group(ulong @core, ulong @view, ViemStyleSheetIdentity* @expected, ViemStyleEditGroup* @out_group);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_edit_style(ulong @core, ulong @view, ViemStyleEditV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_edit_style(ulong @core, ulong @view, ViemStyleEdit* @request, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_edit_style_in_group(ulong @core, ulong @view, ViemStyleEditGroupV1* @group, ViemStyleEditV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_edit_style_in_group(ulong @core, ulong @view, ViemStyleEditGroup* @group, ViemStyleEdit* @request, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_end_style_edit_group(ulong @core, ulong @view, ViemStyleEditGroupV1* @group);
+    public static extern uint viem_core_view_end_style_edit_group(ulong @core, ulong @view, ViemStyleEditGroup* @group);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_set_inline_property(ulong @handle, ulong @view, ViemLogicalSelectionIdentityV1* @expected_selection, uint @property, byte @enabled, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_set_inline_property(ulong @handle, ulong @view, ViemLogicalSelectionIdentity* @expected_selection, uint @property, byte @enabled, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_inline_property_state(ulong @handle, ulong @view, uint @property, uint* @out_state);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_set_strikethrough(ulong @core, ulong @view, ViemLogicalSelectionIdentityV1* @expected_selection, byte @enabled, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_set_strikethrough(ulong @core, ulong @view, ViemLogicalSelectionIdentity* @expected_selection, byte @enabled, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_font_en_width(ulong @core, ulong @view, ulong @expected_revision, float* @out_width);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -2502,9 +2245,9 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_copy_formatted_utf8(ulong @core, ulong @expected_revision, byte* @output, ulong @output_capacity, ulong* @out_required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_selected_styles_export(ulong @core, ulong @view, ulong @expected_revision, ViemSelectedStylesInfoV1* @out_info, byte* @out_utf8, ulong @capacity);
+    public static extern uint viem_core_view_selected_styles_export(ulong @core, ulong @view, ulong @expected_revision, ViemSelectedStylesInfo* @out_info, byte* @out_utf8, ulong @capacity);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_formatting_actions(ulong @core, ulong @view, ulong @requested, ViemFormattingActionsV1* @out_actions);
+    public static extern uint viem_core_view_formatting_actions(ulong @core, ulong @view, ulong @requested, ViemFormattingActions* @out_actions);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_initialize_style_defaults(ulong @core, ulong @expected_revision, byte* @json, ulong @length, nint @diagnostic, void* @context);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -2524,41 +2267,41 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_theme_unique_name(byte* @stem, ulong @stem_length, byte* @existing, ulong @existing_length, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_command_line_selection(ulong @core, ulong @view, ViemCommandLineIdentityV1* @expected, ViemCommandLineSelectionV1* @out_selection);
+    public static extern uint viem_core_view_command_line_selection(ulong @core, ulong @view, ViemCommandLineIdentity* @expected, ViemCommandLineSelection* @out_selection);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_edit_command_line(ulong @core, ulong @view, ViemCommandLineIdentityV1* @expected, uint @operation, ulong @start, ulong @end, byte* @utf8, ulong @length, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_edit_command_line(ulong @core, ulong @view, ViemCommandLineIdentity* @expected, uint @operation, ulong @start, ulong @end, byte* @utf8, ulong @length, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_set_encoding_with_effects(ulong @core, ulong @view, ViemSetEncodingV1* @request, ViemCoreOutcomeV1* @out_outcome, ulong* @out_effects);
+    public static extern uint viem_core_view_set_encoding_with_effects(ulong @core, ulong @view, ViemSetEncoding* @request, ViemCoreOutcome* @out_outcome, ulong* @out_effects);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_copy_source_range_bytes(ulong @core, ulong @document, ulong @revision, ulong @source_start, ulong @source_end, byte* @output, ulong @capacity, ulong* @out_required, uint* @out_complete);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_import_clipboard_json(uint @format, byte* @source, ulong @source_length, byte* @output, ulong @output_capacity, ulong* @out_required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_copy_clipboard_json(ulong @handle, ViemFormattedUtf8RangeV1* @request, byte* @output, ulong @output_capacity, ulong* @out_required);
+    public static extern uint viem_core_copy_clipboard_json(ulong @handle, ViemFormattedUtf8Range* @request, byte* @output, ulong @output_capacity, ulong* @out_required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_effect_batch_copy_clipboard_json(ulong @batch, ulong @clipboard_index, byte* @output, ulong @output_capacity, ulong* @out_required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_application_config(byte* @input, ulong @input_length, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_style_parent_candidates(ulong @core, ViemStyleSheetIdentityV1* @expected, uint @namespace_id, ViemUtf8Slice @child, byte* @output, ulong @capacity, ulong* @required);
+    public static extern uint viem_core_style_parent_candidates(ulong @core, ViemStyleSheetIdentity* @expected, uint @namespace_id, ViemUtf8Slice @child, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_code_style_sheet_info(ViemStyleSheetInfoV1* @output);
+    public static extern uint viem_code_style_sheet_info(ViemStyleSheetInfo* @output);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_code_copy_style_sheet(ViemStyleSheetIdentityV1* @expected, ViemStyleDefinitionV1* @definitions, ulong @definition_capacity, ViemStylePropertyV1* @properties, ulong @property_capacity, ViemStyleValueItemV1* @value_items, ulong @value_item_capacity, ViemStyleDependencyV1* @dependencies, ulong @dependency_capacity, byte* @string_bytes, ulong @string_capacity, ViemStyleSheetInfoV1* @out_info);
+    public static extern uint viem_code_copy_style_sheet(ViemStyleSheetIdentity* @expected, ViemStyleDefinition* @definitions, ulong @definition_capacity, ViemStyleProperty* @properties, ulong @property_capacity, ViemStyleValueItem* @value_items, ulong @value_item_capacity, ViemStyleDependency* @dependencies, ulong @dependency_capacity, byte* @string_bytes, ulong @string_capacity, ViemStyleSheetInfo* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_code_edit_style(ViemStyleEditV1* @request, ViemStyleSheetInfoV1* @output);
+    public static extern uint viem_code_edit_style(ViemStyleEdit* @request, ViemStyleSheetInfo* @output);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_code_create_style(ViemCreateStyleV1* @request, ViemStyleSheetInfoV1* @output);
+    public static extern uint viem_code_create_style(ViemCreateStyle* @request, ViemStyleSheetInfo* @output);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_code_delete_style(ViemDeleteStyleV1* @request, ViemStyleSheetInfoV1* @output);
+    public static extern uint viem_code_delete_style(ViemDeleteStyle* @request, ViemStyleSheetInfo* @output);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_code_materialize_style(byte* @name, ulong @length, ViemStyleSheetInfoV1* @output);
+    public static extern uint viem_code_materialize_style(byte* @name, ulong @length, ViemStyleSheetInfo* @output);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_code_replace_style_json(byte* @input, ulong @length);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_code_export_style_json(byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_set_document_mode_with_effects(ulong @core, ulong @view, ViemSetDocumentModeV1* @request, byte* @language, ulong @length, ViemCoreOutcomeV1* @out_outcome, ulong* @out_effects);
+    public static extern uint viem_core_view_set_document_mode_with_effects(ulong @core, ulong @view, ViemSetDocumentMode* @request, byte* @language, ulong @length, ViemCoreOutcome* @out_outcome, ulong* @out_effects);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_copy_document_mode_json(ulong @core, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -2578,23 +2321,23 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_copy_link_context(ulong @core, ulong @view, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_edit_link(ulong @core, ulong @view, ViemLogicalSelectionIdentityV1* @expected, uint @action, ulong @link_start, ulong @link_end, ViemUtf8Slice @text, ViemUtf8Slice @destination, ViemCoreOutcomeV1* @outcome);
+    public static extern uint viem_core_view_edit_link(ulong @core, ulong @view, ViemLogicalSelectionIdentity* @expected, uint @action, ulong @link_start, ulong @link_end, ViemUtf8Slice @text, ViemUtf8Slice @destination, ViemCoreOutcome* @outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_reference_action(ulong @core, ulong @view, ViemLogicalSelectionIdentityV1* @expected, ViemUtf8Slice @request, ViemCoreOutcomeV1* @outcome);
+    public static extern uint viem_core_view_reference_action(ulong @core, ulong @view, ViemLogicalSelectionIdentity* @expected, ViemUtf8Slice @request, ViemCoreOutcome* @outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_copy_image_context(ulong @core, ulong @view, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_edit_image(ulong @core, ulong @view, ViemLogicalSelectionIdentityV1* @expected, uint @action, ulong @image_start, ulong @image_end, ViemUtf8Slice @text, ViemUtf8Slice @destination, uint @width, uint @height, ViemCoreOutcomeV1* @outcome);
+    public static extern uint viem_core_view_edit_image(ulong @core, ulong @view, ViemLogicalSelectionIdentity* @expected, uint @action, ulong @image_start, ulong @image_end, ViemUtf8Slice @text, ViemUtf8Slice @destination, uint @width, uint @height, ViemCoreOutcome* @outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_select_image(ulong @core, ulong @view, ulong @document_id, ulong @revision, ulong @text_offset, ViemCoreOutcomeV1* @outcome);
+    public static extern uint viem_core_view_select_image(ulong @core, ulong @view, ulong @document_id, ulong @revision, ulong @text_offset, ViemCoreOutcome* @outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_copy_reference_choices(ulong @core, ulong @document_id, ulong @revision, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_copy_link_headings(ulong @core, ulong @document_id, ulong @revision, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_set_code_block_language(ulong @core, ulong @view, ulong @document_id, ulong @document_revision, ulong @offset, ViemUtf8Slice @language, ViemCoreOutcomeV1* @output);
+    public static extern uint viem_core_view_set_code_block_language(ulong @core, ulong @view, ulong @document_id, ulong @document_revision, ulong @offset, ViemUtf8Slice @language, ViemCoreOutcome* @output);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_navigate_link_fragment(ulong @core, ulong @view, ulong @document_id, ulong @revision, ViemUtf8Slice @fragment, byte* @found, ViemCoreOutcomeV1* @outcome);
+    public static extern uint viem_core_view_navigate_link_fragment(ulong @core, ulong @view, ulong @document_id, ulong @revision, ViemUtf8Slice @fragment, byte* @found, ViemCoreOutcome* @outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_copy_link_destination(ulong @core, ulong @document_id, ulong @revision, ulong @text_offset, byte* @output, ulong @capacity, ulong* @required, byte* @found);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -2610,7 +2353,7 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_align_indents_to_previous_line(ulong @core, ulong @view, byte @enabled);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_copy_whitespace_markers(ulong @core, ulong @view, ViemLayoutSnapshotIdentityV1* @expected, ViemLayoutRectV1* @expected_viewport, byte* @output, ulong @capacity, ulong* @out_length);
+    public static extern uint viem_core_view_copy_whitespace_markers(ulong @core, ulong @view, ViemLayoutSnapshotIdentity* @expected, ViemLayoutRect* @expected_viewport, byte* @output, ulong @capacity, ulong* @out_length);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_poll_syntax(ulong @core, byte* @changed);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -2618,23 +2361,23 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_copy_syntax_diagnostics(ulong @core, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_copy_layout_diagnostics(ulong @core, ulong @view, ViemLayoutSnapshotIdentityV1* @expected, byte* @output, ulong @capacity, ulong* @required);
+    public static extern uint viem_core_view_copy_layout_diagnostics(ulong @core, ulong @view, ViemLayoutSnapshotIdentity* @expected, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_copy_syntax_style_names(ulong @core, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_read_file(ulong @core, ulong @view, ulong @document_id, ulong @revision, uint @source, ulong @after_offset, byte* @bytes, ulong @length, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_read_file(ulong @core, ulong @view, ulong @document_id, ulong @revision, uint @source, ulong @after_offset, byte* @bytes, ulong @length, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_execute_command_line(ulong @core, ulong @view, byte* @text, ulong @length, ViemCommandTurnContextV2* @context, ViemCoreOutcomeV1* @out_outcome, ulong* @out_effects);
+    public static extern uint viem_core_view_execute_command_line(ulong @core, ulong @view, byte* @text, ulong @length, ViemCommandTurnContext* @context, ViemCoreOutcome* @out_outcome, ulong* @out_effects);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_fire_autocmd(ulong @core, ulong @view, byte* @event, ulong @event_length, byte* @matched, ulong @matched_length, ViemCommandTurnContextV2* @context, ViemCoreOutcomeV1* @out_outcome, ulong* @out_effects);
+    public static extern uint viem_core_view_fire_autocmd(ulong @core, ulong @view, byte* @event, ulong @event_length, byte* @matched, ulong @matched_length, ViemCommandTurnContext* @context, ViemCoreOutcome* @out_outcome, ulong* @out_effects);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_resume_script(ulong @core, ulong @view, ulong @token, uint @success, ViemCommandTurnContextV2* @context, ViemCoreOutcomeV1* @out_outcome, ulong* @out_effects);
+    public static extern uint viem_core_view_resume_script(ulong @core, ulong @view, ulong @token, uint @success, ViemCommandTurnContext* @context, ViemCoreOutcome* @out_outcome, ulong* @out_effects);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_take_startup_effects(ulong @core, ulong @view, ViemCoreOutcomeV1* @out_outcome, ulong* @out_effects);
+    public static extern uint viem_core_view_take_startup_effects(ulong @core, ulong @view, ViemCoreOutcome* @out_outcome, ulong* @out_effects);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_set_theme_names(byte* @names, ulong @length);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_toggle_checkbox(ulong @core, ulong @view, ViemLayoutSnapshotIdentityV1* @expected, ulong @paragraph_id, ViemCoreOutcomeV1* @out_outcome);
+    public static extern uint viem_core_view_toggle_checkbox(ulong @core, ulong @view, ViemLayoutSnapshotIdentity* @expected, ulong @paragraph_id, ViemCoreOutcome* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_diff_session_create(ulong @base_core, ulong @new_core, uint @flags, ulong* @out_session);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -2652,13 +2395,13 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_diff_session_sync_scroll(ulong @session, ulong @base_core, ulong @base_view, ulong @new_core, ulong @new_view, uint @from_new, uint* @out_changed);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_diff_session_info(ulong @session, ViemDiffSessionInfoV1* @out_info);
+    public static extern uint viem_diff_session_info(ulong @session, ViemDiffSessionInfo* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_diff_session_navigate(ulong @session, ulong @base_core, ulong @base_view, ulong @new_core, ulong @new_view, uint @direction, ViemDiffNavigationV1* @out_navigation);
+    public static extern uint viem_diff_session_navigate(ulong @session, ulong @base_core, ulong @base_view, ulong @new_core, ulong @new_view, uint @direction, ViemDiffNavigation* @out_navigation);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_diff_line_colors(ViemRgbaV1* @out_added, ViemRgbaV1* @out_removed);
+    public static extern uint viem_diff_line_colors(ViemRgba* @out_added, ViemRgba* @out_removed);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_diff_session_scrollbar_marks(ulong @session, ulong @core, ulong @view, uint @is_new, ViemDiffScrollbarMarkV1* @marks, ulong @capacity, ulong* @out_count, float* @out_extent);
+    public static extern uint viem_diff_session_scrollbar_marks(ulong @session, ulong @core, ulong @view, uint @is_new, ViemDiffScrollbarMark* @marks, ulong @capacity, ulong* @out_count, float* @out_extent);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_set_modifiable(ulong @core, uint @modifiable);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -2674,21 +2417,21 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_diff_cancellation_release(ulong @cancellation);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_diff_load_base(ViemDiffBaseRequestV1* @request, ulong* @out_result);
+    public static extern uint viem_diff_load_base(ViemDiffBaseRequest* @request, ulong* @out_result);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_diff_list_files(ViemDiffBaseRequestV1* @request, ulong* @out_result);
+    public static extern uint viem_diff_list_files(ViemDiffBaseRequest* @request, ulong* @out_result);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_diff_query_commits(ViemDiffBaseRequestV1* @request, ulong* @out_result);
+    public static extern uint viem_diff_query_commits(ViemDiffBaseRequest* @request, ulong* @out_result);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_diff_list_branches(ViemDiffBaseRequestV1* @request, ulong* @out_result);
+    public static extern uint viem_diff_list_branches(ViemDiffBaseRequest* @request, ulong* @out_result);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_diff_result_info(ulong @result, ViemDiffResultInfoV1* @out_info);
+    public static extern uint viem_diff_result_info(ulong @result, ViemDiffResultInfo* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_diff_result_copy_bytes(ulong @result, byte* @output, ulong @output_capacity, ulong* @out_required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_diff_result_copy_message(ulong @result, byte* @output, ulong @output_capacity, ulong* @out_required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_diff_result_copy_item(ulong @result, ulong @index, ViemDiffListItemV1* @out_item, byte* @text, ulong @text_capacity, ulong* @out_required);
+    public static extern uint viem_diff_result_copy_item(ulong @result, ulong @index, ViemDiffListItem* @out_item, byte* @text, ulong @text_capacity, ulong* @out_required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_diff_result_release(ulong @result);
 }

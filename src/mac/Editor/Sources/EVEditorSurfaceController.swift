@@ -62,8 +62,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private(set) var commandOutputDeadline: TimeInterval?
     private var commandOutputTimer: Timer?
     private(set) var visualSelection: EVVisualSelectionExport?
-    private(set) var viewPresentation = ViemViewPresentationV1()
-    private(set) var viewportState = ViemViewportStateV1()
+    private(set) var viewPresentation = ViemViewPresentation()
+    private(set) var viewportState = ViemViewportState()
     /// Diff mode refreshes this side's scrollbar marks after each verified
     /// frame, since layout can refine the heights they are measured in.
     weak var liveDiffSession: EVCoreDiffSession?
@@ -71,7 +71,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     /// Diff mode opens the collapsed context whose divider borders this hard
     /// line when it is clicked; returns whether a run opened.
     var diffOpenCollapsedContext: ((UInt64) -> Bool)?
-    private(set) var documentState = ViemDocumentStateV1()
+    private(set) var documentState = ViemDocumentState()
     private(set) var presentationRefreshCount: UInt64 = 0
     private var isRefreshingPresentation = false
     /// Changes only when the immutable text drawing inputs or viewport change.
@@ -310,8 +310,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         commandLine = nil
         substituteConfirmationPrompt = nil
         visualSelection = nil
-        viewportState = ViemViewportStateV1()
-        documentState = ViemDocumentStateV1()
+        viewportState = ViemViewportState()
+        documentState = ViemDocumentState()
     }
 
     private var speculativeExtentRefresh: DispatchWorkItem?
@@ -504,7 +504,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 let sameLayout = layoutSnapshot?.info.identity.isSameLayout(as: nextLayoutSnapshot.info.identity) == true
                 let sameFormatted = formattedSnapshot?.info.identity.isSameSnapshot(as: nextFormattedSnapshot.info.identity) == true
                 let sameComposition = compositionOverlay?.info.identity.isSameOverlay(
-                    as: nextCompositionOverlay?.info.identity ?? ViemCompositionOverlayIdentityV1()) == true
+                    as: nextCompositionOverlay?.info.identity ?? ViemCompositionOverlayIdentity()) == true
                 let hasRetainedText = nextCompositionOverlay != nil ? !compositionTextSlices.isEmpty : !layoutTextSlices.isEmpty
                 let reuseText = sameLayout && hasRetainedText && (nextCompositionOverlay != nil
                     ? sameComposition : sameFormatted && compositionOverlay == nil)
@@ -594,7 +594,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 || layoutSnapshot?.info.viewport_height != nextLayoutSnapshot?.info.viewport_height
             if imageViewportChanged { imageViewportID += 1 }
             let immutableInputsChanged = layoutSnapshot?.info.identity.isSameLayout(
-                as: nextLayoutSnapshot?.info.identity ?? ViemLayoutSnapshotIdentityV1()) != true
+                as: nextLayoutSnapshot?.info.identity ?? ViemLayoutSnapshotIdentity()) != true
                 || viewportState.left != nextViewport.left || viewportState.top != nextViewport.top
                 || layoutSnapshot?.info.viewport_width != nextLayoutSnapshot?.info.viewport_width
                 || layoutSnapshot?.info.viewport_height != nextLayoutSnapshot?.info.viewport_height
@@ -791,7 +791,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     /// source revision alone updates the retained snapshot silently: editing a
     /// style may patch source while leaving the logical selection unchanged.
     /// Old offsets are never reused as positions in that new revision.
-    private func selectionPresentationChanged(_ next: ViemViewPresentationV1, viewID: ViemViewId,
+    private func selectionPresentationChanged(_ next: ViemViewPresentation, viewID: ViemViewId,
                                               characterContextGeneration: UInt64) -> Bool {
         guard let previousViewID = selectionPresentationViewID else { return false }
         let previous = viewPresentation
@@ -1354,7 +1354,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         return result.count == mapped.count ? result : nil
     }
 
-    func formattedPointInfo(atUTF8Offset offset: Int) -> ViemFormattedPointInfoV1? {
+    func formattedPointInfo(atUTF8Offset offset: Int) -> ViemFormattedPointInfo? {
         guard let snapshot = formattedSnapshot,
               offset >= 0,
               offset <= formattedUTF8Length,
@@ -1427,7 +1427,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 nativeCopyRepresentations = try EVClipboardFragment.decode(json).representations(json: json)
             }
             defer { nativeCopyRepresentations = nil }
-            let outcome: ViemCoreOutcomeV1
+            let outcome: ViemCoreOutcome
             if cut {
                 _ = try self.sendCommandCharacter("\"", session: session)
                 _ = try self.sendCommandCharacter("+", session: session)
@@ -1511,12 +1511,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             // mutation is bound to the current logical selection, independent
             // of viewport/layout coverage.
             let value = try session.semanticStylePresentation(style)
-            guard value.struct_size
-                    >= UInt32(MemoryLayout<ViemSemanticStylePresentationV1>.size),
-                  value.style == style,
-                  value.flags & UInt32(VIEM_SEMANTIC_STYLE_HAS_ACTIVE_RANGE | VIEM_SEMANTIC_STYLE_TYPING_CONTEXT) != 0,
-                  value.selection.struct_size
-                    >= UInt32(MemoryLayout<ViemLogicalSelectionIdentityV1>.size)
+            guard value.style == style,
+                  value.flags & UInt32(VIEM_SEMANTIC_STYLE_HAS_ACTIVE_RANGE | VIEM_SEMANTIC_STYLE_TYPING_CONTEXT) != 0
             else {
                 backend.configuration.scriptOptions.beep()
                 return
@@ -1586,7 +1582,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private func sendCommandCharacter(
         _ character: Character,
         session: EVCoreViewSession
-    ) throws -> ViemCoreOutcomeV1 {
+    ) throws -> ViemCoreOutcome {
         // Native menu actions are commands even when ordinary typed characters
         // replace a Select-mode range. This also keeps synthesized viw working
         // when selectmode includes cmd.

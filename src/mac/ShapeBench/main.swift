@@ -66,8 +66,8 @@ nonisolated(unsafe) private var shapeRequests = 0
 nonisolated(unsafe) private var shapeSeconds = 0.0
 
 private func countingShape(
-    _ context: UnsafeMutableRawPointer?, _ requests: UnsafePointer<ViemShapeRequestV1>?, _ count: UInt64,
-    _ responses: UnsafeMutablePointer<ViemShapeResponseV1>?, _ capacity: UInt64
+    _ context: UnsafeMutableRawPointer?, _ requests: UnsafePointer<ViemShapeRequest>?, _ count: UInt64,
+    _ responses: UnsafeMutablePointer<ViemShapeResponse>?, _ capacity: UInt64
 ) -> UInt32 {
     shapeCalls += 1
     shapeRequests += Int(count)
@@ -93,7 +93,7 @@ struct ResponseDigest {
         add(slice.length)
         if let data = slice.data { for byte in UnsafeBufferPointer(start: data, count: Int(slice.length)) { add(byte) } }
     }
-    mutating func add(_ response: ViemShapeResponseV1) {
+    mutating func add(_ response: ViemShapeResponse) {
         add(response.text_start); add(response.text_end); add(response.cluster_count)
         add(response.default_metrics.ascent); add(response.default_metrics.descent); add(response.default_metrics.leading)
         for index in 0..<Int(response.cluster_count) {
@@ -124,7 +124,7 @@ struct ResponseDigest {
 nonisolated(unsafe) private var digest = ResponseDigest()
 nonisolated(unsafe) private var digestsHandles = true
 
-private func counted(_ provider: CoreTextMeasurementProvider) -> ViemTextMeasurementProviderV1 {
+private func counted(_ provider: CoreTextMeasurementProvider) -> ViemTextMeasurementProvider {
     var table = provider.makeProviderTable()
     forwardedShape = table.shape_batch
     table.shape_batch = countingShape
@@ -150,28 +150,23 @@ private func summary(_ samples: [Double]) -> String {
 private func resetCounters() { shapeCalls = 0; shapeRequests = 0; shapeSeconds = 0 }
 
 private func sendKey(_ core: UInt64, _ view: UInt64, _ scalar: Unicode.Scalar, kind: UInt32 = UInt32(VIEM_KEY_CHARACTER)) {
-    var input = ViemKeyInputV1()
-    input.struct_size = UInt32(MemoryLayout<ViemKeyInputV1>.size)
+    var input = ViemKeyInput()
     input.kind = kind
     input.codepoint = kind == UInt32(VIEM_KEY_CHARACTER) ? scalar.value : 0
-    var context = ViemCommandTurnContextV2()
-    context.struct_size = UInt32(MemoryLayout<ViemCommandTurnContextV2>.size)
-    var outcome = ViemCoreOutcomeV1()
-    outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+    var context = ViemCommandTurnContext()
+    var outcome = ViemCoreOutcome()
     var effects: ViemEffectBatchHandle = 0
-    check(viem_core_view_send_key_with_host_context_v2(core, view, &input, &context, &outcome, &effects), "send key")
+    check(viem_core_view_send_key_with_host_context(core, view, &input, &context, &outcome, &effects), "send key")
     if effects != 0 { _ = viem_effect_batch_release(effects) }
 }
 
 private func sendText(_ core: UInt64, _ view: UInt64, _ text: String) {
-    var context = ViemCommandTurnContextV2()
-    context.struct_size = UInt32(MemoryLayout<ViemCommandTurnContextV2>.size)
-    var outcome = ViemCoreOutcomeV1()
-    outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+    var context = ViemCommandTurnContext()
+    var outcome = ViemCoreOutcome()
     var effects: ViemEffectBatchHandle = 0
     let bytes = Array(text.utf8)
     let status = bytes.withUnsafeBufferPointer {
-        viem_core_view_send_text_with_host_context_v2(core, view, $0.baseAddress, UInt64($0.count), &context, &outcome, &effects)
+        viem_core_view_send_text_with_host_context(core, view, $0.baseAddress, UInt64($0.count), &context, &outcome, &effects)
     }
     check(status, "send text")
     if effects != 0 { _ = viem_effect_batch_release(effects) }
@@ -200,14 +195,12 @@ private func liveMiB() -> Double {
 /// A view laid out completely, as background pre-rendering leaves it.
 private func addPrerenderedView(_ core: UInt64, provider: CoreTextMeasurementProvider) -> UInt64 {
     var table = counted(provider)
-    var viewOptions = ViemViewOptionsV1()
-    viewOptions.struct_size = UInt32(MemoryLayout<ViemViewOptionsV1>.size)
+    var viewOptions = ViemViewOptions()
     viewOptions.execution_context = UInt32(VIEM_LAYOUT_EXECUTION_FRONTEND_MAIN)
     viewOptions.width = 900; viewOptions.height = 700
     viewOptions.padding_top = 20; viewOptions.padding_left = 40; viewOptions.padding_bottom = 20; viewOptions.padding_right = 40
     var view: UInt64 = 0
-    var outcome = ViemCoreOutcomeV1()
-    outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+    var outcome = ViemCoreOutcome()
     check(viem_core_view_add(core, &viewOptions, &table, &view, &outcome), "add view")
     while true {
         var request: UInt64 = 0
@@ -242,7 +235,6 @@ if let memory = options.memory {
     var opened: [(core: UInt64, views: [(UInt64, CoreTextMeasurementProvider)])] = []
     for documentIndex in 0..<memory.documents {
         var documentOptions = ViemDocumentOptions()
-        documentOptions.struct_size = UInt32(MemoryLayout<ViemDocumentOptions>.size)
         documentOptions.encoding = UInt32(VIEM_ENCODING_UTF8)
         documentOptions.format = UInt32(VIEM_FORMAT_MARKDOWN)
         var core: UInt64 = 0, revision: UInt64 = 0
@@ -280,7 +272,6 @@ if let memory = options.memory {
 
 for iteration in 0..<options.iterations {
     var documentOptions = ViemDocumentOptions()
-    documentOptions.struct_size = UInt32(MemoryLayout<ViemDocumentOptions>.size)
     documentOptions.encoding = UInt32(VIEM_ENCODING_UTF8)
     documentOptions.format = UInt32(VIEM_FORMAT_MARKDOWN)
     var core: UInt64 = 0, revision: UInt64 = 0
@@ -289,14 +280,12 @@ for iteration in 0..<options.iterations {
 
     let provider = CoreTextMeasurementProvider()
     var table = counted(provider)
-    var viewOptions = ViemViewOptionsV1()
-    viewOptions.struct_size = UInt32(MemoryLayout<ViemViewOptionsV1>.size)
+    var viewOptions = ViemViewOptions()
     viewOptions.execution_context = UInt32(VIEM_LAYOUT_EXECUTION_FRONTEND_MAIN)
     viewOptions.width = 900; viewOptions.height = 700
     viewOptions.padding_top = 20; viewOptions.padding_left = 40; viewOptions.padding_bottom = 20; viewOptions.padding_right = 40
     var view: UInt64 = 0
-    var outcome = ViemCoreOutcomeV1()
-    outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+    var outcome = ViemCoreOutcome()
     resetCounters()
     var start = CFAbsoluteTimeGetCurrent()
     check(viem_core_view_add(core, &viewOptions, &table, &view, &outcome), "add view")

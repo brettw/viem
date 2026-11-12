@@ -195,8 +195,7 @@ extension EVCoreDocumentBackend {
         guard range.lowerBound >= 0, range.upperBound >= range.lowerBound else {
             throw EVCoreFrontendError.invalidHostEffect
         }
-        var request = ViemFormattedUtf8RangeV1()
-        request.struct_size = UInt32(MemoryLayout<ViemFormattedUtf8RangeV1>.size)
+        var request = ViemFormattedUtf8Range()
         request.identity = snapshot.info.identity
         request.utf8_start = UInt64(range.lowerBound)
         request.utf8_end = UInt64(range.upperBound)

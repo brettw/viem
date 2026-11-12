@@ -67,7 +67,7 @@ internal sealed partial class StyleWindow
         }
     }
 
-    private void EditLinkedProperty(uint operation, uint property, ViemStyleEditValueV1 value, ViemStyleEditGroupV1? group = null)
+    private void EditLinkedProperty(uint operation, uint property, ViemStyleEditValue value, ViemStyleEditGroup? group = null)
     {
         uint[] properties = blockLock.IsChecked == true
             ? BlockRows.FirstOrDefault(row => row.Properties.Contains(property)).Properties ?? [property] : [property];

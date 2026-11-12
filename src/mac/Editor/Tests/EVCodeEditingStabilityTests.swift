@@ -81,7 +81,7 @@ final class EVCodeEditingStabilityTests: XCTestCase {
     }
 
     private struct CaretState {
-        let row: ViemVisualRowV1
+        let row: ViemVisualRow
         let screenBaseline: Float
     }
 
@@ -149,7 +149,7 @@ final class EVCodeEditingStabilityTests: XCTestCase {
         XCTAssertNil(fixture.surface.commandOutput, fixture.surface.statusBarState.message, file: file, line: line)
     }
 
-    private func commentSize(in row: ViemVisualRowV1, fixture: Fixture) throws -> CGFloat {
+    private func commentSize(in row: ViemVisualRow, fixture: Fixture) throws -> CGFloat {
         let layout = try XCTUnwrap(fixture.surface.layoutSnapshot)
         let cluster = try XCTUnwrap(layout.clusters.last {
             $0.row_index == row.row_index && $0.text_start < row.text_end

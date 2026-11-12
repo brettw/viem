@@ -44,13 +44,13 @@ internal static class VisibleWhitespaceStyle
     internal static StyleSheet Append(StyleSheet source, JsonObject style)
     {
         var strings = source.Strings.ToList(); var items = source.Items.ToList();
-        ViemStyleStringRefV1 Text(string text) {
+        ViemStyleStringRef Text(string text) {
             var bytes = Encoding.UTF8.GetBytes(text);
-            var reference = new ViemStyleStringRefV1 { offset = (ulong)strings.Count, length = (ulong)bytes.Length };
+            var reference = new ViemStyleStringRef { offset = (ulong)strings.Count, length = (ulong)bytes.Length };
             strings.AddRange(bytes); return reference;
         }
         var basis = source.Styles.First(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
-        var properties = new Dictionary<uint, ViemStylePropertyV1>();
+        var properties = new Dictionary<uint, ViemStyleProperty>();
         foreach (var (property, field, kind) in Fields)
         {
             var inherited = basis.Properties.GetValueOrDefault(property);

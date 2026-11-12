@@ -8,9 +8,8 @@ fn code_core(text: &str, storage: &mut PaintTestProviderStorage, seed: u64) -> (
     (register_core(core).unwrap(), view)
 }
 
-fn request(kind: u32, path: &str) -> ViemDiffBaseRequestV1 {
-    ViemDiffBaseRequestV1 {
-        struct_size: VIEM_DIFF_BASE_REQUEST_V1_SIZE,
+fn request(kind: u32, path: &str) -> ViemDiffBaseRequest {
+    ViemDiffBaseRequest {
         kind,
         file_path: ViemUtf8Slice { data: path.as_ptr(), length: path.len() as u64 },
         revision: ViemUtf8Slice::default(),
@@ -22,8 +21,8 @@ fn request(kind: u32, path: &str) -> ViemDiffBaseRequestV1 {
     }
 }
 
-fn info(result: ViemDiffResultHandle) -> ViemDiffResultInfoV1 {
-    let mut info = ViemDiffResultInfoV1 { struct_size: VIEM_DIFF_RESULT_INFO_V1_SIZE, ..Default::default() };
+fn info(result: ViemDiffResultHandle) -> ViemDiffResultInfo {
+    let mut info = ViemDiffResultInfo { ..Default::default() };
     assert_eq!(unsafe { viem_diff_result_info(result, &mut info) }, ViemStatus::Ok);
     info
 }
@@ -52,7 +51,7 @@ fn sessions_sync_both_views_and_map_lines_through_the_abi() {
         let mut sync = 9;
         assert_eq!(viem_diff_session_sync(session, base, base_view.0, new, new_view.0, &mut sync), ViemStatus::Ok);
         assert_eq!(sync, VIEM_DIFF_SYNC_UNCHANGED);
-        let mut summary = ViemDiffSessionInfoV1 { struct_size: VIEM_DIFF_SESSION_INFO_V1_SIZE, ..Default::default() };
+        let mut summary = ViemDiffSessionInfo { ..Default::default() };
         assert_eq!(viem_diff_session_info(session, &mut summary), ViemStatus::Ok);
         assert_eq!((summary.hunk_count, summary.base_line_count, summary.new_line_count), (1, 4, 3));
         assert_eq!(summary.flags, VIEM_DIFF_SESSION_ALIGNED);
@@ -100,7 +99,7 @@ fn file_bases_return_owned_results_including_missing_files() {
         assert_eq!(viem_diff_result_release(result), ViemStatus::Ok);
         assert_eq!(viem_diff_list_files(&request(VIEM_DIFF_BASE_LAST_SAVED, &path), &mut result), ViemStatus::Ok);
         assert_eq!(info(result).item_count, 1);
-        let mut item = ViemDiffListItemV1 { struct_size: VIEM_DIFF_LIST_ITEM_V1_SIZE, ..Default::default() };
+        let mut item = ViemDiffListItem { ..Default::default() };
         let mut required = 0;
         let mut text = vec![0u8; 4096];
         assert_eq!(viem_diff_result_copy_item(result, 0, &mut item, text.as_mut_ptr(), text.len() as u64, &mut required), ViemStatus::Ok);
@@ -168,7 +167,7 @@ fn navigation_and_scrollbar_marks_cross_the_abi() {
     let mut session = 0;
     unsafe {
         assert_eq!(viem_diff_session_create(base, new, VIEM_DIFF_SESSION_ALIGNED, &mut session), ViemStatus::Ok);
-        let mut navigation = ViemDiffNavigationV1 { struct_size: VIEM_DIFF_NAVIGATION_V1_SIZE, ..Default::default() };
+        let mut navigation = ViemDiffNavigation { ..Default::default() };
         assert_eq!(viem_diff_session_navigate(session, base, base_view.0, new, new_view.0, 7, &mut navigation),
             ViemStatus::InvalidArgument);
         assert_eq!(viem_diff_session_navigate(session, base, base_view.0, new, new_view.0,
@@ -180,7 +179,7 @@ fn navigation_and_scrollbar_marks_cross_the_abi() {
             ViemStatus::BufferTooSmall);
         assert_eq!(count, 1);
         assert!(extent > 0.0);
-        let mut marks = vec![ViemDiffScrollbarMarkV1::default(); count as usize];
+        let mut marks = vec![ViemDiffScrollbarMark::default(); count as usize];
         assert_eq!(viem_diff_session_scrollbar_marks(session, new, new_view.0, 1, marks.as_mut_ptr(), count, &mut count, &mut extent),
             ViemStatus::Ok);
         assert_eq!(marks[0].flags, VIEM_DIFF_MARK_ADDED);

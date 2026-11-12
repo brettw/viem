@@ -2,7 +2,7 @@ import CViemCore
 import Foundation
 
 struct EVCompletionExport {
-    let info: ViemCompletionInfoV1
+    let info: ViemCompletionInfo
     let items: [String]
 
     var isActive: Bool { info.flags & UInt32(VIEM_COMPLETION_ACTIVE) != 0 }
@@ -15,15 +15,14 @@ struct EVCompletionExport {
 
 extension EVCoreViewSession {
     func completionExport() throws -> EVCompletionExport {
-        var info = ViemCompletionInfoV1()
-        info.struct_size = UInt32(MemoryLayout<ViemCompletionInfoV1>.size)
+        var info = ViemCompletionInfo()
         try checkedCompletion(viem_core_view_completion_info(document.core, viewID, &info), operation: "Read word completion")
         guard let count = Int(exactly: info.item_count),
               let length = Int(exactly: info.utf8_length),
               info.selected_index == -1 || (info.selected_index >= 0 && UInt64(info.selected_index) < info.item_count)
         else { throw EVCoreFrontendError.core(operation: "Read word completion", status: UInt32(VIEM_STATUS_LENGTH_OVERFLOW)) }
         if count == 0, length == 0 { return EVCompletionExport(info: info, items: []) }
-        var records = Array(repeating: ViemCompletionItemV1(), count: count)
+        var records = Array(repeating: ViemCompletionItem(), count: count)
         var bytes = Array(repeating: UInt8(0), count: length)
         var copiedCount: UInt64 = 0
         try records.withUnsafeMutableBufferPointer { buffer in

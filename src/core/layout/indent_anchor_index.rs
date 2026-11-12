@@ -103,6 +103,7 @@ impl Summary for Minima {
 
 impl Item for Block {
     type Summary = Minima;
+    type Tag = ();
 
     fn summary(&self) -> Minima {
         let mut summary = Minima { lines: self.columns.len(), blocks: 1, ..Minima::default() };

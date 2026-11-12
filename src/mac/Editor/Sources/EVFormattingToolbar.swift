@@ -32,7 +32,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   let insertImage = NSButton()
   private(set) var tablePicker: EVTablePickerController?
   private(set) var menuTablePicker: EVTablePickerController?
-  private var pickerSelection: ViemLogicalSelectionIdentityV1?
+  private var pickerSelection: ViemLogicalSelectionIdentity?
   private let controlsViewport = NSView()
   private let row = NSStackView()
   private let characterGroup = NSStackView()

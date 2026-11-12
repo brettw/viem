@@ -44,14 +44,14 @@ internal sealed record DiffBase(uint Kind, string Argument = "", string ShortHas
 // Blocking Git and filesystem requests own their inputs and result for the worker's lifetime.
 internal static unsafe class DiffSources
 {
-    private delegate uint Request(ViemDiffBaseRequestV1* request, ulong* result);
+    private delegate uint Request(ViemDiffBaseRequest* request, ulong* result);
 
     private static T Read<T>(DiffBase basis, string path, string? scope, string[] unsaved, CancellationToken token,
-        Request run, Func<ulong, ViemDiffResultInfoV1, T> read)
+        Request run, Func<ulong, ViemDiffResultInfo, T> read)
     {
         token.ThrowIfCancellationRequested();
         using var arena = new NativeArena();
-        var request = New<ViemDiffBaseRequestV1>();
+        var request = new ViemDiffBaseRequest();
         request.kind = basis.Kind;
         request.file_path = arena.Utf8(basis.Kind == VIEM_DIFF_BASE_FILE ? basis.Argument : path);
         request.scope_path = arena.Utf8(scope ?? "");
@@ -69,7 +69,7 @@ internal static unsafe class DiffSources
             try {
                 token.ThrowIfCancellationRequested();
                 ulong resultHandle = result;
-                var info = New<ViemDiffResultInfoV1>();
+                var info = new ViemDiffResultInfo();
                 Check(viem_diff_result_info(result, &info), "Read diff result");
                 if (info.result != VIEM_DIFF_RESULT_OK)
                     throw new IOException(Encoding.UTF8.GetString(Copy((p, n, r) => viem_diff_result_copy_message(resultHandle, p, n, r))));
@@ -96,11 +96,11 @@ internal static unsafe class DiffSources
                     row.GetProperty("hash").GetString()!, row.GetProperty("short").GetString()!, row.GetProperty("title").GetString()!)).ToArray();
             });
 
-    private static DiffFile[] Items(ulong result, ViemDiffResultInfoV1 info)
+    private static DiffFile[] Items(ulong result, ViemDiffResultInfo info)
     {
         var files = new DiffFile[checked((int)info.item_count)];
         for (int index = 0; index < files.Length; ++index) {
-            var item = New<ViemDiffListItemV1>();
+            var item = new ViemDiffListItem();
             ulong length = 0;
             uint status = viem_diff_result_copy_item(result, (ulong)index, &item, null, 0, &length);
             if (status != VIEM_STATUS_BUFFER_TOO_SMALL) Check(status, "Read diff file");

@@ -151,7 +151,7 @@ internal sealed partial class StyleWindow
         CoreView? owner = null;
         StyleDefinition? target = null;
         object? gesture = null;
-        ViemStyleEditGroupV1? group = null;
+        ViemStyleEditGroup? group = null;
 #if DEBUG
         int received = 0, ignored = 0, flushed = 0, rejected = 0, transferred = 0;
 #endif

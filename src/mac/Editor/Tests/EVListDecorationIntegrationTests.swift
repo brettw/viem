@@ -192,11 +192,11 @@ final class EVListDecorationIntegrationTests: XCTestCase {
         let session = try XCTUnwrap(surface.session)
         let snapshot = try session.layoutExport()
         var identity = snapshot.info.identity
-        var info = ViemLayoutDecorationsInfoV1()
+        var info = ViemLayoutDecorationsInfo()
         XCTAssertEqual(viem_core_view_copy_layout_decorations(backend.core, session.viewID, &identity,
                          nil, 0, nil, 0, &info), UInt32(VIEM_STATUS_BUFFER_TOO_SMALL))
         XCTAssertGreaterThan(info.decoration_count, 0)
-        var sentinel = ViemLayoutDecorationV1()
+        var sentinel = ViemLayoutDecoration()
         sentinel.x = -1234
         XCTAssertEqual(viem_core_view_copy_layout_decorations(backend.core, session.viewID, &identity,
                          &sentinel, 1, nil, 0, &info), UInt32(VIEM_STATUS_BUFFER_TOO_SMALL))

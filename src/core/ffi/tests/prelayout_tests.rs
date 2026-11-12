@@ -1,16 +1,14 @@
 use super::*;
 use crate::ffi::*;
 
-fn table(storage: &mut PaintTestProviderStorage) -> ViemTextMeasurementProviderV1 {
-    ViemTextMeasurementProviderV1 {
-        struct_size: VIEM_TEXT_MEASUREMENT_PROVIDER_V1_SIZE,
+fn table(storage: &mut PaintTestProviderStorage) -> ViemTextMeasurementProvider {
+    ViemTextMeasurementProvider {
         abi_version: VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION,
         context: storage as *mut _ as *mut c_void,
         measurement_environment_id: 501,
         threading: VIEM_PROVIDER_THREADING_ANY_WORKER,
         has_render_run_policy: 1, render_run_owner: 601,
-        render_run_threading: VIEM_RENDER_THREADING_ANY, reserved: 0,
-        metrics_generation: Some(paint_test_metrics_generation),
+        render_run_threading: VIEM_RENDER_THREADING_ANY, metrics_generation: Some(paint_test_metrics_generation),
         shape_batch: Some(paint_test_shape_batch),
         retain_render_runs: Some(paint_test_retain_render_runs),
         release_render_runs: Some(paint_test_release_render_runs),

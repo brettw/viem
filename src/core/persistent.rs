@@ -21,14 +21,41 @@ impl Summary for usize {
     }
 }
 
-pub(crate) trait Item {
+pub(crate) trait Item: Sized {
     type Summary: Summary;
+    /// A lazy adjustment of whole subtrees, or `()` for a tree without any.
+    type Tag: Tag<Self>;
     fn summary(&self) -> Self::Summary;
 }
 
+/// An adjustment an owner applies to a whole subtree in constant time with
+/// [`Tree::tagged`]. It reaches the items only when a later split, join or
+/// update copies their path. Until then [`Node::tag`] reports it, and
+/// read-only access ([`Tree::find`], [`Tree::iter`], [`Node::view`]) shows the
+/// items and child summaries as they were before it.
+pub(crate) trait Tag<T: Item>: Clone {
+    /// Combine with an adjustment made after this one.
+    fn then(&mut self, later: &Self);
+    fn item(&self, item: &T) -> T;
+    fn summary(&self, summary: &mut T::Summary);
+}
+
+impl<T: Item> Tag<T> for () {
+    fn then(&mut self, _later: &Self) {}
+
+    fn item(&self, _item: &T) -> T {
+        unreachable!("a tree without lazy adjustments never tags a subtree")
+    }
+
+    fn summary(&self, _summary: &mut T::Summary) {}
+}
+
 pub(crate) struct Node<T: Item> {
+    /// Includes this node's own pending adjustment.
     summary: T::Summary,
     height: u8,
+    /// Not yet applied to this branch's children.
+    tag: Option<T::Tag>,
     kind: Kind<T>,
 }
 
@@ -44,9 +71,54 @@ pub(crate) enum View<'a, T: Item> {
     Branch(&'a Arc<Node<T>>, &'a Arc<Node<T>>),
 }
 
+impl<T: Item + std::fmt::Debug> std::fmt::Debug for Node<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.kind {
+            Kind::Leaf(item) => item.fmt(formatter),
+            Kind::Branch(left, right) => formatter.debug_list().entry(left).entry(right).finish(),
+        }
+    }
+}
+
 impl<T: Item> Node<T> {
     pub(crate) fn summary(&self) -> &T::Summary {
         &self.summary
+    }
+
+    pub(crate) fn height(&self) -> u8 {
+        self.height
+    }
+
+    /// The adjustment pending on this branch's children.
+    pub(crate) fn tag(&self) -> Option<&T::Tag> {
+        self.tag.as_ref()
+    }
+
+    fn tagged(node: &Arc<Self>, tag: &T::Tag, work: &mut Work) -> Arc<Self> {
+        match &node.kind {
+            Kind::Leaf(item) => Self::leaf(tag.item(item), work),
+            Kind::Branch(left, right) => {
+                work.created += 1;
+                let mut summary = node.summary.clone();
+                tag.summary(&mut summary);
+                let mut pending = node.tag.clone();
+                match &mut pending {
+                    Some(pending) => pending.then(tag),
+                    None => pending = Some(tag.clone()),
+                }
+                Arc::new(Self {
+                    summary,
+                    height: node.height,
+                    tag: pending,
+                    kind: Kind::Branch(left.clone(), right.clone()),
+                })
+            }
+        }
+    }
+
+    /// A one-item tree node an owner builds itself, for [`Tree::balanced`].
+    pub(crate) fn new_leaf(item: T) -> Arc<Self> {
+        Self::leaf(item, &mut Work::default())
     }
 
     pub(crate) fn view(&self) -> View<'_, T> {
@@ -58,7 +130,7 @@ impl<T: Item> Node<T> {
 
     fn leaf(item: T, work: &mut Work) -> Arc<Self> {
         work.created += 1;
-        Arc::new(Self { summary: item.summary(), height: 1, kind: Kind::Leaf(item) })
+        Arc::new(Self { summary: item.summary(), height: 1, tag: None, kind: Kind::Leaf(item) })
     }
 
     fn branch(left: Arc<Self>, right: Arc<Self>, work: &mut Work) -> Arc<Self> {
@@ -68,14 +140,19 @@ impl<T: Item> Node<T> {
         Arc::new(Self {
             summary,
             height: left.height.max(right.height) + 1,
+            tag: None,
             kind: Kind::Branch(left, right),
         })
     }
 
-    fn children(&self) -> (&Arc<Self>, &Arc<Self>) {
-        match &self.kind {
-            Kind::Branch(left, right) => (left, right),
-            Kind::Leaf(_) => unreachable!("a leaf is never the taller side of a join"),
+    /// This branch's children with its pending adjustment applied to them.
+    fn children(&self, work: &mut Work) -> (Arc<Self>, Arc<Self>) {
+        match (&self.kind, &self.tag) {
+            (Kind::Branch(left, right), None) => (left.clone(), right.clone()),
+            (Kind::Branch(left, right), Some(tag)) => {
+                (Self::tagged(left, tag, work), Self::tagged(right, tag, work))
+            }
+            (Kind::Leaf(_), _) => unreachable!("a leaf is never the taller side of a join"),
         }
     }
 }
@@ -186,6 +263,28 @@ impl<T: Item> Tree<T> {
         Self { root: (!leaves.is_empty()).then(|| balanced(&leaves, work)) }
     }
 
+    /// A balanced tree over leaf nodes the owner already built.
+    pub(crate) fn balanced(leaves: &[Arc<Node<T>>], work: &mut Work) -> Self {
+        fn balanced<T: Item>(leaves: &[Arc<Node<T>>], work: &mut Work) -> Arc<Node<T>> {
+            match leaves {
+                [leaf] => leaf.clone(),
+                _ => {
+                    let (left, right) = leaves.split_at(leaves.len() / 2);
+                    Node::branch(balanced(left, work), balanced(right, work), work)
+                }
+            }
+        }
+        Self { root: (!leaves.is_empty()).then(|| balanced(leaves, work)) }
+    }
+
+    pub(crate) fn from_root(root: Option<Arc<Node<T>>>) -> Self {
+        Self { root }
+    }
+
+    pub(crate) fn into_root(self) -> Option<Arc<Node<T>>> {
+        self.root
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.root.is_none()
     }
@@ -213,6 +312,11 @@ impl<T: Item> Tree<T> {
             Some(root) => measure(&root.summary),
             None => measure(&T::Summary::default()),
         }
+    }
+
+    /// Apply `tag` to every item, in constant time.
+    pub(crate) fn tagged(&self, tag: &T::Tag, work: &mut Work) -> Self {
+        Self { root: self.root.as_ref().map(|root| Node::tagged(root, tag, work)) }
     }
 
     pub(crate) fn concat(&self, right: &Self, work: &mut Work) -> Self {
@@ -268,7 +372,9 @@ impl<T: Item> Tree<T> {
                         (Some(Node::leaf(left, work)), Some(Node::leaf(right, work)))
                     }
                 },
-                Kind::Branch(left, right) => match seek.side(&left.summary) {
+                Kind::Branch(..) => {
+                    let (left, right) = &node.children(work);
+                    match seek.side(&left.summary) {
                     Side::Boundary => (Some(left.clone()), Some(right.clone())),
                     Side::Left => {
                         let (before, after) = split(left, seek, leaf, work);
@@ -279,7 +385,8 @@ impl<T: Item> Tree<T> {
                         let (before, after) = split(right, seek, leaf, work);
                         (concat(Some(left.clone()), before, work), after)
                     }
-                },
+                    }
+                }
             }
         }
         let Some(root) = &self.root else { return (Self::new(), Self::new()) };
@@ -333,18 +440,82 @@ impl<T: Item> Tree<T> {
             work.visited += 1;
             match &node.kind {
                 Kind::Leaf(item) => Node::leaf(replace(item, seek), work),
-                Kind::Branch(left, right) => match seek.side(&left.summary) {
-                    Side::Left => {
-                        Node::branch(update(left, seek, replace, work), right.clone(), work)
+                Kind::Branch(..) => {
+                    let (left, right) = &node.children(work);
+                    match seek.side(&left.summary) {
+                        Side::Left => {
+                            Node::branch(update(left, seek, replace, work), right.clone(), work)
+                        }
+                        Side::Boundary | Side::Right => {
+                            seek.advance(&left.summary);
+                            Node::branch(left.clone(), update(right, seek, replace, work), work)
+                        }
                     }
-                    Side::Boundary | Side::Right => {
-                        seek.advance(&left.summary);
-                        Node::branch(left.clone(), update(right, seek, replace, work), work)
-                    }
-                },
+                }
             }
         }
         Self { root: self.root.as_ref().map(|root| update(root, seek, replace, work)) }
+    }
+
+    /// This tree, sharing with `previous` each subtree that equals the one in
+    /// the same place there. Subtrees correspond while `alike` accepts their
+    /// summaries. For unequal items `share` may return the new item rebuilt
+    /// around storage of the previous one; it must keep the item's summary.
+    pub(crate) fn reusing(
+        &self,
+        previous: &Self,
+        alike: impl Fn(&T::Summary, &T::Summary) -> bool + Copy,
+        share: impl Fn(&T, &T) -> Option<T> + Copy,
+    ) -> Self
+    where
+        T: PartialEq,
+        T::Tag: PartialEq,
+    {
+        fn reuse<T: Item + PartialEq>(
+            new: &Arc<Node<T>>,
+            old: &Arc<Node<T>>,
+            alike: impl Fn(&T::Summary, &T::Summary) -> bool + Copy,
+            share: impl Fn(&T, &T) -> Option<T> + Copy,
+        ) -> Arc<Node<T>>
+        where
+            T::Tag: PartialEq,
+        {
+            if Arc::ptr_eq(new, old) {
+                return old.clone();
+            }
+            match (&new.kind, &old.kind) {
+                (Kind::Leaf(item), Kind::Leaf(before)) if item == before => old.clone(),
+                (Kind::Leaf(item), Kind::Leaf(before)) => {
+                    share(item, before).map_or_else(|| new.clone(), Node::new_leaf)
+                }
+                (Kind::Branch(left, right), Kind::Branch(old_left, old_right))
+                    if alike(&left.summary, &old_left.summary)
+                        && alike(&right.summary, &old_right.summary) =>
+                {
+                    let shared = (reuse(left, old_left, alike, share), reuse(right, old_right, alike, share));
+                    if new.tag == old.tag
+                        && Arc::ptr_eq(&shared.0, old_left)
+                        && Arc::ptr_eq(&shared.1, old_right)
+                    {
+                        old.clone()
+                    } else if Arc::ptr_eq(&shared.0, left) && Arc::ptr_eq(&shared.1, right) {
+                        new.clone()
+                    } else {
+                        Arc::new(Node {
+                            summary: new.summary.clone(),
+                            height: new.height,
+                            tag: new.tag.clone(),
+                            kind: Kind::Branch(shared.0, shared.1),
+                        })
+                    }
+                }
+                _ => new.clone(),
+            }
+        }
+        match (&self.root, &previous.root) {
+            (Some(new), Some(old)) => Self { root: Some(reuse(new, old, alike, share)) },
+            _ => self.clone(),
+        }
     }
 
     pub(crate) fn first(&self) -> Option<&T> {
@@ -399,6 +570,9 @@ impl<T: Item> Tree<T> {
                     let (left_height, right_height) = (check(left)?, check(right)?);
                     let mut summary = left.summary.clone();
                     summary.add(&right.summary);
+                    if let Some(tag) = &node.tag {
+                        tag.summary(&mut summary);
+                    }
                     (left_height.abs_diff(right_height) <= 1
                         && node.height == left_height.max(right_height) + 1
                         && node.summary == summary)
@@ -443,11 +617,11 @@ fn concat<T: Item>(left: Link<T>, right: Link<T>, work: &mut Work) -> Link<T> {
 fn join<T: Item>(left: Arc<Node<T>>, right: Arc<Node<T>>, work: &mut Work) -> Arc<Node<T>> {
     work.visited += 1;
     if left.height > right.height + 1 {
-        let (outer, inner) = left.children();
+        let (outer, inner) = left.children(work);
         return balance(outer.clone(), join(inner.clone(), right, work), work);
     }
     if right.height > left.height + 1 {
-        let (inner, outer) = right.children();
+        let (inner, outer) = right.children(work);
         return balance(join(left, inner.clone(), work), outer.clone(), work);
     }
     Node::branch(left, right, work)
@@ -456,11 +630,11 @@ fn join<T: Item>(left: Arc<Node<T>>, right: Arc<Node<T>>, work: &mut Work) -> Ar
 /// Pair two subtrees whose heights differ by at most two, rotating if needed.
 fn balance<T: Item>(left: Arc<Node<T>>, right: Arc<Node<T>>, work: &mut Work) -> Arc<Node<T>> {
     if left.height > right.height + 1 {
-        let (outer, inner) = left.children();
+        let (outer, inner) = left.children(work);
         if outer.height >= inner.height {
             return Node::branch(outer.clone(), Node::branch(inner.clone(), right, work), work);
         }
-        let (middle_left, middle_right) = inner.children();
+        let (middle_left, middle_right) = inner.children(work);
         return Node::branch(
             Node::branch(outer.clone(), middle_left.clone(), work),
             Node::branch(middle_right.clone(), right, work),
@@ -468,11 +642,11 @@ fn balance<T: Item>(left: Arc<Node<T>>, right: Arc<Node<T>>, work: &mut Work) ->
         );
     }
     if right.height > left.height + 1 {
-        let (inner, outer) = right.children();
+        let (inner, outer) = right.children(work);
         if outer.height >= inner.height {
             return Node::branch(Node::branch(left, inner.clone(), work), outer.clone(), work);
         }
-        let (middle_left, middle_right) = inner.children();
+        let (middle_left, middle_right) = inner.children(work);
         return Node::branch(
             Node::branch(left, middle_left.clone(), work),
             Node::branch(middle_right.clone(), outer.clone(), work),
@@ -504,6 +678,7 @@ mod tests {
 
     impl Item for Run {
         type Summary = Total;
+        type Tag = ();
         fn summary(&self) -> Total {
             Total { runs: 1, length: self.0 }
         }

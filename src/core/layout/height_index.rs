@@ -1,3 +1,4 @@
+use crate::persistent::{Item, Summary, Tag, Tree, View, Work};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -102,7 +103,7 @@ pub enum ViewHeightIndexError {
 /// update does not copy the heights learned while visiting earlier regions.
 #[derive(Clone, Debug)]
 pub struct ViewHeightIndex {
-    root: Link,
+    runs: Tree<HeightRun>,
     estimated_line_height: f64,
     /// The lines whose heights changed since [`Self::take_changes`], while a
     /// consumer tracks them.
@@ -111,7 +112,8 @@ pub struct ViewHeightIndex {
 
 impl PartialEq for ViewHeightIndex {
     fn eq(&self, other: &Self) -> bool {
-        self.root == other.root && self.estimated_line_height == other.estimated_line_height
+        self.estimated_line_height == other.estimated_line_height
+            && (self.runs.ptr_eq(&other.runs) || self.collect_runs() == other.collect_runs())
     }
 }
 
@@ -185,29 +187,19 @@ impl ViewHeightIndex {
     ) -> Result<Self, ViewHeightIndexError> {
         validate_height(estimated_line_height)?;
         checked_height_product(estimated_line_height, hard_line_count)?;
-        let mut result = Self {
-            root: None,
+        Ok(Self {
+            runs: Self::estimate(hard_line_count, estimated_line_height),
             estimated_line_height,
             changes: None,
-        };
-        if hard_line_count > 0 {
-            let run = HeightRun {
-                line_count: hard_line_count,
-                height: estimated_line_height,
-                extent: estimated_line_height,
-                exact: false,
-            };
-            result.root = Some(Node::new(run));
-        }
-        Ok(result)
+        })
     }
 
     pub fn hard_line_count(&self) -> usize {
-        subtree_lines(&self.root)
+        self.runs.measure(|heights| heights.lines)
     }
 
     pub fn is_empty(&self) -> bool {
-        self.root.is_none()
+        self.runs.is_empty()
     }
 
     pub fn estimated_line_height(&self) -> f64 {
@@ -235,30 +227,32 @@ impl ViewHeightIndex {
     pub(crate) fn runs_in(&self, range: Range<usize>) -> Result<Vec<(Range<usize>, f64)>, ViewHeightIndexError> {
         self.validate_range(&range)?;
         let mut runs: Vec<(Range<usize>, f64)> = Vec::new();
-        collect_runs_in(&self.root, 0, &range, &mut runs);
+        if let Some(root) = self.runs.root() {
+            collect_runs_in(root, 0, &range, &mut runs);
+        }
         Ok(runs)
     }
 
     pub fn total_height(&self) -> HeightMeasurement {
         HeightMeasurement {
-            height: subtree_height(&self.root),
-            exact: subtree_exact(&self.root),
+            height: self.runs.measure(|heights| heights.height),
+            exact: self.runs.measure(|heights| heights.exact),
         }
     }
 
     /// Furthest painted or flow edge, including earlier rows that overlap later lines.
     pub(crate) fn total_extent(&self) -> HeightMeasurement {
         HeightMeasurement {
-            height: subtree_extent(&self.root),
-            exact: subtree_exact(&self.root),
+            height: self.runs.measure(|heights| heights.extent),
+            exact: self.runs.measure(|heights| heights.exact),
         }
     }
 
     pub fn statistics(&self) -> ViewHeightIndexStatistics {
         ViewHeightIndexStatistics {
             hard_line_count: self.hard_line_count(),
-            run_count: subtree_runs(&self.root),
-            tree_depth: subtree_depth(&self.root),
+            run_count: self.runs.measure(|heights| heights.runs),
+            tree_depth: usize::from(self.runs.height()),
         }
     }
 
@@ -275,7 +269,7 @@ impl ViewHeightIndex {
                 hard_line_count: count,
             });
         }
-        Ok(measure_range(&self.root, 0, hard_line_end).public())
+        Ok(self.measure_range(0, hard_line_end).public())
     }
 
     /// Height and certainty of an arbitrary ordered half-open hard-line range.
@@ -284,7 +278,7 @@ impl ViewHeightIndex {
         range: Range<usize>,
     ) -> Result<HeightMeasurement, ViewHeightIndexError> {
         self.validate_range(&range)?;
-        Ok(measure_range(&self.root, range.start, range.end).public())
+        Ok(self.measure_range(range.start, range.end).public())
     }
 
     /// Locate the hard line containing `y`. The exact total-height boundary is
@@ -297,69 +291,49 @@ impl ViewHeightIndex {
         if !y.is_finite() || y < 0.0 {
             return Err(ViewHeightIndexError::InvalidVerticalCoordinate);
         }
-        let total = subtree_height(&self.root);
-        if self.root.is_none() || y >= total {
+        let Some(mut node) = self.runs.root().map(Arc::as_ref) else { return Ok(None) };
+        if y >= node.summary().height {
             return Ok(None);
         }
-
-        let mut node = self.root.as_deref();
         let mut remaining_y = y;
         let mut hard_line = 0usize;
         let mut line_top = 0.0;
         let mut prefix_is_exact = true;
         let mut stale = false;
-
-        while let Some(current) = node {
-            stale |= current.stale_descendants;
-            let left_height = subtree_height(&current.left);
-            if remaining_y < left_height {
-                node = current.left.as_deref();
-                continue;
-            }
-
-            remaining_y -= left_height;
-            line_top = checked_height_sum(line_top, left_height)
-                .expect("a prefix cannot exceed the validated total height");
-            hard_line = hard_line
-                .checked_add(subtree_lines(&current.left))
-                .expect("a prefix cannot exceed the validated line count");
-            prefix_is_exact &= subtree_exact(&current.left) && !(stale && left_height > 0.);
-
-            let run_height = current.run.total_height();
-            if remaining_y < run_height {
-                let offset = ((remaining_y / current.run.height).floor() as usize)
-                    .min(current.run.line_count - 1);
-                let offset_height = checked_height_product(current.run.height, offset)
-                    .expect("a run prefix cannot exceed its validated height");
-                hard_line = hard_line
-                    .checked_add(offset)
-                    .expect("a run prefix cannot exceed the validated line count");
-                line_top = checked_height_sum(line_top, offset_height)
-                    .expect("a run prefix cannot exceed the validated total height");
-                if offset > 0 {
-                    prefix_is_exact &= current.run.exact && !stale;
+        loop {
+            stale |= node.tag().is_some();
+            match node.view() {
+                View::Branch(left, right) => {
+                    let before = left.summary();
+                    if remaining_y < before.height {
+                        node = left;
+                        continue;
+                    }
+                    remaining_y -= before.height;
+                    line_top = checked_height_sum(line_top, before.height)
+                        .expect("a prefix cannot exceed the validated total height");
+                    hard_line += before.lines;
+                    prefix_is_exact &= before.exact && !(stale && before.height > 0.);
+                    node = right;
                 }
-                return Ok(Some(HardLineHeightHit {
-                    hard_line,
-                    line_top,
-                    line_height: current.run.height,
-                    prefix_is_exact,
-                    line_is_exact: current.run.exact && !stale,
-                }));
+                View::Leaf(run) => {
+                    let offset = ((remaining_y / run.height).floor() as usize).min(run.line_count - 1);
+                    let offset_height = checked_height_product(run.height, offset)
+                        .expect("a run prefix cannot exceed its validated height");
+                    if offset > 0 {
+                        prefix_is_exact &= run.exact && !stale;
+                    }
+                    return Ok(Some(HardLineHeightHit {
+                        hard_line: hard_line + offset,
+                        line_top: checked_height_sum(line_top, offset_height)
+                            .expect("a run prefix cannot exceed the validated total height"),
+                        line_height: run.height,
+                        prefix_is_exact,
+                        line_is_exact: run.exact && !stale,
+                    }));
+                }
             }
-
-            remaining_y -= run_height;
-            line_top = checked_height_sum(line_top, run_height)
-                .expect("a prefix cannot exceed the validated total height");
-            hard_line = hard_line
-                .checked_add(current.run.line_count)
-                .expect("a prefix cannot exceed the validated line count");
-            prefix_is_exact &= current.run.exact && !stale;
-            node = current.right.as_deref();
         }
-
-        // `y < total` guarantees a result when tree aggregates are sound.
-        unreachable!("height aggregates did not contain an in-range coordinate")
     }
 
     /// Earliest flow band whose retained painted extent reaches this y. The
@@ -371,32 +345,34 @@ impl ViewHeightIndex {
         if !y.is_finite() || y < 0. {
             return Err(ViewHeightIndexError::InvalidVerticalCoordinate);
         }
-        if y >= subtree_extent(&self.root) {
+        let Some(mut node) = self.runs.root().map(Arc::as_ref) else { return Ok(None) };
+        if y >= node.summary().extent {
             return Ok(None);
         }
-        let (mut tree, mut top, mut first) = (self.root.as_deref(), 0., 0usize);
-        while let Some(node) = tree {
-            if top + subtree_extent(&node.left) > y {
-                tree = node.left.as_deref();
-                continue;
-            }
-            top += subtree_height(&node.left);
-            first += subtree_lines(&node.left);
-            if top + node.run.total_extent() > y {
-                let offset = if y < top + node.run.extent {
-                    0
-                } else {
-                    (((y - top - node.run.extent) / node.run.height).floor() as usize)
-                        .saturating_add(1)
+        let (mut top, mut first) = (0., 0usize);
+        loop {
+            match node.view() {
+                View::Branch(left, right) => {
+                    let before = left.summary();
+                    if top + before.extent > y {
+                        node = left;
+                    } else {
+                        top += before.height;
+                        first += before.lines;
+                        node = right;
+                    }
                 }
-                .min(node.run.line_count - 1);
-                return Ok(Some(first + offset));
+                View::Leaf(run) => {
+                    let offset = if y < top + run.extent {
+                        0
+                    } else {
+                        (((y - top - run.extent) / run.height).floor() as usize).saturating_add(1)
+                    }
+                    .min(run.line_count - 1);
+                    return Ok(Some(first + offset));
+                }
             }
-            top += node.run.total_height();
-            first += node.run.line_count;
-            tree = node.right.as_deref();
         }
-        Ok(None)
     }
 
     /// Mark one hard line exact. This is a constant-size replacement bracketed
@@ -433,12 +409,12 @@ impl ViewHeightIndex {
         let line_count = range.end - range.start;
         let replacement_height = checked_height_product(height, line_count)?;
         self.validate_replacement(&range, line_count, replacement_height)?;
-        let replacement = Some(Node::new(HeightRun {
+        let replacement = Self::one(HeightRun {
             line_count,
             height,
             extent: height,
             exact: true,
-        }));
+        });
         self.replace_range(range, replacement)
     }
 
@@ -453,7 +429,7 @@ impl ViewHeightIndex {
         }
         let line_count = range.end - range.start;
         self.validate_replacement(&range, line_count, 0.0)?;
-        let replacement = Some(Node::new(HeightRun { line_count, height: 0.0, extent: 0.0, exact: true }));
+        let replacement = Self::one(HeightRun { line_count, height: 0.0, extent: 0.0, exact: true });
         self.replace_range(range, replacement)
     }
 
@@ -506,8 +482,7 @@ impl ViewHeightIndex {
             }
         }
         self.validate_replacement(&range, measurements.len(), replacement_height)?;
-        let replacement = self.tree_from_runs(runs);
-        self.replace_range(range, replacement)
+        self.replace_range(range, tree_from_runs(runs))
     }
 
     /// Estimate lines not yet measured at `height`: lines still at the old
@@ -520,8 +495,7 @@ impl ViewHeightIndex {
         if old.to_bits() == height.to_bits() {
             return Ok(());
         }
-        let mut runs: Vec<HeightRun> = Vec::with_capacity(subtree_runs(&self.root));
-        collect_runs(&self.root, false, &mut runs);
+        let runs = self.collect_runs();
         let mut total = 0.0;
         let mut merged: Vec<HeightRun> = Vec::with_capacity(runs.len());
         for mut run in runs {
@@ -536,7 +510,7 @@ impl ViewHeightIndex {
                 _ => merged.push(run),
             }
         }
-        self.root = balanced_tree_from_runs(&merged);
+        self.runs = tree_from_runs(merged);
         self.estimated_line_height = height;
         if let Some(changes) = self.changes.as_mut() {
             *changes = HeightChanges::everything();
@@ -555,7 +529,7 @@ impl ViewHeightIndex {
             return Ok(());
         }
         self.validate_replacement(&range, 1, height)?;
-        self.replace_range(range, Some(Node::new(HeightRun { line_count: 1, height, extent: height, exact: false })))
+        self.replace_range(range, Self::one(HeightRun { line_count: 1, height, extent: height, exact: false }))
     }
 
     /// Grow or shrink one line by `delta`, keeping the rest of its height, as
@@ -568,7 +542,7 @@ impl ViewHeightIndex {
         let height = if height > 0.0 { height } else { self.estimated_line_height };
         validate_height(height)?;
         self.validate_replacement(&range, 1, height)?;
-        self.replace_range(range, Some(Node::new(HeightRun { line_count: 1, height, extent: height, exact: false })))
+        self.replace_range(range, Self::one(HeightRun { line_count: 1, height, extent: height, exact: false }))
     }
 
     /// Revert a range to this index's estimate in O(log n).
@@ -580,12 +554,12 @@ impl ViewHeightIndex {
         let line_count = range.end - range.start;
         let replacement_height = checked_height_product(self.estimated_line_height, line_count)?;
         self.validate_replacement(&range, line_count, replacement_height)?;
-        let replacement = Some(Node::new(HeightRun {
+        let replacement = Self::one(HeightRun {
             line_count,
             height: self.estimated_line_height,
             extent: self.estimated_line_height,
             exact: false,
-        }));
+        });
         self.replace_range(range, replacement)
     }
 
@@ -595,13 +569,13 @@ impl ViewHeightIndex {
     pub(crate) fn invalidate_retaining_estimates(&mut self, range: Range<usize>) -> Result<(), ViewHeightIndexError> {
         self.validate_range(&range)?;
         if range.is_empty() { return Ok(()); }
+        let work = &mut Work::default();
         if range == (0..self.hard_line_count()) {
-            if let Some(root) = self.root.as_mut() { Arc::make_mut(root).mark_estimated(); }
+            self.runs = self.runs.tagged(&Retired, work);
         } else {
-            let (left, rest) = split(self.root.clone(), range.start);
-            let (mut middle, right) = split(rest, range.end - range.start);
-            if let Some(root) = middle.as_mut() { Arc::make_mut(root).mark_estimated(); }
-            self.root = join(join(left, middle), right);
+            let (left, rest) = split(&self.runs, range.start);
+            let (middle, right) = split(&rest, range.end - range.start);
+            self.runs = join(&join(&left, &middle.tagged(&Retired, work)), &right);
         }
         Ok(())
     }
@@ -629,14 +603,7 @@ impl ViewHeightIndex {
         if removed.is_empty() && inserted_hard_lines == 0 {
             return Ok(());
         }
-        let replacement = (inserted_hard_lines > 0).then(|| {
-            Node::new(HeightRun {
-                line_count: inserted_hard_lines,
-                height: self.estimated_line_height,
-                extent: self.estimated_line_height,
-                exact: false,
-            })
-        });
+        let replacement = Self::estimate(inserted_hard_lines, self.estimated_line_height);
         self.replace_range(removed, replacement)
     }
 
@@ -658,8 +625,8 @@ impl ViewHeightIndex {
         replacement_count: usize,
         replacement_height: f64,
     ) -> Result<(), ViewHeightIndexError> {
-        let left = measure_range(&self.root, 0, range.start);
-        let right = measure_range(&self.root, range.end, self.hard_line_count());
+        let left = self.measure_range(0, range.start);
+        let right = self.measure_range(range.end, self.hard_line_count());
         left.line_count
             .checked_add(replacement_count)
             .and_then(|count| count.checked_add(right.line_count))
@@ -673,30 +640,94 @@ impl ViewHeightIndex {
     fn replace_range(
         &mut self,
         range: Range<usize>,
-        replacement: Link,
+        replacement: Tree<HeightRun>,
     ) -> Result<(), ViewHeightIndexError> {
-        let root = self.root.clone();
-        let (left, remainder) = split(root, range.start);
-        let (_, right) = split(remainder, range.end - range.start);
-        let inserted = subtree_lines(&replacement);
-        let joined = join(left, replacement);
-        let next = join(joined, right);
-        if !subtree_extent(&next).is_finite() {
+        let (left, remainder) = split(&self.runs, range.start);
+        let (_, right) = split(&remainder, range.end - range.start);
+        let inserted = replacement.measure(|heights| heights.lines);
+        let next = join(&join(&left, &replacement), &right);
+        if !next.measure(|heights| heights.extent).is_finite() {
             return Err(ViewHeightIndexError::HeightOverflow);
         }
-        self.root = next;
+        self.runs = next;
         if let Some(changes) = self.changes.as_mut() {
             changes.replace(range, inserted);
         }
         Ok(())
     }
 
-    fn tree_from_runs(&mut self, runs: Vec<HeightRun>) -> Link {
-        balanced_tree_from_runs(&runs)
+    fn one(run: HeightRun) -> Tree<HeightRun> {
+        Tree::from_items([run], &mut Work::default())
+    }
+
+    fn estimate(line_count: usize, height: f64) -> Tree<HeightRun> {
+        if line_count == 0 {
+            return Tree::new();
+        }
+        Self::one(HeightRun { line_count, height, extent: height, exact: false })
+    }
+
+    /// Every run in order, with retired certainty applied.
+    fn collect_runs(&self) -> Vec<HeightRun> {
+        fn collect(node: &Node, stale: bool, runs: &mut Vec<HeightRun>) {
+            let stale = stale || node.tag().is_some();
+            match node.view() {
+                View::Leaf(run) => runs.push(HeightRun { exact: run.exact && !stale, ..*run }),
+                View::Branch(left, right) => {
+                    collect(left, stale, runs);
+                    collect(right, stale, runs);
+                }
+            }
+        }
+        let mut runs = Vec::with_capacity(self.runs.measure(|heights| heights.runs));
+        if let Some(root) = self.runs.root() {
+            collect(root, false, &mut runs);
+        }
+        runs
+    }
+
+    fn measure_range(&self, start: usize, end: usize) -> InternalMeasurement {
+        fn measure(node: &Node, start: usize, end: usize, stale: bool) -> InternalMeasurement {
+            let summary = node.summary();
+            if start == 0 && end == summary.lines {
+                return InternalMeasurement {
+                    line_count: summary.lines,
+                    height: summary.height,
+                    exact: summary.exact && !stale,
+                };
+            }
+            let stale = stale || node.tag().is_some();
+            match node.view() {
+                View::Leaf(run) => {
+                    let line_count = end - start;
+                    InternalMeasurement {
+                        line_count,
+                        height: checked_height_product(run.height, line_count)
+                            .expect("a run subset cannot exceed its validated total"),
+                        exact: run.exact && !stale,
+                    }
+                }
+                View::Branch(left, right) => {
+                    let left_lines = left.summary().lines;
+                    let mut result = InternalMeasurement::EMPTY;
+                    if start < left_lines {
+                        result.append(measure(left, start, end.min(left_lines), stale));
+                    }
+                    if end > left_lines {
+                        result.append(measure(right, start.saturating_sub(left_lines), end - left_lines, stale));
+                    }
+                    result
+                }
+            }
+        }
+        match self.runs.root() {
+            Some(root) if start < end => measure(root, start, end, false),
+            _ => InternalMeasurement::EMPTY,
+        }
     }
 }
 
-type Link = Option<Arc<Node>>;
+type Node = crate::persistent::Node<HeightRun>;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct HeightRun {
@@ -723,77 +754,60 @@ impl HeightRun {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-struct Node {
-    run: HeightRun,
-    left: Link,
-    right: Link,
-    subtree_lines: usize,
-    subtree_height: f64,
-    subtree_extent: f64,
-    subtree_exact: bool,
-    stale_descendants: bool,
-    subtree_runs: usize,
-    subtree_depth: usize,
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Heights {
+    lines: usize,
+    height: f64,
+    /// Furthest painted or flow edge, measured from this subtree's top.
+    extent: f64,
+    exact: bool,
+    runs: usize,
 }
 
-impl Node {
-    fn new(run: HeightRun) -> Arc<Self> {
-        Arc::new(Self::leaf(run))
+impl Default for Heights {
+    fn default() -> Self {
+        Self { lines: 0, height: 0.0, extent: 0.0, exact: true, runs: 0 }
+    }
+}
+
+impl Summary for Heights {
+    fn add(&mut self, right: &Self) {
+        self.extent = self.extent.max(self.height + right.extent);
+        self.lines += right.lines;
+        self.height += right.height;
+        self.exact &= right.exact;
+        self.runs += right.runs;
+    }
+}
+
+/// Retires certainty without discarding learned heights or extents.
+#[derive(Clone, Copy, Debug)]
+struct Retired;
+
+impl Tag<HeightRun> for Retired {
+    fn then(&mut self, _later: &Self) {}
+
+    fn item(&self, run: &HeightRun) -> HeightRun {
+        HeightRun { exact: false, ..*run }
     }
 
-    fn leaf(run: HeightRun) -> Self {
-        Self {
-            run,
-            left: None,
-            right: None,
-            subtree_lines: run.line_count,
-            subtree_height: run.total_height(),
-            subtree_extent: run.total_extent(),
-            subtree_exact: run.exact,
-            stale_descendants: false,
-            subtree_runs: 1,
-            subtree_depth: 1,
+    fn summary(&self, summary: &mut Heights) {
+        summary.exact = false;
+    }
+}
+
+impl Item for HeightRun {
+    type Summary = Heights;
+    type Tag = Retired;
+
+    fn summary(&self) -> Heights {
+        Heights {
+            lines: self.line_count,
+            height: self.total_height(),
+            extent: self.total_extent(),
+            exact: self.exact,
+            runs: 1,
         }
-    }
-
-    fn mark_estimated(&mut self) {
-        self.run.exact = false;
-        self.subtree_exact = false;
-        self.stale_descendants = true;
-    }
-
-    fn push_estimated(&mut self) {
-        if !std::mem::take(&mut self.stale_descendants) { return; }
-        for child in [&mut self.left, &mut self.right].into_iter().flatten() {
-            Arc::make_mut(child).mark_estimated();
-        }
-    }
-
-    fn refresh(&mut self) {
-        self.subtree_lines = subtree_lines(&self.left)
-            .checked_add(self.run.line_count)
-            .and_then(|count| count.checked_add(subtree_lines(&self.right)))
-            .expect("public mutation validation prevents line-count overflow");
-        self.subtree_height =
-            checked_height_sum(subtree_height(&self.left), self.run.total_height())
-                .and_then(|height| checked_height_sum(height, subtree_height(&self.right)))
-                .expect("public mutation validation prevents aggregate-height overflow");
-        self.subtree_extent = subtree_extent(&self.left)
-            .max(subtree_height(&self.left) + self.run.total_extent())
-            .max(
-                subtree_height(&self.left) + self.run.total_height() + subtree_extent(&self.right),
-            );
-        self.subtree_exact =
-            !self.stale_descendants && subtree_exact(&self.left) && self.run.exact && subtree_exact(&self.right);
-        self.subtree_runs = subtree_runs(&self.left)
-            .checked_add(1)
-            .and_then(|runs| runs.checked_add(subtree_runs(&self.right)))
-            .expect("run count cannot exceed the validated line count");
-        self.subtree_depth = subtree_depth(&self.left)
-            .max(subtree_depth(&self.right))
-            .checked_add(1)
-            .expect("tree depth cannot exceed the validated line count");
     }
 }
 
@@ -829,330 +843,79 @@ impl InternalMeasurement {
     }
 }
 
-fn subtree_lines(tree: &Link) -> usize {
-    tree.as_ref().map_or(0, |node| node.subtree_lines)
-}
-
-fn subtree_height(tree: &Link) -> f64 {
-    tree.as_ref().map_or(0.0, |node| node.subtree_height)
-}
-
-fn subtree_extent(tree: &Link) -> f64 {
-    tree.as_ref().map_or(0., |node| node.subtree_extent)
-}
-
-fn subtree_exact(tree: &Link) -> bool {
-    tree.as_ref().map_or(true, |node| node.subtree_exact)
-}
-
-fn subtree_runs(tree: &Link) -> usize {
-    tree.as_ref().map_or(0, |node| node.subtree_runs)
-}
-
-fn subtree_depth(tree: &Link) -> usize {
-    tree.as_ref().map_or(0, |node| node.subtree_depth)
-}
-
-/// Append the runs of `link` in order, as estimates below a node whose
-/// descendants were retired (`stale`).
-fn collect_runs(link: &Link, stale: bool, runs: &mut Vec<HeightRun>) {
-    let Some(node) = link else { return };
-    let stale_below = stale || node.stale_descendants;
-    collect_runs(&node.left, stale_below, runs);
-    let mut run = node.run;
-    run.exact &= !stale;
-    runs.push(run);
-    collect_runs(&node.right, stale_below, runs);
-}
-
-/// Append the parts of `link`'s runs inside `range`, where `link` starts at
+/// Append the parts of `node`'s runs inside `range`, where `node` starts at
 /// line `offset`, merging equal neighbours.
-fn collect_runs_in(link: &Link, offset: usize, range: &Range<usize>, runs: &mut Vec<(Range<usize>, f64)>) {
-    let Some(node) = link else { return };
-    let end = offset + node.subtree_lines;
+fn collect_runs_in(node: &Node, offset: usize, range: &Range<usize>, runs: &mut Vec<(Range<usize>, f64)>) {
+    let end = offset + node.summary().lines;
     if end <= range.start || offset >= range.end {
         return;
     }
-    let left_lines = subtree_lines(&node.left);
-    collect_runs_in(&node.left, offset, range, runs);
-    let start = offset + left_lines;
-    let lines = start.max(range.start)..(start + node.run.line_count).min(range.end);
-    if !lines.is_empty() {
-        let height = node.run.height;
-        match runs.last_mut() {
-            Some((last, last_height)) if last.end == lines.start && last_height.to_bits() == height.to_bits() =>
-                last.end = lines.end,
-            _ => runs.push((lines, height)),
+    match node.view() {
+        View::Branch(left, right) => {
+            collect_runs_in(left, offset, range, runs);
+            collect_runs_in(right, offset + left.summary().lines, range, runs);
+        }
+        View::Leaf(run) => {
+            let lines = offset.max(range.start)..end.min(range.end);
+            if lines.is_empty() {
+                return;
+            }
+            match runs.last_mut() {
+                Some((last, last_height)) if last.end == lines.start && last_height.to_bits() == run.height.to_bits() =>
+                    last.end = lines.end,
+                _ => runs.push((lines, run.height)),
+            }
         }
     }
-    collect_runs_in(&node.right, start + node.run.line_count, range, runs);
 }
 
-fn balanced_tree_from_runs(runs: &[HeightRun]) -> Link {
-    if runs.is_empty() {
-        return None;
-    }
-    let middle = runs.len() / 2;
-    let mut root = Node::leaf(runs[middle]);
-    let left_runs = &runs[..middle];
-    let right_runs = &runs[middle + 1..];
-    root.left = balanced_tree_from_runs(left_runs);
-    root.right = balanced_tree_from_runs(right_runs);
-    root.refresh();
-    Some(Arc::new(root))
+fn tree_from_runs(runs: Vec<HeightRun>) -> Tree<HeightRun> {
+    Tree::from_items(runs, &mut Work::default())
 }
 
-fn split(mut tree: Link, at: usize) -> (Link, Link) {
-    let Some(root) = tree.take() else {
-        debug_assert_eq!(at, 0);
-        return (None, None);
-    };
-    // Only the split path is copied when a prior snapshot still owns it.
-    let mut root = Arc::unwrap_or_clone(root);
-    root.push_estimated();
-    debug_assert!(at <= root.subtree_lines);
-    let left_lines = subtree_lines(&root.left);
-    let run_end = left_lines
-        .checked_add(root.run.line_count)
-        .expect("node aggregates validate run boundaries");
-
-    if at < left_lines {
-        let (left, right_of_split) = split(root.left.take(), at);
-        let right = join_with_run(right_of_split, root.run, root.right.take());
-        return (left, right);
-    }
-    if at > run_end {
-        let (left_of_split, right) = split(root.right.take(), at - run_end);
-        let left = join_with_run(root.left.take(), root.run, left_of_split);
-        return (left, right);
-    }
-    if at == left_lines {
-        let left = root.left.take();
-        let right = join_with_run(None, root.run, root.right.take());
-        return (left, right);
-    }
-    if at == run_end {
-        let right = root.right.take();
-        let left = join_with_run(root.left.take(), root.run, None);
-        return (left, right);
-    }
-
-    let left_count = at - left_lines;
-    let right_count = root.run.line_count - left_count;
-    let left_run = HeightRun {
-        line_count: left_count,
-        ..root.run
-    };
-    let right_run = HeightRun {
-        line_count: right_count,
-        ..root.run
-    };
-    (
-        join_with_run(root.left.take(), left_run, None),
-        join_with_run(None, right_run, root.right.take()),
+fn split(tree: &Tree<HeightRun>, at: usize) -> (Tree<HeightRun>, Tree<HeightRun>) {
+    tree.split_at(
+        at,
+        |heights| heights.lines,
+        |run, offset| {
+            (HeightRun { line_count: offset, ..*run }, HeightRun { line_count: run.line_count - offset, ..*run })
+        },
+        &mut Work::default(),
     )
 }
 
-fn join(left: Link, right: Link) -> Link {
-    let can_merge = left
-        .as_ref()
-        .zip(right.as_ref())
-        .is_some_and(|(left, right)| rightmost_run(left).can_merge(leftmost_run(right)));
-    if !can_merge {
-        return concat_raw(left, right);
+/// The first or last run, with retired certainty applied.
+fn edge_run(tree: &Tree<HeightRun>, last: bool) -> Option<HeightRun> {
+    let mut node = tree.root()?.as_ref();
+    let mut stale = false;
+    loop {
+        stale |= node.tag().is_some();
+        match node.view() {
+            View::Leaf(run) => return Some(HeightRun { exact: run.exact && !stale, ..*run }),
+            View::Branch(left, right) => node = if last { right } else { left },
+        }
     }
+}
 
-    let (left, left_run) = pop_last(left.expect("both boundary runs exist"));
-    let (right_run, right) = pop_first(right.expect("both boundary runs exist"));
-    let combined = HeightRun {
-        line_count: left_run
-            .line_count
-            .checked_add(right_run.line_count)
-            .expect("public mutation validation prevents line-count overflow"),
-        height: left_run.height,
-        extent: left_run.extent,
-        exact: left_run.exact,
+/// Concatenate, merging equal runs at the seam so the index stays compact.
+fn join(left: &Tree<HeightRun>, right: &Tree<HeightRun>) -> Tree<HeightRun> {
+    let work = &mut Work::default();
+    let (Some(before), Some(after)) = (edge_run(left, true), edge_run(right, false)) else {
+        return left.concat(right, work);
     };
-    join_with_run(left, combined, right)
-}
-
-fn concat_raw(left: Link, right: Link) -> Link {
-    match (left, right) {
-        (None, tree) | (tree, None) => tree,
-        (Some(left), Some(right)) => {
-            let (left, pivot) = pop_last(left);
-            join_with_run(left, pivot, Some(right))
-        }
+    if !before.can_merge(after) {
+        return left.concat(right, work);
     }
-}
-
-fn join_with_run(left: Link, run: HeightRun, right: Link) -> Link {
-    let left_depth = subtree_depth(&left);
-    let right_depth = subtree_depth(&right);
-    if left_depth > right_depth.saturating_add(1) {
-        let mut root = Arc::unwrap_or_clone(left.expect("a positive depth has a root"));
-        root.push_estimated();
-        root.right = join_with_run(root.right.take(), run, right);
-        return Some(rebalance(root));
-    }
-    if right_depth > left_depth.saturating_add(1) {
-        let mut root = Arc::unwrap_or_clone(right.expect("a positive depth has a root"));
-        root.push_estimated();
-        root.left = join_with_run(left, run, root.left.take());
-        return Some(rebalance(root));
-    }
-
-    let mut root = Node::leaf(run);
-    root.left = left;
-    root.right = right;
-    root.refresh();
-    Some(Arc::new(root))
-}
-
-fn rebalance(mut root: Node) -> Arc<Node> {
-    root.refresh();
-    let left_depth = subtree_depth(&root.left);
-    let right_depth = subtree_depth(&root.right);
-    if left_depth > right_depth.saturating_add(1) {
-        let left = root.left.as_mut().expect("an imbalanced side exists");
-        if subtree_depth(&left.right) > subtree_depth(&left.left) {
-            let child = root.left.take().expect("an imbalanced side exists");
-            root.left = Some(rotate_left(Arc::unwrap_or_clone(child)));
-        }
-        return rotate_right(root);
-    }
-    if right_depth > left_depth.saturating_add(1) {
-        let right = root.right.as_mut().expect("an imbalanced side exists");
-        if subtree_depth(&right.left) > subtree_depth(&right.right) {
-            let child = root.right.take().expect("an imbalanced side exists");
-            root.right = Some(rotate_right(Arc::unwrap_or_clone(child)));
-        }
-        return rotate_left(root);
-    }
-    Arc::new(root)
-}
-
-fn rotate_left(mut root: Node) -> Arc<Node> {
-    root.push_estimated();
-    let pivot = root
-        .right
-        .take()
-        .expect("a left rotation requires a right child");
-    let mut pivot = Arc::unwrap_or_clone(pivot);
-    pivot.push_estimated();
-    root.right = pivot.left.take();
-    root.refresh();
-    pivot.left = Some(Arc::new(root));
-    pivot.refresh();
-    Arc::new(pivot)
-}
-
-fn rotate_right(mut root: Node) -> Arc<Node> {
-    root.push_estimated();
-    let pivot = root
-        .left
-        .take()
-        .expect("a right rotation requires a left child");
-    let mut pivot = Arc::unwrap_or_clone(pivot);
-    pivot.push_estimated();
-    root.left = pivot.right.take();
-    root.refresh();
-    pivot.right = Some(Arc::new(root));
-    pivot.refresh();
-    Arc::new(pivot)
-}
-
-fn pop_last(root: Arc<Node>) -> (Link, HeightRun) {
-    let mut root = Arc::unwrap_or_clone(root);
-    root.push_estimated();
-    if let Some(right) = root.right.take() {
-        let (new_right, run) = pop_last(right);
-        root.right = new_right;
-        (Some(rebalance(root)), run)
-    } else {
-        let left = root.left.take();
-        (left, root.run)
-    }
-}
-
-fn pop_first(root: Arc<Node>) -> (HeightRun, Link) {
-    let mut root = Arc::unwrap_or_clone(root);
-    root.push_estimated();
-    if let Some(left) = root.left.take() {
-        let (run, new_left) = pop_first(left);
-        root.left = new_left;
-        (run, Some(rebalance(root)))
-    } else {
-        let right = root.right.take();
-        (root.run, right)
-    }
-}
-
-fn leftmost_run(mut node: &Node) -> HeightRun {
-    let mut stale = node.stale_descendants;
-    while let Some(left) = node.left.as_deref() {
-        node = left;
-        stale |= node.stale_descendants;
-    }
-    HeightRun { exact: node.run.exact && !stale, ..node.run }
-}
-
-fn rightmost_run(mut node: &Node) -> HeightRun {
-    let mut stale = node.stale_descendants;
-    while let Some(right) = node.right.as_deref() {
-        node = right;
-        stale |= node.stale_descendants;
-    }
-    HeightRun { exact: node.run.exact && !stale, ..node.run }
-}
-
-fn measure_range(tree: &Link, start: usize, end: usize) -> InternalMeasurement {
-    if start == end {
-        return InternalMeasurement::EMPTY;
-    }
-    let node = tree
-        .as_ref()
-        .expect("a nonempty validated range has a containing node");
-    debug_assert!(start <= end && end <= node.subtree_lines);
-    if start == 0 && end == node.subtree_lines {
-        return InternalMeasurement {
-            line_count: node.subtree_lines,
-            height: node.subtree_height,
-            exact: node.subtree_exact,
-        };
-    }
-
-    let left_lines = subtree_lines(&node.left);
-    let run_end = left_lines
-        .checked_add(node.run.line_count)
-        .expect("node aggregates validate run boundaries");
-    let mut result = InternalMeasurement::EMPTY;
-
-    if start < left_lines {
-        result.append(measure_range(&node.left, start, end.min(left_lines)));
-    }
-
-    let run_start_in_query = start.max(left_lines);
-    let run_end_in_query = end.min(run_end);
-    if run_start_in_query < run_end_in_query {
-        let line_count = run_end_in_query - run_start_in_query;
-        result.append(InternalMeasurement {
-            line_count,
-            height: checked_height_product(node.run.height, line_count)
-                .expect("a run subset cannot exceed its validated total"),
-            exact: node.run.exact,
-        });
-    }
-
-    if end > run_end {
-        result.append(measure_range(
-            &node.right,
-            start.saturating_sub(run_end),
-            end - run_end,
-        ));
-    }
-    result.exact &= !node.stale_descendants;
-    result
+    let (left, _) = split(left, left.measure(|heights| heights.lines) - before.line_count);
+    let (_, right) = split(right, after.line_count);
+    let combined = HeightRun {
+        line_count: before
+            .line_count
+            .checked_add(after.line_count)
+            .expect("public mutation validation prevents line-count overflow"),
+        ..before
+    };
+    left.concat(&ViewHeightIndex::one(combined), work).concat(&right, work)
 }
 
 fn validate_height(height: f64) -> Result<(), ViewHeightIndexError> {
@@ -1302,8 +1065,12 @@ mod tests {
         assert_eq!(heights.total_extent().height(), before);
         assert!(!heights.total_extent().is_exact());
         assert!(original.total_extent().is_exact());
-        assert!(Arc::ptr_eq(heights.root.as_ref().unwrap().left.as_ref().unwrap(),
-            original.root.as_ref().unwrap().left.as_ref().unwrap()), "global retirement clones only the root");
+        let (View::Branch(retired, _), View::Branch(kept, _)) =
+            (heights.runs.root().unwrap().view(), original.runs.root().unwrap().view())
+        else {
+            panic!("ten thousand distinct runs have a branch root");
+        };
+        assert!(Arc::ptr_eq(retired, kept), "global retirement clones only the root");
         assert!(heights.prefix_height(0).unwrap().is_exact());
         for index in [0, 4_999, 9_999] {
             assert!(!heights.range_height(index..index+1).unwrap().is_exact());
@@ -1332,73 +1099,15 @@ mod tests {
         );
     }
 
-    #[derive(Clone, Copy)]
-    struct CheckedSubtree {
-        lines: usize,
-        height: f64,
-        exact: bool,
-        runs: usize,
-        depth: usize,
-        first: Option<HeightRun>,
-        last: Option<HeightRun>,
-    }
-
-    fn assert_valid_tree(tree: &Link) -> CheckedSubtree {
-        let Some(node) = tree else {
-            return CheckedSubtree {
-                lines: 0,
-                height: 0.0,
-                exact: true,
-                runs: 0,
-                depth: 0,
-                first: None,
-                last: None,
-            };
-        };
-        let left = assert_valid_tree(&node.left);
-        let right = assert_valid_tree(&node.right);
-        assert!(left.depth.abs_diff(right.depth) <= 1, "AVL imbalance");
-        if let Some(run) = left.last {
-            assert!(!run.can_merge(node.run), "adjacent runs were not compacted");
-        }
-        if let Some(run) = right.first {
-            assert!(!node.run.can_merge(run), "adjacent runs were not compacted");
-        }
-
-        let lines = left
-            .lines
-            .checked_add(node.run.line_count)
-            .and_then(|count| count.checked_add(right.lines))
-            .unwrap();
-        let height = checked_height_sum(left.height, node.run.total_height())
-            .and_then(|value| checked_height_sum(value, right.height))
-            .unwrap();
-        let runs = left.runs + 1 + right.runs;
-        let depth = left.depth.max(right.depth) + 1;
-        assert_eq!(node.subtree_lines, lines);
-        assert_eq!(node.subtree_height.to_bits(), height.to_bits());
-        assert_eq!(
-            node.subtree_exact,
-            left.exact && node.run.exact && right.exact
-        );
-        assert_eq!(node.subtree_runs, runs);
-        assert_eq!(node.subtree_depth, depth);
-        CheckedSubtree {
-            lines,
-            height,
-            exact: node.subtree_exact,
-            runs,
-            depth,
-            first: left.first.or(Some(node.run)),
-            last: right.last.or(Some(node.run)),
-        }
-    }
-
     fn assert_valid_index(index: &ViewHeightIndex) {
-        let checked = assert_valid_tree(&index.root);
-        assert_eq!(checked.lines, index.hard_line_count());
-        assert_eq!(checked.runs, index.statistics().run_count());
-        assert_eq!(checked.depth, index.statistics().tree_depth());
+        assert!(index.runs.invariant_holds(), "unbalanced tree or stale aggregate");
+        let runs = index.collect_runs();
+        assert!(
+            runs.windows(2).all(|pair| !pair[0].can_merge(pair[1])),
+            "adjacent runs were not compacted"
+        );
+        assert_eq!(runs.iter().map(|run| run.line_count).sum::<usize>(), index.hard_line_count());
+        assert_eq!(runs.len(), index.statistics().run_count());
     }
 
     #[test]

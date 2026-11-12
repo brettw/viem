@@ -72,11 +72,11 @@ pub unsafe extern "C" fn viem_core_view_has_pending_mapping(
 /// The context and its nested input slices remain readable; writable outputs
 /// are aligned, valid and disjoint from each other and all input regions.
 #[no_mangle]
-pub unsafe extern "C" fn viem_core_view_flush_mapping_with_host_context_v2(
+pub unsafe extern "C" fn viem_core_view_flush_mapping_with_host_context(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    context: *const ViemCommandTurnContextV2,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    context: *const ViemCommandTurnContext,
+    out_outcome: *mut ViemCoreOutcome,
     out_effect_batch: *mut ViemEffectBatchHandle,
 ) -> ViemStatus {
     ffi_boundary(|| {
@@ -161,8 +161,7 @@ mod tests {
 
     #[test]
     fn function_key_transport_checks_number_and_modifier_domain() {
-        let input = ViemKeyInputV1 {
-            struct_size: VIEM_KEY_INPUT_V1_SIZE,
+        let input = ViemKeyInput {
             kind: VIEM_KEY_FUNCTION,
             codepoint: 2,
             modifiers: VIEM_KEY_MODIFIER_CONTROL,
@@ -176,19 +175,19 @@ mod tests {
         );
         for codepoint in [0, 36, u32::MAX] {
             assert_eq!(
-                parse_key(ViemKeyInputV1 { codepoint, ..input }),
+                parse_key(ViemKeyInput { codepoint, ..input }),
                 Err(ViemStatus::InvalidKey)
             );
         }
         assert_eq!(
-            parse_key(ViemKeyInputV1 {
+            parse_key(ViemKeyInput {
                 modifiers: 16,
                 ..input
             }),
             Err(ViemStatus::InvalidArgument)
         );
         assert_eq!(
-            parse_key(ViemKeyInputV1 {
+            parse_key(ViemKeyInput {
                 kind: VIEM_KEY_CHARACTER,
                 codepoint: 65,
                 ..input

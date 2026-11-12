@@ -17,7 +17,7 @@ internal sealed partial class EditorPane
         => Application.Current.Resources.TryGetValue(key, out var value) && value is SolidColorBrush brush
             ? brush.Color : fallback;
 
-    private ViemLayoutDecorationV1? CheckboxAt(Point point)
+    private ViemLayoutDecoration? CheckboxAt(Point point)
     {
         if (snapshot == null || View == null) return null;
         foreach (var item in snapshot.Decorations)

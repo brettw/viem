@@ -121,7 +121,7 @@ internal sealed record ChromeStyle(string Family, float Size, ushort Weight, Fon
         if (Border.Bottom > 0) drawing.FillRectangle(new(bounds.X, Math.Max(bounds.Y, bounds.Bottom - Border.Bottom), bounds.Width, Math.Min(bounds.Height, Border.Bottom)), BottomBorder);
     }
 
-    private static Color ConvertColor(ViemRgbaV1 value)
+    private static Color ConvertColor(ViemRgba value)
     {
         static byte Component(float v) => (byte)Math.Round(Math.Clamp(v, 0, 1) * 255);
         return Color.FromArgb(Component(value.alpha), Component(value.red), Component(value.green), Component(value.blue));

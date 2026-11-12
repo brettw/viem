@@ -17,7 +17,7 @@ internal sealed unsafe partial class DirectWriteProvider
 {
     private sealed record MarkerFont(string Family, FontStretch Stretch, float Size, ushort Weight, FontStyle Slant, float Spacing, string Language, string Features, string Axes = "{}", string Face = "", float BaselineOffset = 0)
     {
-        public static MarkerFont From(ViemResolvedTextStyleV1 style, float scale)
+        public static MarkerFont From(ViemResolvedTextStyle style, float scale)
         {
             string features = "{}";
             if (style.feature_count != 0)
@@ -37,7 +37,7 @@ internal sealed unsafe partial class DirectWriteProvider
 
     // Markers inherit their contributor's font and paint. Only marker ink is
     // fitted into the existing slot; text, row widths and hit testing stay intact.
-    public void DrawWhitespace(CanvasDrawingSession drawing, WhitespaceExport export, LayoutSnapshot snapshot, ViemViewportStateV1 viewport, Func<ulong, Color> foreground, Color fallback)
+    public void DrawWhitespace(CanvasDrawingSession drawing, WhitespaceExport export, LayoutSnapshot snapshot, ViemViewportState viewport, Func<ulong, Color> foreground, Color fallback)
     {
         if (export.Markers.Length == 0) return;
         var style = export.Style;
@@ -52,7 +52,7 @@ internal sealed unsafe partial class DirectWriteProvider
             {
                 if (marker.Width <= 0 || marker.Height <= 0 || !rows.TryGetValue(marker.Row, out var row)) continue;
                 var slot = new Rect(marker.X - viewport.left, marker.Y - viewport.top, marker.Width, marker.Height);
-                var cluster = default(ViemPositionedClusterV1);
+                var cluster = default(ViemPositionedCluster);
                 if (clusters.TryGetValue(marker.Row, out var contributors) && contributors.Length > 0)
                 {
                     int lower = 0, upper = contributors.Length;

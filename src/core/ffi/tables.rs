@@ -25,10 +25,9 @@ pub const VIEM_TABLE_CLEAR_CELL: u32 = 8;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemTableContextV1 {
-    pub struct_size: u32,
+pub struct ViemTableContext {
     pub flags: u32,
-    pub selection: ViemLogicalSelectionIdentityV1,
+    pub selection: ViemLogicalSelectionIdentity,
     pub table_id: u64,
     pub row: u64,
     pub column: u64,
@@ -37,48 +36,38 @@ pub struct ViemTableContextV1 {
     pub row_end: u64,
     pub column_end: u64,
     pub alignment: u32,
-    pub reserved: u32,
 }
-pub const VIEM_TABLE_CONTEXT_V1_SIZE: u32 = size_of::<ViemTableContextV1>() as u32;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct ViemInsertTableV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
-    pub expected_selection: ViemLogicalSelectionIdentityV1,
+pub struct ViemInsertTable {
+    pub expected_selection: ViemLogicalSelectionIdentity,
     pub columns: u32,
     pub body_rows: u32,
 }
-pub const VIEM_INSERT_TABLE_V1_SIZE: u32 = size_of::<ViemInsertTableV1>() as u32;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct ViemTableActionV1 {
-    pub struct_size: u32,
+pub struct ViemTableAction {
     pub action: u32,
-    pub expected: ViemTableContextV1,
+    pub expected: ViemTableContext,
     pub alignment: u32,
-    pub reserved: u32,
 }
-pub const VIEM_TABLE_ACTION_V1_SIZE: u32 = size_of::<ViemTableActionV1>() as u32;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemTableCellV1 {
+pub struct ViemTableCell {
     pub table_id: u64,
     pub row: u64,
     pub column: u64,
     pub cell_id: u64,
     pub text_start: u64,
     pub text_end: u64,
-    pub rect: ViemLayoutRectV1,
-    pub table_rect: ViemLayoutRectV1,
+    pub rect: ViemLayoutRect,
+    pub table_rect: ViemLayoutRect,
     pub alignment: u32,
     pub flags: u32,
 }
-pub const VIEM_TABLE_CELL_V1_SIZE: u32 = size_of::<ViemTableCellV1>() as u32;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemTableSelectionV1 {
-    pub struct_size: u32,
+pub struct ViemTableSelection {
     pub active: u32,
     pub document_id: u64,
     pub document_revision: u64,
@@ -88,7 +77,6 @@ pub struct ViemTableSelectionV1 {
     pub active_row: u64,
     pub active_column: u64,
 }
-pub const VIEM_TABLE_SELECTION_V1_SIZE: u32 = size_of::<ViemTableSelectionV1>() as u32;
 
 fn alignment_to_ffi(value: TableAlignment) -> u32 {
     match value {
@@ -127,13 +115,12 @@ fn context_at(
     core: &Core<CTextMeasurementProvider>,
     view: ViewId,
     offset: usize,
-) -> Result<ViemTableContextV1, ViemStatus> {
+) -> Result<ViemTableContext, ViemStatus> {
     let selection = core.list_selection_identity(view).map_err(core_status)?;
     core.document()
         .text_point(offset)
         .map_err(document_status)?;
-    let mut result = ViemTableContextV1 {
-        struct_size: VIEM_TABLE_CONTEXT_V1_SIZE,
+    let mut result = ViemTableContext {
         selection: logical_selection_identity_to_ffi(&selection)?,
         ..Default::default()
     };
@@ -172,11 +159,11 @@ fn context_at(
 pub unsafe extern "C" fn viem_core_view_table_context(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    output: *mut ViemTableContextV1,
+    output: *mut ViemTableContext,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(output, 1)?;
-        unsafe { output.write(ViemTableContextV1::default()) };
+        unsafe { output.write(ViemTableContext::default()) };
         let result = with_core(handle, |core| {
             let cursor = core
                 .command_state(ViewId(view))
@@ -228,11 +215,11 @@ pub unsafe extern "C" fn viem_core_view_table_context_at(
     document: u64,
     revision: u64,
     offset: u64,
-    output: *mut ViemTableContextV1,
+    output: *mut ViemTableContext,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(output, 1)?;
-        unsafe { output.write(ViemTableContextV1::default()) };
+        unsafe { output.write(ViemTableContext::default()) };
         let result = with_core(handle, |core| {
             if core.document().id().0 != document || core.document().revision().0 != revision {
                 return Err(ViemStatus::StaleRevision);
@@ -253,14 +240,12 @@ pub unsafe extern "C" fn viem_core_view_table_context_at(
 pub unsafe extern "C" fn viem_core_view_insert_table(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemInsertTableV1,
-    output: *mut ViemCoreOutcomeV1,
+    request: *const ViemInsertTable,
+    output: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let request = unsafe { read_core_request(request, output)? };
-        if request.struct_size < VIEM_INSERT_TABLE_V1_SIZE
-            || request.reserved != 0
-            || !(1..=20).contains(&request.columns)
+        if !(1..=20).contains(&request.columns)
             || !(1..=50).contains(&request.body_rows)
         {
             return Err(ViemStatus::InvalidArgument);
@@ -298,16 +283,12 @@ pub unsafe extern "C" fn viem_core_view_insert_table(
 pub unsafe extern "C" fn viem_core_view_table_action(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemTableActionV1,
-    output: *mut ViemCoreOutcomeV1,
+    request: *const ViemTableAction,
+    output: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let request = unsafe { read_core_request(request, output)? };
-        if request.struct_size < VIEM_TABLE_ACTION_V1_SIZE
-            || request.reserved != 0
-            || request.expected.struct_size < VIEM_TABLE_CONTEXT_V1_SIZE
-            || request.expected.reserved != 0
-            || request.expected.flags
+        if request.expected.flags
                 & !(VIEM_TABLE_IN_TABLE
                     | VIEM_TABLE_HEADER
                     | VIEM_TABLE_ROW_SELECTION
@@ -460,8 +441,8 @@ pub unsafe extern "C" fn viem_core_view_table_action(
 pub unsafe extern "C" fn viem_core_view_copy_table_cells(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemLayoutSnapshotIdentityV1,
-    output: *mut ViemTableCellV1,
+    expected: *const ViemLayoutSnapshotIdentity,
+    output: *mut ViemTableCell,
     capacity: u64,
     required: *mut u64,
 ) -> ViemStatus {
@@ -482,7 +463,7 @@ pub unsafe extern "C" fn viem_core_view_copy_table_cells(
                 return Err(ViemStatus::BufferTooSmall);
             }
             let selected = core.table_selection(ViewId(view)).map_err(core_status)?;
-            let rect = |r: crate::layout::LayoutRect| ViemLayoutRectV1 {
+            let rect = |r: crate::layout::LayoutRect| ViemLayoutRect {
                 x: r.x,
                 y: r.y,
                 width: r.width,
@@ -521,7 +502,7 @@ pub unsafe extern "C" fn viem_core_view_copy_table_cells(
                 }) {
                     flags |= VIEM_TABLE_CELL_SELECTED;
                 }
-                export.push(ViemTableCellV1 {
+                export.push(ViemTableCell {
                     table_id: cell.table_id,
                     row: cell.row as u64,
                     column: cell.column as u64,
@@ -547,14 +528,13 @@ pub unsafe extern "C" fn viem_core_view_copy_table_cells(
 pub unsafe extern "C" fn viem_core_view_table_selection(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    output: *mut ViemTableSelectionV1,
+    output: *mut ViemTableSelection,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(output, 1)?;
-        unsafe { output.write(ViemTableSelectionV1::default()) };
+        unsafe { output.write(ViemTableSelection::default()) };
         let value = with_core(handle, |core| {
-            let mut value = ViemTableSelectionV1 {
-                struct_size: VIEM_TABLE_SELECTION_V1_SIZE,
+            let mut value = ViemTableSelection {
                 document_id: core.document().id().0,
                 document_revision: core.document().revision().0,
                 ..Default::default()
@@ -579,12 +559,12 @@ pub unsafe extern "C" fn viem_core_view_table_selection(
 pub unsafe extern "C" fn viem_core_view_select_table_cells(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemTableSelectionV1,
-    output: *mut ViemCoreOutcomeV1,
+    request: *const ViemTableSelection,
+    output: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         let request = unsafe { read_core_request(request, output)? };
-        if request.struct_size < VIEM_TABLE_SELECTION_V1_SIZE || request.active > 1 {
+        if request.active > 1 {
             return Err(ViemStatus::InvalidArgument);
         }
         unsafe { clear_outcome(output)? };
@@ -619,9 +599,9 @@ pub unsafe extern "C" fn viem_core_view_select_table_cells(
 fn checked_table_selection(
     core: &Core<CTextMeasurementProvider>,
     view: ViewId,
-    expected: ViemTableSelectionV1,
+    expected: ViemTableSelection,
 ) -> Result<crate::command::TableSelectionExtent, ViemStatus> {
-    if expected.struct_size < VIEM_TABLE_SELECTION_V1_SIZE || expected.active != 1 {
+    if expected.active != 1 {
         return Err(ViemStatus::InvalidArgument);
     }
     if expected.document_id != core.document().id().0
@@ -652,7 +632,7 @@ fn checked_table_selection(
 pub unsafe extern "C" fn viem_core_view_copy_table_selection_text(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemTableSelectionV1,
+    expected: *const ViemTableSelection,
     output: *mut u8,
     capacity: u64,
     required: *mut u64,
@@ -692,8 +672,8 @@ pub unsafe extern "C" fn viem_core_view_copy_table_selection_text(
 pub unsafe extern "C" fn viem_core_view_copy_table_selection_ranges(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemTableSelectionV1,
-    output: *mut ViemFormattedUtf8RangeV1,
+    expected: *const ViemTableSelection,
+    output: *mut ViemFormattedUtf8Range,
     capacity: u64,
     required: *mut u64,
 ) -> ViemStatus {
@@ -729,9 +709,7 @@ pub unsafe extern "C" fn viem_core_view_copy_table_selection_ranges(
                 for column in selection.columns() {
                     let range = &table.rows[row].cells[column].range;
                     unsafe {
-                        output.add(index).write(ViemFormattedUtf8RangeV1 {
-                            struct_size: VIEM_FORMATTED_UTF8_RANGE_V1_SIZE,
-                            reserved: 0,
+                        output.add(index).write(ViemFormattedUtf8Range {
                             identity,
                             utf8_start: range.start as u64,
                             utf8_end: range.end as u64,

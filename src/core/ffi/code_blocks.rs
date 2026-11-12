@@ -11,7 +11,7 @@ pub unsafe extern "C" fn viem_core_view_set_code_block_language(
     revision: u64,
     offset: u64,
     language: ViemUtf8Slice,
-    output: *mut ViemCoreOutcomeV1,
+    output: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         validate_disjoint_regions(&[

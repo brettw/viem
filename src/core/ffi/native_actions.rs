@@ -40,7 +40,7 @@ pub unsafe extern "C" fn viem_core_view_native_action(
     kind: u32,
     origin: u32,
     return_mode: u32,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut ViemCoreOutcome,
     out_effects: *mut ViemEffectBatchHandle,
 ) -> ViemStatus {
     ffi_boundary(|| {

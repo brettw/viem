@@ -3,7 +3,7 @@ use crate::command::ex_execute::ExFrontendRequest;
 use crate::ffi::{
     viem_core_view_execute_command_line, viem_core_view_fire_autocmd,
     viem_core_view_resume_script, viem_core_view_take_startup_effects,
-    viem_effect_batch_release, ViemClipboardTurnEntryV2, ViemCommandTurnContextV2,
+    viem_effect_batch_release, ViemClipboardTurnEntry, ViemCommandTurnContext,
     VIEM_CLIPBOARD_TARGET_CLIPBOARD, VIEM_CLIPBOARD_TURN_HAS_READ,
     VIEM_COMMAND_STATUS_COMPLETE,
 };
@@ -19,8 +19,8 @@ fn script_continuation_ffi_validates_arguments_without_consuming_pending_work() 
         match request { ExFrontendRequest::ScriptContinuation(token) => Some(token), _ => None }
     }).unwrap();
     let handle = register_core(core).unwrap();
-    let context = ViemCommandTurnContextV2::default();
-    let mut outcome = ViemCoreOutcomeV1::default();
+    let context = ViemCommandTurnContext::default();
+    let mut outcome = ViemCoreOutcome::default();
     let mut effects = 0;
     unsafe {
         for (requested_token, success, expected) in [
@@ -31,7 +31,7 @@ fn script_continuation_ffi_validates_arguments_without_consuming_pending_work() 
             assert_eq!(viem_core_view_resume_script(handle, view.0, requested_token, success,
                 &context, &mut outcome, &mut effects), expected);
         }
-        let aliased = (&mut outcome as *mut ViemCoreOutcomeV1).cast::<u64>();
+        let aliased = (&mut outcome as *mut ViemCoreOutcome).cast::<u64>();
         assert_eq!(viem_core_view_resume_script(handle, view.0, token, 1, &context,
             &mut outcome, aliased), ViemStatus::InvalidArgument);
         assert_eq!(viem_core_view_resume_script(handle, view.0, token, 1, ptr::null(),
@@ -52,8 +52,8 @@ fn script_continuation_ffi_validates_arguments_without_consuming_pending_work() 
 
 #[test]
 fn autocmd_ffi_rejects_invalid_inputs_and_aliased_regions_before_core_access() {
-    let context = ViemCommandTurnContextV2::default();
-    let mut outcome = ViemCoreOutcomeV1::default();
+    let context = ViemCommandTurnContext::default();
+    let mut outcome = ViemCoreOutcome::default();
     let mut effects = 0;
     unsafe {
         for (event, expected) in [
@@ -69,10 +69,10 @@ fn autocmd_ffi_rejects_invalid_inputs_and_aliased_regions_before_core_access() {
             &context, &mut outcome, &mut effects), ViemStatus::NullPointer);
         assert_eq!(viem_core_view_fire_autocmd(0, 0, event.as_ptr(), event.len() as u64,
             [0xff].as_ptr(), 1, &context, &mut outcome, &mut effects), ViemStatus::InvalidUtf8);
-        let aliased = (&mut outcome as *mut ViemCoreOutcomeV1).cast::<u64>();
+        let aliased = (&mut outcome as *mut ViemCoreOutcome).cast::<u64>();
         assert_eq!(viem_core_view_fire_autocmd(0, 0, event.as_ptr(), event.len() as u64,
             ptr::null(), 0, &context, &mut outcome, aliased), ViemStatus::InvalidArgument);
-        let context_alias = (&outcome as *const ViemCoreOutcomeV1).cast::<ViemCommandTurnContextV2>();
+        let context_alias = (&outcome as *const ViemCoreOutcome).cast::<ViemCommandTurnContext>();
         assert_eq!(viem_core_view_fire_autocmd(0, 0, event.as_ptr(), event.len() as u64,
             ptr::null(), 0, context_alias, &mut outcome, &mut effects), ViemStatus::InvalidArgument);
     }
@@ -85,16 +85,16 @@ fn native_autocmd_receives_the_command_turn_clipboard_snapshot() {
     let view = core.add_view(paint_test_provider(&mut storage, 602, 702), 240.0, 80.0);
     let handle = register_core(core).unwrap();
     let clipboard = b"clip";
-    let entry = ViemClipboardTurnEntryV2 {
+    let entry = ViemClipboardTurnEntry {
         target: VIEM_CLIPBOARD_TARGET_CLIPBOARD,
         flags: VIEM_CLIPBOARD_TURN_HAS_READ,
         generation: 1,
         plain_text: ViemUtf8Slice { data: clipboard.as_ptr(), length: clipboard.len() as u64 },
-        ..ViemClipboardTurnEntryV2::default()
+        ..ViemClipboardTurnEntry::default()
     };
-    let context = ViemCommandTurnContextV2 { clipboards: &entry, clipboard_count: 1,
-        ..ViemCommandTurnContextV2::default() };
-    let mut outcome = ViemCoreOutcomeV1::default();
+    let context = ViemCommandTurnContext { clipboards: &entry, clipboard_count: 1,
+        ..ViemCommandTurnContext::default() };
+    let mut outcome = ViemCoreOutcome::default();
     let mut effects = 0;
     unsafe {
         let command = b"autocmd BufWritePre * normal! \"+P";

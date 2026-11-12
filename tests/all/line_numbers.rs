@@ -726,7 +726,7 @@ fn gutter_abi_validates_revision_viewport_capacity_and_pointer_aliasing() {
         viem_core_view_set_number(fixture.handle, fixture.view, 1),
         ViemStatus::Ok
     );
-    let mut info = ViemLineNumberSnapshotInfoV1::default();
+    let mut info = ViemLineNumberSnapshotInfo::default();
     assert_eq!(
         unsafe {
             viem_core_view_line_number_snapshot_info(fixture.handle, fixture.view, &mut info)
@@ -752,7 +752,7 @@ fn gutter_abi_validates_revision_viewport_capacity_and_pointer_aliasing() {
         ViemStatus::BufferTooSmall
     );
     assert_eq!(count, info.region_count);
-    let sentinel = ViemLineNumberRegionV1 {
+    let sentinel = ViemLineNumberRegion {
         source_line: 99,
         ..Default::default()
     };
@@ -847,13 +847,13 @@ fn gutter_pointer_abi_rejects_stale_or_invalid_geometry_without_changing_selecti
     use viem_core::ffi::*;
     let fixture = super::ffi_core_surface::table_ffi_fixture(b"one\ntwo\nthree", VIEM_FORMAT_PLAIN_TEXT);
     viem_core_view_set_number(fixture.handle, fixture.view, 1);
-    let mut info = ViemLineNumberSnapshotInfoV1::default();
+    let mut info = ViemLineNumberSnapshotInfo::default();
     assert_eq!(unsafe { viem_core_view_line_number_snapshot_info(fixture.handle, fixture.view, &mut info) }, ViemStatus::Ok);
-    let mut regions = vec![ViemLineNumberRegionV1::default(); info.region_count as usize];
+    let mut regions = vec![ViemLineNumberRegion::default(); info.region_count as usize];
     let mut copied = 0;
     assert_eq!(unsafe { viem_core_view_copy_line_number_regions(fixture.handle, fixture.view, &info.identity, &info.viewport,
         regions.as_mut_ptr(), regions.len() as u64, &mut copied) }, ViemStatus::Ok);
-    let mut outcome = ViemCoreOutcomeV1::default();
+    let mut outcome = ViemCoreOutcome::default();
     let y = (regions[1].top + regions[1].bottom) / 2.;
     let mut hit = 0;
     assert_eq!(unsafe { viem_core_view_row_selection_hit_test(fixture.handle, fixture.view, &info.identity, -100., y, &mut hit) }, ViemStatus::Ok);
@@ -873,7 +873,7 @@ fn gutter_pointer_abi_rejects_stale_or_invalid_geometry_without_changing_selecti
     assert_eq!(unsafe { viem_core_view_row_selection_hit_test(fixture.handle, fixture.view, &aliased, -100., y, out_alias) }, ViemStatus::InvalidArgument);
     assert_eq!(aliased, info.identity);
     assert_eq!(unsafe { viem_core_view_select_pointer_row(fixture.handle, fixture.view, &info.identity, y, 0, &mut outcome) }, ViemStatus::Ok);
-    let mut selected = ViemLogicalSelectionIdentityV1::default();
+    let mut selected = ViemLogicalSelectionIdentity::default();
     assert_eq!(unsafe { viem_core_view_list_selection(fixture.handle, fixture.view, &mut selected) }, ViemStatus::Ok);
     assert_eq!((selected.text_start, selected.text_end), (4, 8));
     let mut stale = info.identity; stale.layout_revision += 1;
@@ -883,7 +883,7 @@ fn gutter_pointer_abi_rejects_stale_or_invalid_geometry_without_changing_selecti
         (info.identity, y, 2, ViemStatus::InvalidArgument),
     ] {
         assert_eq!(unsafe { viem_core_view_select_pointer_row(fixture.handle, fixture.view, &expected, y, extend, &mut outcome) }, status);
-        let mut after = ViemLogicalSelectionIdentityV1::default();
+        let mut after = ViemLogicalSelectionIdentity::default();
         assert_eq!(unsafe { viem_core_view_list_selection(fixture.handle, fixture.view, &mut after) }, ViemStatus::Ok);
         assert_eq!(after, selected);
     }

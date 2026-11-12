@@ -107,8 +107,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private bool active;
     public bool IsActive { get => active; set { active = value; if (!value) { pointerClickCount = 0; DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false); } Canvas.Invalidate(); } }
     private LayoutSnapshot? snapshot;
-    private ViemViewPresentationV1 presentation;
-    private ViemViewportStateV1 viewport;
+    private ViemViewPresentation presentation;
+    private ViemViewportState viewport;
     private Rect caretRect;
     private const double MinimumDragDistance = 4;
     private Point? caretHoverLocation, caretHoverSuppressedAt;
@@ -259,7 +259,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         using var startup = Diagnostics.StartupPerformance.Measure("editor.attach");
         InvalidateDrawingCache();
         if (View != null) { ResetImagePreviews(); View.Provider.ResetDevice(Canvas.Device); View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); return; }
-        var padding = new ViemLayoutInsetsV1 { top = preferences.Margin("top"), left = preferences.Margin("left"), bottom = preferences.Margin("bottom"), right = preferences.Margin("right") };
+        var padding = new ViemLayoutInsets { top = preferences.Margin("top"), left = preferences.Margin("left"), bottom = preferences.Margin("bottom"), right = preferences.Margin("right") };
         using (Diagnostics.StartupPerformance.Measure("editor.createView")) View = new(Document, Canvas.Device, DispatcherQueue, (float)Canvas.ActualWidth, (float)Canvas.ActualHeight, padding);
         if (preferences.ZoomScale != 1) View.Zoom(preferences.ZoomScale);
         View.SetHostRegister(35, AlternatePath ?? "");
@@ -275,7 +275,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     internal CoreView? PrepareReplacement(CoreDocument document, bool newFile = false)
     {
         if (View == null) return null;
-        var padding = new ViemLayoutInsetsV1 { top = preferences.Margin("top"), left = preferences.Margin("left"), bottom = preferences.Margin("bottom"), right = preferences.Margin("right") };
+        var padding = new ViemLayoutInsets { top = preferences.Margin("top"), left = preferences.Margin("left"), bottom = preferences.Margin("bottom"), right = preferences.Margin("right") };
         var prepared = new CoreView(document, Canvas.Device, DispatcherQueue, (float)Canvas.ActualWidth, (float)Canvas.ActualHeight, padding);
         try
         {
@@ -818,7 +818,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     }
     private Rect CalculateCaret() => CalculateCaret(presentation.mode, presentation.caret_shape, presentation.caret_utf8_start,
         () => View!.CaretGeometry(), View?.Composing == true);
-    private Rect CalculateCaret(uint mode, uint shape, ulong offset, Func<ViemLayoutCaretGeometryV1> geometry, bool composing = false, float? fontEnWidth = null)
+    private Rect CalculateCaret(uint mode, uint shape, ulong offset, Func<ViemLayoutCaretGeometry> geometry, bool composing = false, float? fontEnWidth = null)
     {
         if (View == null || snapshot == null) return new();
         bool thin = composing || mode == VIEM_MODE_INSERT || CoreView.IsTextSelectionMode(mode);
@@ -883,8 +883,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
             SetCaretHover(rect.Height > 0 ? rect : null);
         } catch (CoreException) { SetCaretHover(null); } // Await the next exact presentation.
     }
-    private static Color Color(ViemRgbaV1 c) => global::Windows.UI.Color.FromArgb((byte)Math.Clamp(c.alpha * 255, 0, 255), (byte)Math.Clamp(c.red * 255, 0, 255), (byte)Math.Clamp(c.green * 255, 0, 255), (byte)Math.Clamp(c.blue * 255, 0, 255));
-    private static Rect OffsetRect(ViemLayoutRectV1 r, ViemViewportStateV1 v) => new(r.x - v.left, r.y - v.top, Math.Max(0, r.width), Math.Max(0, r.height));
+    private static Color Color(ViemRgba c) => global::Windows.UI.Color.FromArgb((byte)Math.Clamp(c.alpha * 255, 0, 255), (byte)Math.Clamp(c.red * 255, 0, 255), (byte)Math.Clamp(c.green * 255, 0, 255), (byte)Math.Clamp(c.blue * 255, 0, 255));
+    private static Rect OffsetRect(ViemLayoutRect r, ViemViewportState v) => new(r.x - v.left, r.y - v.top, Math.Max(0, r.width), Math.Max(0, r.height));
     private void ClearCanvasBackground(CanvasDrawingSession drawing) => drawing.Clear(
         snapshot != null && (snapshot.Paint.flags & VIEM_LAYOUT_PAINT_DEFAULT_CANVAS) == 0
             ? Color(snapshot.Paint.canvas_background) : preferences.Theme.Background);
@@ -939,7 +939,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             }
         }
     }
-    private ViemTextPaintV1 PaintFor(ulong offset)
+    private ViemTextPaint PaintFor(ulong offset)
     {
         var runs = snapshot!.PaintRuns;
         int lo = 0, hi = runs.Length;

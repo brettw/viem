@@ -27,7 +27,7 @@ internal sealed unsafe class BlockStylePreview : IDisposable
     internal void InvalidateFontsForTesting() => view.Provider.InvalidateMetrics();
 #endif
     // Compare payloads, not offsets into independently exported string arenas.
-    private static bool SameValue(StyleSheet left, ViemStyleValueV1 a, StyleSheet right, ViemStyleValueV1 b)
+    private static bool SameValue(StyleSheet left, ViemStyleValue a, StyleSheet right, ViemStyleValue b)
     {
         if (a.kind != b.kind || a.number != b.number || a.enum_value != b.enum_value
             || !a.color.Equals(b.color) || a.item_count != b.item_count) return false;
@@ -70,7 +70,7 @@ internal sealed unsafe class BlockStylePreview : IDisposable
     }
     private void Apply(StyleSheet sheet, StyleDefinition style, Color foreground)
     {
-        var context = New<ViemStyleEditValueV1>(); context.kind = VIEM_STYLE_VALUE_COLOR;
+        var context = new ViemStyleEditValue(); context.kind = VIEM_STYLE_VALUE_COLOR;
         context.color = new() { red = foreground.R / 255f, green = foreground.G / 255f, blue = foreground.B / 255f, alpha = foreground.A / 255f };
         if (appliedSheet == null || appliedForeground != foreground)
             view.EditStyle(baseStyle, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND, context);
@@ -91,15 +91,15 @@ internal sealed unsafe class BlockStylePreview : IDisposable
                 continue;
             }
             using var arena = new NativeArena();
-            var value = New<ViemStyleEditValueV1>();
+            var value = new ViemStyleEditValue();
             value.kind = effective.kind; value.number = effective.number; value.enum_value = effective.enum_value; value.color = effective.color;
             if (effective.kind == VIEM_STYLE_VALUE_STRING) value.text = arena.Utf8(sheet.String(effective));
             if (effective.item_count > 0) {
                 var items = sheet.Items.Skip(checked((int)effective.first_item)).Take(checked((int)effective.item_count)).Select(item => {
-                    var copy = New<ViemStyleEditValueItemV1>(); copy.kind = item.kind;
+                    var copy = new ViemStyleEditValueItem(); copy.kind = item.kind;
                     copy.text = arena.Utf8(Text(sheet.Strings, item.@string)); copy.unsigned_value = item.unsigned_value; return copy;
                 }).ToArray();
-                value.items = arena.Copy<ViemStyleEditValueItemV1>(items); value.item_count = (ulong)items.Length;
+                value.items = arena.Copy<ViemStyleEditValueItem>(items); value.item_count = (ulong)items.Length;
             }
             view.EditStyle(target, effective.kind == VIEM_STYLE_VALUE_NONE ? VIEM_STYLE_EDIT_CLEAR_DECLARATION : VIEM_STYLE_EDIT_SET_DECLARATION, property, value);
         }
@@ -113,11 +113,12 @@ internal sealed unsafe class BlockStylePreview : IDisposable
     public void Draw(CanvasDrawingSession drawing, float width, float height, Color fallback)
     {
         var snapshot = Layout(width, height);
-        ViemTextPaintV1 Paint(ulong at) {
-            var paint = snapshot.PaintRuns.FirstOrDefault(run => run.text_start <= at && at < run.text_end).paint;
-            return paint.struct_size != 0 ? paint : snapshot.Paint.default_paint;
+        ViemTextPaint Paint(ulong at) {
+            foreach (var run in snapshot.PaintRuns)
+                if (run.text_start <= at && at < run.text_end) return run.paint;
+            return snapshot.Paint.default_paint;
         }
-        Color Foreground(ViemTextPaintV1 paint) => (paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0 ? fallback : ConvertColor(paint.foreground);
+        Color Foreground(ViemTextPaint paint) => (paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0 ? fallback : ConvertColor(paint.foreground);
         const uint boxFlags = VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND | VIEM_LAYOUT_DECORATION_BLOCK_BORDER | VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER;
         var antialiasing = drawing.Antialiasing;
         drawing.Antialiasing = Microsoft.Graphics.Canvas.CanvasAntialiasing.Aliased;
@@ -150,8 +151,8 @@ internal sealed unsafe class BlockStylePreview : IDisposable
         }
     }
 
-    private static global::Windows.Foundation.Rect Rect(ViemLayoutRectV1 value) => new(value.x, value.y, value.width, value.height);
-    private static Color ConvertColor(ViemRgbaV1 value) {
+    private static global::Windows.Foundation.Rect Rect(ViemLayoutRect value) => new(value.x, value.y, value.width, value.height);
+    private static Color ConvertColor(ViemRgba value) {
         static byte Channel(float value) => (byte)Math.Round(Math.Clamp(value, 0, 1) * 255);
         return Color.FromArgb(Channel(value.alpha), Channel(value.red), Channel(value.green), Channel(value.blue));
     }

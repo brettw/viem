@@ -177,7 +177,7 @@ internal sealed partial class StyleWindow
         refreshFields.Add(() => button.IsChecked = ShowsValue(property) && selected.Value(property).enum_value != 0);
         button.Click += (_, _) => Apply();
     }
-    private void SetColor(uint property, global::Windows.UI.Color color, ViemStyleEditGroupV1? group = null)
+    private void SetColor(uint property, global::Windows.UI.Color color, ViemStyleEditGroup? group = null)
     {
         var value = CoreView.Enum(VIEM_STYLE_VALUE_COLOR, 0); value.color = new() { red = color.R / 255f, green = color.G / 255f, blue = color.B / 255f, alpha = color.A / 255f };
         EditLinkedProperty(VIEM_STYLE_EDIT_SET_DECLARATION, property, value, group);

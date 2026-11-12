@@ -36,6 +36,7 @@ impl<K: Clone> Summary for Keys<K> {
 
 impl<K: Ord + Clone, V> Item for Entry<K, V> {
     type Summary = Keys<K>;
+    type Tag = ();
 
     fn summary(&self) -> Keys<K> {
         Keys { count: 1, last: Some(self.key.clone()) }

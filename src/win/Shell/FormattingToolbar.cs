@@ -38,7 +38,7 @@ internal sealed partial class FormattingToolbar : EditorToolbar
     internal readonly ToggleButton InsertReference = IconButton(new ToggleButton(), "Reference", "[d]", width: 32);
     internal readonly ToggleButton InsertLink = IconButton(new ToggleButton(), "Link", Glyph("\uE71B"), shortcut: KeyPolicy.FormattingShortcut(NativeAction.Link));
     private readonly TablePicker tablePicker;
-    private ViemLogicalSelectionIdentityV1? pickerSelection;
+    private ViemLogicalSelectionIdentity? pickerSelection;
     private StyleSheet? sheet;
     private SelectedStyles? selected;
     private FormattingActions formatting;
@@ -323,7 +323,7 @@ internal sealed partial class FormattingToolbar : EditorToolbar
                 var item = new ToggleMenuFlyoutItem { Tag = entry.Key };
                 item.Icon = StyleIcons.Icon(StyleIcons.Kind(sheet?.Styles.FirstOrDefault(s => s.Key == entry.Key), space));
                 item.Click += (_, _) => {
-                    if (item.CommandParameter is not ViemStyleSheetIdentityV1 identity || View is not { } view) return;
+                    if (item.CommandParameter is not ViemStyleSheetIdentity identity || View is not { } view) return;
                     Run(() => view.ChooseStyle((StyleKey)item.Tag, identity));
                     RestoreEditorFocus();
                 };

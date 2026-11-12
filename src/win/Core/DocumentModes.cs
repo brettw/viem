@@ -46,7 +46,7 @@ internal sealed unsafe partial class CoreView
     {
         byte[] bytes = Encoding.UTF8.GetBytes(language);
         Send((c, o, e) => {
-            var request = New<ViemSetDocumentModeV1>(); request.mode = mode;
+            var request = new ViemSetDocumentMode(); request.mode = mode;
             request.document_id = documentId; request.document_revision = revision;
             fixed (byte* p = bytes) return viem_core_view_set_document_mode_with_effects(Document.Handle, Id, &request, p, (ulong)bytes.Length, o, e);
         });

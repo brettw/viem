@@ -32,10 +32,10 @@ internal sealed partial class EditorPane
     private sealed partial class TablePeer : FrameworkElementAutomationPeer, IGridProvider, ITableProvider, ISelectionProvider
     {
         internal readonly EditorPane Pane;
-        internal readonly ViemTableContextV1 Context;
-        internal readonly ViemLayoutSnapshotIdentityV1 Identity;
+        internal readonly ViemTableContext Context;
+        internal readonly ViemLayoutSnapshotIdentity Identity;
         private readonly CellPeer[] cells;
-        internal TablePeer(EditorPane pane, ViemTableContextV1 context, ViemLayoutSnapshotIdentityV1 identity, ViemTableCellV1[] source) : base(pane)
+        internal TablePeer(EditorPane pane, ViemTableContext context, ViemLayoutSnapshotIdentity identity, ViemTableCell[] source) : base(pane)
         {
             Pane = pane; Context = context; Identity = identity;
             cells = source.Select(c => new CellPeer(this, c)).ToArray();
@@ -46,7 +46,7 @@ internal sealed partial class EditorPane
         protected override string GetNameCore() => $"Table, {ColumnCount} columns, {RowCount} rows including header";
         protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Table;
         protected override IList<AutomationPeer> GetChildrenCore() => cells.Cast<AutomationPeer>().ToList();
-        internal Rect ScreenBounds(ViemLayoutRectV1 rectangle)
+        internal Rect ScreenBounds(ViemLayoutRect rectangle)
         {
             var paneBounds = base.GetBoundingRectangleCore();
             var origin = Pane.Canvas.TransformToVisual(Pane).TransformPoint(new Point());
@@ -74,9 +74,9 @@ internal sealed partial class EditorPane
         public IRawElementProviderSimple[] GetSelection() => cells.Where(c => c.Selected).Select(ProviderFromPeer).ToArray();
         internal IRawElementProviderSimple Provider => ProviderFromPeer(this);
     }
-    private sealed partial class CellPeer(TablePeer table, ViemTableCellV1 cell) : FrameworkElementAutomationPeer(table.Pane), IGridItemProvider, ITableItemProvider, IInvokeProvider, IValueProvider, ISelectionItemProvider
+    private sealed partial class CellPeer(TablePeer table, ViemTableCell cell) : FrameworkElementAutomationPeer(table.Pane), IGridItemProvider, ITableItemProvider, IInvokeProvider, IValueProvider, ISelectionItemProvider
     {
-        internal ViemTableCellV1 Geometry => cell;
+        internal ViemTableCell Geometry => cell;
         public int Row => checked((int)cell.row);
         public int Column => checked((int)cell.column);
         public int RowSpan => 1;

@@ -94,7 +94,7 @@ internal sealed partial class StyleWindow
         finally { whitespaceCandidate = null; updating = false; }
     }
 
-    private void EditStyle(StyleDefinition style, uint operation, uint property, ViemStyleEditValueV1 value, ViemStyleEditGroupV1? group = null)
+    private void EditStyle(StyleDefinition style, uint operation, uint property, ViemStyleEditValue value, ViemStyleEditGroup? group = null)
     {
         if (style.Key != VisibleWhitespaceStyle.Key) { view.EditStyle(style, operation, property, value, group); return; }
         if (whitespaceCandidate == null || whitespaceEditRevision != whitespaceRevision)

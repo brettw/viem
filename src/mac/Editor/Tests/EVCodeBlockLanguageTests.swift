@@ -11,13 +11,13 @@ final class EVCodeBlockLanguageTests: XCTestCase {
     private final class MenuTracker: NSObject, NSMenuDelegate {
         let surface: EVEditorSurfaceController
         let snapshot: EVLayoutExport
-        let label: ViemLayoutDecorationV1
+        let label: ViemLayoutDecoration
         let exit: NSEvent
         var keyEvents: [NSEvent] = []
         var menu: NSMenu?
         var highlighted: [String] = []
         var ended = false
-        init(surface: EVEditorSurfaceController, snapshot: EVLayoutExport, label: ViemLayoutDecorationV1, exit: NSEvent) {
+        init(surface: EVEditorSurfaceController, snapshot: EVLayoutExport, label: ViemLayoutDecoration, exit: NSEvent) {
             self.surface = surface; self.snapshot = snapshot; self.label = label; self.exit = exit
             super.init()
         }

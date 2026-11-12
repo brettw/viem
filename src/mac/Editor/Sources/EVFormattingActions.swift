@@ -5,9 +5,9 @@ import ViemAppShell
 /// Core's availability and state for the native formatting actions. Menus,
 /// the toolbar and accelerators present it without deriving their own.
 struct EVFormattingActions {
-  private let info: ViemFormattingActionsV1
+  private let info: ViemFormattingActions
 
-  init(_ info: ViemFormattingActionsV1) { self.info = info }
+  init(_ info: ViemFormattingActions) { self.info = info }
 
   static func bit(_ action: UInt32) -> UInt64 { 1 << UInt64(action) }
 
@@ -32,7 +32,7 @@ struct EVFormattingActions {
 extension EVCoreViewSession {
   /// Only `requested` actions (bits `1 << action`) are evaluated.
   func formattingActions(_ requested: UInt64 = .max) throws -> EVFormattingActions {
-    var info = ViemFormattingActionsV1()
+    var info = ViemFormattingActions()
     let status = viem_core_view_formatting_actions(document.core, viewID, requested, &info)
     guard status == UInt32(VIEM_STATUS_OK) else {
       throw EVCoreFrontendError.core(operation: "Read formatting actions", status: status)

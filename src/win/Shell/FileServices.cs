@@ -105,7 +105,7 @@ internal sealed partial class EditorWindow
         bool adopt = r.kind == VIEM_EX_FRONTEND_SAVE_AS || doc.FilePath == null;
         return await Save(pane, r.kind == VIEM_EX_FRONTEND_SAVE_AS, requestedPath, force, adopt, native: false);
     }
-    private static unsafe (byte[] Bytes, bool Complete) HardLineBytes(CoreDocument doc, ViemExFrontendRequestV1 request)
+    private static unsafe (byte[] Bytes, bool Complete) HardLineBytes(CoreDocument doc, ViemExFrontendRequest request)
     {
         // Ranged writes carry exact half-open source-byte bounds.
         bool all = false;

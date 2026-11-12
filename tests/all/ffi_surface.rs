@@ -2,7 +2,7 @@ use std::ptr;
 use viem_core::ffi::{
     viem_core_abi_version, viem_core_copy_formatted_utf8, viem_core_copy_source_bytes,
     viem_core_create, viem_core_destroy, viem_core_revision, ViemCoreHandle, ViemDocumentOptions,
-    ViemStatus, VIEM_CORE_ABI_VERSION, VIEM_DOCUMENT_OPTIONS_SIZE, VIEM_ENCODING_LATIN1,
+    ViemStatus, VIEM_CORE_ABI_VERSION, VIEM_ENCODING_LATIN1,
     VIEM_ENCODING_UTF16_BE, VIEM_ENCODING_UTF16_LE, VIEM_ENCODING_UTF8, VIEM_FILE_FORMAT_DETECT,
     VIEM_FILE_FORMAT_DOS, VIEM_FILE_FORMAT_MAC, VIEM_FILE_FORMAT_UNIX, VIEM_FORMAT_MARKDOWN,
 };
@@ -88,7 +88,6 @@ fn formatted_utf8(document: &TestCore, revision: u64) -> Vec<u8> {
 #[test]
 fn abi_create_validates_pointers_and_every_option_domain() {
     assert_eq!(viem_core_abi_version(), VIEM_CORE_ABI_VERSION);
-    assert_eq!(VIEM_DOCUMENT_OPTIONS_SIZE, 16);
 
     let options = ViemDocumentOptions::default();
     let mut handle = 99;
@@ -108,13 +107,6 @@ fn abi_create_validates_pointers_and_every_option_domain() {
     assert_eq!(status, ViemStatus::NullPointer);
 
     for (mut invalid, expected) in [
-        (
-            ViemDocumentOptions {
-                struct_size: VIEM_DOCUMENT_OPTIONS_SIZE - 1,
-                ..options
-            },
-            ViemStatus::InvalidArgument,
-        ),
         (
             ViemDocumentOptions {
                 encoding: 99,

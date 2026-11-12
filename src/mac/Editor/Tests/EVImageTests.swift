@@ -408,7 +408,7 @@ final class EVImageTests: XCTestCase {
             defer { surface.imagePopover.close(); window.close() }
             XCTAssertEqual(try backend.formattedText(), "\u{FFFC}")
             let registry = try XCTUnwrap(surface.session?.provider.renderRegistry)
-            func painted(_ image: ViemPositionedClusterV1, width: Int, height: Int) throws -> NSBitmapImageRep {
+            func painted(_ image: ViemPositionedCluster, width: Int, height: Int) throws -> NSBitmapImageRep {
                 let canvas = try XCTUnwrap(CGContext(data: nil, width: width + 4, height: height + 4,
                     bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
                     bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))

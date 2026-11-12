@@ -138,7 +138,7 @@ internal static class TableInteractionTests
                 after.Info.identity.document_id, after.Info.identity.document_revision).rows;
             void SelectCells(ulong anchorRow, ulong anchorColumn, ulong activeRow, ulong activeColumn) {
                 var state = view.Layout().Info.identity;
-                var request = Interop.Abi.New<Interop.ViemTableSelectionV1>(); request.active = 1;
+                var request = new Interop.ViemTableSelection(); request.active = 1;
                 request.document_id = state.document_id; request.document_revision = state.document_revision; request.table_id = tableId;
                 request.anchor_row = anchorRow; request.anchor_column = anchorColumn; request.active_row = activeRow; request.active_column = activeColumn;
                 view.SelectTableCells(request); pane.Refresh();

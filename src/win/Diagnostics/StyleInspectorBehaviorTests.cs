@@ -144,7 +144,7 @@ internal static partial class StyleInspectorBehaviorTests
         using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
         var quote = view.Styles().Styles.Single(s => s.Id == "Block quote" && s.Namespace == 1);
         view.EditStyle(quote, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_BLOCK_PADDING_LEFT, CoreView.Number(17));
-        var background = New<ViemStyleEditValueV1>();
+        var background = new ViemStyleEditValue();
         background.kind = VIEM_STYLE_VALUE_COLOR;
         background.color = new() { red = .6f, green = .2f, blue = .7f, alpha = .5f };
         view.EditStyle(quote, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND, background);
@@ -580,7 +580,7 @@ internal static partial class StyleInspectorBehaviorTests
     private static bool HasColor(CoreView target, Color color)
     {
         var layout = target.Layout();
-        bool Matches(ViemRgbaV1 c) => Math.Abs(c.red - color.R / 255f) < .001 && Math.Abs(c.green - color.G / 255f) < .001
+        bool Matches(ViemRgba c) => Math.Abs(c.red - color.R / 255f) < .001 && Math.Abs(c.green - color.G / 255f) < .001
             && Math.Abs(c.blue - color.B / 255f) < .001 && Math.Abs(c.alpha - color.A / 255f) < .001;
         return Matches(layout.Paint.default_paint.foreground) || layout.PaintRuns.Any(r => Matches(r.paint.foreground));
     }

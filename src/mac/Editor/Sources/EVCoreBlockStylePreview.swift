@@ -170,10 +170,10 @@ final class EVCoreBlockStylePreview {
         }
     }
 
-    private func rect(_ value: ViemLayoutRectV1) -> CGRect {
+    private func rect(_ value: ViemLayoutRect) -> CGRect {
         CGRect(x: CGFloat(value.x), y: CGFloat(value.y), width: CGFloat(value.width), height: CGFloat(value.height))
     }
-    private func color(_ value: ViemRgbaV1) -> NSColor {
+    private func color(_ value: ViemRgba) -> NSColor {
         NSColor(srgbRed: CGFloat(value.red), green: CGFloat(value.green), blue: CGFloat(value.blue), alpha: CGFloat(value.alpha))
     }
 }

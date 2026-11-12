@@ -6,8 +6,8 @@ using static Viem.Windows.Interop.Abi;
 
 namespace Viem.Windows.Core;
 
-internal sealed record PromptState(ViemCommandLineInfoV1 Info, string Text, ulong Anchor, ulong Active);
-internal sealed record CompletionState(ViemCompletionInfoV1 Info, string[] Items);
+internal sealed record PromptState(ViemCommandLineInfo Info, string Text, ulong Anchor, ulong Active);
+internal sealed record CompletionState(ViemCompletionInfo Info, string[] Items);
 internal sealed record WhitespaceMarker(string Text, ulong Row, float X, float Y, float Width, float Height);
 internal sealed record WhitespaceExport(JsonElement Style, WhitespaceMarker[] Markers, bool Enabled, bool AlignIndentsToPreviousLine);
 
@@ -15,8 +15,8 @@ internal sealed unsafe partial class CoreView
 {
     public PromptState Prompt()
     {
-        var info = New<ViemCommandLineInfoV1>(); Check(viem_core_view_command_line_info(Document.Handle, Id, &info), "Read prompt");
-        var expected = info.identity; var selection = New<ViemCommandLineSelectionV1>();
+        var info = new ViemCommandLineInfo(); Check(viem_core_view_command_line_info(Document.Handle, Id, &info), "Read prompt");
+        var expected = info.identity; var selection = new ViemCommandLineSelection();
         Check(viem_core_view_command_line_selection(Document.Handle, Id, &expected, &selection), "Read prompt selection");
         var text = new byte[checked((int)info.utf8_length)];
         fixed (byte* p = text) Check(viem_core_view_copy_command_line(Document.Handle, Id, &expected, p, (ulong)text.Length, &info), "Read prompt text");
@@ -29,11 +29,11 @@ internal sealed unsafe partial class CoreView
     }
     public CompletionState Completion()
     {
-        var info = New<ViemCompletionInfoV1>(); Check(viem_core_view_completion_info(Document.Handle, Id, &info), "Read completion");
+        var info = new ViemCompletionInfo(); Check(viem_core_view_completion_info(Document.Handle, Id, &info), "Read completion");
         if ((info.flags & VIEM_COMPLETION_ACTIVE) == 0) return new(info, []);
-        var expected = info; var items = new ViemCompletionItemV1[checked((int)info.item_count)]; var text = new byte[checked((int)info.utf8_length)];
+        var expected = info; var items = new ViemCompletionItem[checked((int)info.item_count)]; var text = new byte[checked((int)info.utf8_length)];
         ulong count = 0;
-        fixed (ViemCompletionItemV1* p = items) Check(viem_core_view_copy_completion_items(Document.Handle, Id, &expected, p, (ulong)items.Length, &count), "Read completion items");
+        fixed (ViemCompletionItem* p = items) Check(viem_core_view_copy_completion_items(Document.Handle, Id, &expected, p, (ulong)items.Length, &count), "Read completion items");
         fixed (byte* p = text) Check(viem_core_view_copy_completion_utf8(Document.Handle, Id, &expected, p, (ulong)text.Length, &count), "Read completion text");
         return new(info, items.Select(i => Abi.Text(text, i.text_offset, i.text_length)).ToArray());
     }
@@ -48,10 +48,10 @@ internal sealed unsafe partial class CoreView
         if (Document.State.document_revision != before) Document.NotifySourceChanged();
         else if (changed != 0) Changed?.Invoke();
     }
-    public WhitespaceExport Whitespace(ViemLayoutSnapshotInfoV1 layout)
+    public WhitespaceExport Whitespace(ViemLayoutSnapshotInfo layout)
     {
         var viewport = Viewport;
-        var bounds = new ViemLayoutRectV1 { x = viewport.left, y = viewport.top, width = layout.viewport_width, height = layout.viewport_height };
+        var bounds = new ViemLayoutRect { x = viewport.left, y = viewport.top, width = layout.viewport_width, height = layout.viewport_height };
         byte[] bytes = Copy((p, n, r) => { var expected = layout.identity; var rect = bounds; return viem_core_view_copy_whitespace_markers(Document.Handle, Id, &expected, &rect, p, n, r); });
         using var json = JsonDocument.Parse(bytes);
         return new(json.RootElement.GetProperty("style").Clone(), json.RootElement.GetProperty("markers").EnumerateArray().Select(m => new WhitespaceMarker(m.GetProperty("text").GetString()!, m.GetProperty("rowIndex").GetUInt64(), m.GetProperty("x").GetSingle(), m.GetProperty("y").GetSingle(), m.GetProperty("width").GetSingle(), m.GetProperty("height").GetSingle())).ToArray(), json.RootElement.GetProperty("enabled").GetBoolean(), json.RootElement.GetProperty("alignIndentsToPreviousLine").GetBoolean());
@@ -59,7 +59,7 @@ internal sealed unsafe partial class CoreView
     public byte[] ClipboardJson(ulong start, ulong end)
     {
         var state = Document.State;
-        var range = New<ViemFormattedUtf8RangeV1>(); range.identity = New<ViemFormattedSnapshotIdentityV1>(); range.identity.document_id = state.document_id; range.identity.document_revision = state.document_revision; range.utf8_start = start; range.utf8_end = end;
+        var range = new ViemFormattedUtf8Range(); range.identity = new ViemFormattedSnapshotIdentity(); range.identity.document_id = state.document_id; range.identity.document_revision = state.document_revision; range.utf8_start = start; range.utf8_end = end;
         return Copy((p, n, r) => { var expected = range; return viem_core_copy_clipboard_json(Document.Handle, &expected, p, n, r); });
     }
     public void ReadFile(byte[] bytes, ulong document, ulong revision, ulong afterOffset, bool source)

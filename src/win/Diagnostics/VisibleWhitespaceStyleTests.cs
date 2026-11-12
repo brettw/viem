@@ -93,7 +93,7 @@ internal static class VisibleWhitespaceStyleTests
         Check(defaultColor.red == 0 && defaultColor.green == 0 && defaultColor.blue == (float)(139d / 255) && defaultColor.alpha == 1,
             "a fresh profile's unparsed default JSON supplies the visible whitespace foreground");
         var basis = exported.Styles.First(style => (style.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
-        var properties = new Dictionary<uint, Viem.Windows.Interop.ViemStylePropertyV1>(basis.Properties);
+        var properties = new Dictionary<uint, Viem.Windows.Interop.ViemStyleProperty>(basis.Properties);
         var foreground = properties[VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND];
         foreground.flags = VIEM_STYLE_PROPERTY_DECLARED | VIEM_STYLE_PROPERTY_EFFECTIVE_PRESENT;
         foreground.effective = new() { kind = VIEM_STYLE_VALUE_COLOR, color = new() { red = 1, green = 0, blue = 0, alpha = 1 } };

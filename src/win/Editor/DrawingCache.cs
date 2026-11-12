@@ -10,7 +10,7 @@ internal sealed partial class EditorPane
 {
     private CanvasCommandList? cachedBackground, cachedText;
     private LayoutSnapshot? drawnLayout;
-    private ViemViewportStateV1 drawnViewport;
+    private ViemViewportState drawnViewport;
     private (double Width, double Height, float Dpi) drawnSize;
     private string? drawnWhitespaceStyle;
     private bool drawnWhitespaceEnabled;

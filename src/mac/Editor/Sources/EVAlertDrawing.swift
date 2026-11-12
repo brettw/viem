@@ -15,7 +15,7 @@ enum EVAlertDrawing {
         flags & UInt32(VIEM_LAYOUT_DECORATION_ALERT_ICON | VIEM_LAYOUT_DECORATION_ALERT_TITLE) != 0
     }
 
-    static func draw(_ item: ViemLayoutDecorationV1, label: String, in rect: NSRect,
+    static func draw(_ item: ViemLayoutDecoration, label: String, in rect: NSRect,
                      color: NSColor, context: CGContext) {
         if item.flags & UInt32(VIEM_LAYOUT_DECORATION_ALERT_ICON) != 0 {
             drawIcon(kind: kind(item.flags), in: rect, color: color.cgColor, context: context)

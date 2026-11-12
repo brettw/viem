@@ -25,7 +25,7 @@ impl SyntaxProvider for ReentrantSyntax {
         // A detached wait must leave the core available to other callers. This
         // fixture cannot finish its result until the lease has been returned.
         loop {
-            let mut state = ViemDocumentStateV1::default();
+            let mut state = ViemDocumentState::default();
             let status = unsafe { viem_core_document_state(handle, &mut state) };
             if status == ViemStatus::Ok {
                 break;

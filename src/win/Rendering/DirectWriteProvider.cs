@@ -24,8 +24,8 @@ namespace Viem.Windows.Rendering;
 internal sealed unsafe partial class DirectWriteProvider : IDisposable
 {
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate ulong GenerationCallback(nint context);
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate uint ShapeCallback(nint context, ViemShapeRequestV1* requests, ulong count, ViemShapeResponseV1* responses, ulong capacity);
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate nint RetainCallback(nint context, ViemRenderRunHandleV1* handles, ulong count);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate uint ShapeCallback(nint context, ViemShapeRequest* requests, ulong count, ViemShapeResponse* responses, ulong capacity);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate nint RetainCallback(nint context, ViemRenderRunHandle* handles, ulong count);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void ReleaseCallback(nint lease);
     private static long nextOwner;
     private readonly SharedResources shared;
@@ -92,9 +92,9 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         ulong generation = Generation;
         return () => new(capturedDevice, dispatcher, shared, generation);
     }
-    public ViemTextMeasurementProviderV1 Table => new()
+    public ViemTextMeasurementProvider Table => new()
     {
-        struct_size = (uint)sizeof(ViemTextMeasurementProviderV1), abi_version = VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION,
+        abi_version = VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION,
         measurement_environment_id = owner, threading = VIEM_PROVIDER_THREADING_ANY_WORKER,
         has_render_run_policy = 1, render_run_owner = owner,
         render_run_threading = VIEM_RENDER_THREADING_ANY,
@@ -112,12 +112,12 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         measurement = next; device = replacement; InvalidateMetrics();
         previous.Dispose();
     }
-    public bool IsInlineImage(ViemRenderRunHandleV1 handle) => ImageDestination(handle) != null;
-    public string? ImageDestination(ViemRenderRunHandleV1 handle) => handle.owner == owner && handle.metrics_generation == Generation
+    public bool IsInlineImage(ViemRenderRunHandle handle) => ImageDestination(handle) != null;
+    public string? ImageDestination(ViemRenderRunHandle handle) => handle.owner == owner && handle.metrics_generation == Generation
         && resources.TryGetValue(handle.identifier, out var resource) ? resource.ImageDestination : null;
     /// The intrinsic size layout used for an image's render resource. Drawing
     /// shows a bitmap only while it still has these dimensions.
-    public (uint Width, uint Height)? ImageLayoutSize(ViemRenderRunHandleV1 handle) => handle.owner == owner
+    public (uint Width, uint Height)? ImageLayoutSize(ViemRenderRunHandle handle) => handle.owner == owner
         && handle.metrics_generation == Generation && resources.TryGetValue(handle.identifier, out var resource)
         && resource.ImageDestination != null ? (resource.ImageWidth, resource.ImageHeight) : null;
 
@@ -220,8 +220,8 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         image.Served = true;
         return image.Copy();
     }
-    public bool IsColorGlyph(ViemRenderRunHandleV1 handle) => resources.TryGetValue(handle.identifier, out var resource) && resource.ColorGlyph;
-    public void Draw(CanvasDrawingSession drawing, ViemRenderRunHandleV1 handle, Vector2 baseline, Color color)
+    public bool IsColorGlyph(ViemRenderRunHandle handle) => resources.TryGetValue(handle.identifier, out var resource) && resource.ColorGlyph;
+    public void Draw(CanvasDrawingSession drawing, ViemRenderRunHandle handle, Vector2 baseline, Color color)
     {
         using var batch = BeginDrawing(drawing);
         batch.Draw(handle, baseline, color);
@@ -241,7 +241,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         private Vector2 origin;
         private CanvasSolidColorBrush? runBrush;
         public int DrawCalls { get; private set; }
-        public void Draw(ViemRenderRunHandleV1 handle, Vector2 baseline, Color color)
+        public void Draw(ViemRenderRunHandle handle, Vector2 baseline, Color color)
         {
             if (!brushes.TryGetValue(color, out var brush)) brushes[color] = brush = new(drawing, color);
             if (handle.owner != provider.owner || handle.metrics_generation != provider.Generation
@@ -283,7 +283,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         public void Dispose() { try { Flush(); } finally { foreach (var brush in brushes.Values) brush.Dispose(); } }
     }
 
-    private void Draw(CanvasDrawingSession drawing, ViemRenderRunHandleV1 handle, Vector2 baseline, Color color, CanvasSolidColorBrush brush)
+    private void Draw(CanvasDrawingSession drawing, ViemRenderRunHandle handle, Vector2 baseline, Color color, CanvasSolidColorBrush brush)
     {
         if (handle.owner != owner || handle.metrics_generation != Generation || !resources.TryGetValue(handle.identifier, out var resource) || resource.ImageDestination != null) return;
         if (resource.ColorGlyph)
@@ -299,7 +299,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             drawing.DrawGlyphRun(baseline + part.Offset, part.Font, part.Size, part.Glyphs, false, part.BidiLevel, brush);
     }
 
-    private uint ShapeBatch(nint context, ViemShapeRequestV1* requests, ulong count, ViemShapeResponseV1* responses, ulong capacity)
+    private uint ShapeBatch(nint context, ViemShapeRequest* requests, ulong count, ViemShapeResponse* responses, ulong capacity)
     {
         using var startup = Diagnostics.StartupPerformance.Measure(IsWorker ? "shape.worker" : "shape.foreground");
         using var timing = IsWorker ? default(Diagnostics.InputPerformance.Measurement) : Diagnostics.InputPerformance.Measure("shape.batch");
@@ -329,7 +329,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         }
     }
 
-    private ViemShapeResponseV1 Shape(ViemShapeRequestV1 request)
+    private ViemShapeResponse Shape(ViemShapeRequest request)
     {
         var whole = ShapeText(request);
         if (request.inline_image_count == 0) return whole;
@@ -345,10 +345,10 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         // U+FFFC is a model object boundary even next to combining marks. Split
         // native shaping at each object so DirectWrite cannot merge its caret
         // stops with adjacent prose, while retaining context at outer edges.
-        var clusters = new List<ViemShapedClusterV1>();
-        var stops = new List<ViemClusterCaretStopV1>();
-        ViemTextMetricsV1 metrics = default;
-        void Append(ulong start, ulong end, ViemInlineImageV1* image)
+        var clusters = new List<ViemShapedCluster>();
+        var stops = new List<ViemClusterCaretStop>();
+        ViemTextMetrics metrics = default;
+        void Append(ulong start, ulong end, ViemInlineImage* image)
         {
             if (end <= start) return;
             var part = request;
@@ -389,13 +389,13 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             position = image->text_end;
         }
         Append(position, request.text_end, null);
-        var nativeStops = arena.Copy<ViemClusterCaretStopV1>(CollectionsMarshal.AsSpan(stops));
-        var nativeClusters = arena.Copy<ViemShapedClusterV1>(CollectionsMarshal.AsSpan(clusters));
+        var nativeStops = arena.Copy<ViemClusterCaretStop>(CollectionsMarshal.AsSpan(stops));
+        var nativeClusters = arena.Copy<ViemShapedCluster>(CollectionsMarshal.AsSpan(clusters));
         ulong stopOffset = 0;
         for (int i = 0; i < clusters.Count; i++) { nativeClusters[i].caret_stops = nativeStops + stopOffset; stopOffset += nativeClusters[i].caret_stop_count; }
         ulong[] order = VisualOrder(clusters.Select(c => c.bidi_level).ToArray());
         return new() {
-            struct_size = (uint)sizeof(ViemShapeResponseV1), document_id = request.document_id, document_revision = request.document_revision,
+            document_id = request.document_id, document_revision = request.document_revision,
             measurement_environment_id = request.measurement_environment_id, metrics_generation = request.metrics_generation,
             text_start = request.text_start, text_end = request.text_end, default_metrics = metrics,
             default_font_is_monospaced = whole.default_font_is_monospaced,
@@ -404,7 +404,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         };
     }
 
-    private ViemShapeResponseV1 ShapeText(ViemShapeRequestV1 request)
+    private ViemShapeResponse ShapeText(ViemShapeRequest request)
     {
         if (inkGeneration != Generation) { inkBounds.Clear(); fontMetadata.Clear(); defaultFontTraits.Clear(); inkGeneration = Generation; }
         string before = Text(request.context_before), interior = Text(request.text), after = Text(request.context_after);
@@ -465,11 +465,11 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         var defaultMarkerFont = MarkerFont.From(request.default_style, request.scale);
         var defaultTraits = DefaultFontTraits(request.default_style, request.scale,
             defaultMarkerFont, format, request.style_run_count == 0 && (text.Length == 0 || text.All(c => c == ' ')) ? capture : null);
-        var defaultMetrics = new ViemTextMetricsV1 {
+        var defaultMetrics = new ViemTextMetrics {
             ascent = Math.Max(0, line.Baseline), descent = Math.Max(0, line.Height - line.Baseline), leading = 0,
             cap_height = defaultTraits.CapHeight * request.default_style.size * request.scale
         };
-        var clusters = new List<ViemShapedClusterV1>();
+        var clusters = new List<ViemShapedCluster>();
         var images = new Dictionary<ulong, (ulong End, string Destination)>();
         for (ulong i = 0; i < request.inline_image_count; i++)
         {
@@ -484,7 +484,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         int start = 0;
         var boundaries = new HashSet<int>(StringInfo.ParseCombiningCharacters(text)) { text.Length };
         var nativeClusters = layout.ClusterMetrics;
-        var caretStops = new ViemClusterCaretStopV1[nativeClusters.Length * 2];
+        var caretStops = new ViemClusterCaretStop[nativeClusters.Length * 2];
         for (int index = 0; index < nativeClusters.Length && start < text.Length; index++)
         {
             int end = start + nativeClusters[index].CharacterCount;
@@ -522,7 +522,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             float ascent = parts.Count == 0 ? defaultMetrics.ascent : parts.Max(p => p.Metadata.Ascent * p.Size);
             float descent = parts.Count == 0 ? defaultMetrics.descent : parts.Max(p => p.Metadata.Descent * p.Size);
             float leading = parts.Count == 0 ? 0 : parts.Max(p => Math.Max(0, p.Metadata.LineGap * p.Size));
-            var cluster = New<ViemShapedClusterV1>();
+            var cluster = new ViemShapedCluster();
             cluster.text_start = (ulong)globalStart;
             cluster.text_end = checked((ulong)(contextStart + byteEnd));
             cluster.advance = Math.Max(0, advance);
@@ -589,12 +589,12 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         // clusters. UAX #9 L2 resolves those ties from embedding levels.
         ulong[] order = VisualOrder(clusters.Select(c => c.bidi_level).ToArray());
         // One ABI caret allocation for the fragment, not one per character.
-        var nativeStops = arena.Copy<ViemClusterCaretStopV1>(caretStops.AsSpan(0, clusters.Count * 2));
-        var nativeGeometry = arena.Copy<ViemShapedClusterV1>(CollectionsMarshal.AsSpan(clusters));
+        var nativeStops = arena.Copy<ViemClusterCaretStop>(caretStops.AsSpan(0, clusters.Count * 2));
+        var nativeGeometry = arena.Copy<ViemShapedCluster>(CollectionsMarshal.AsSpan(clusters));
         for (int i = 0; i < clusters.Count; i++) nativeGeometry[i].caret_stops = nativeStops + i * 2;
         return new()
         {
-            struct_size = (uint)sizeof(ViemShapeResponseV1), document_id = request.document_id, document_revision = request.document_revision,
+            document_id = request.document_id, document_revision = request.document_revision,
             measurement_environment_id = request.measurement_environment_id, metrics_generation = request.metrics_generation,
             text_start = request.text_start, text_end = request.text_end, default_metrics = defaultMetrics,
             default_font_is_monospaced = defaultTraits.IsMonospaced ? 1u : 0u,
@@ -603,7 +603,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         };
     }
 
-    private (bool IsMonospaced, float CapHeight) DefaultFontTraits(ViemResolvedTextStyleV1 style, float scale,
+    private (bool IsMonospaced, float CapHeight) DefaultFontTraits(ViemResolvedTextStyle style, float scale,
         MarkerFont key, CanvasTextFormat format, GlyphCapture? whitespaceCapture)
     {
         if (defaultFontTraits.TryGetValue(key, out var known)) return known;
@@ -661,7 +661,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
     private readonly record struct GlyphInkKey(GlyphFontMetadata Font, float Size, int Index,
         float Advance, float AdvanceOffset, float AscenderOffset, uint Bidi, Vector2 Offset);
 
-    private static (string Family, FontStretch Stretch) ResolveFont(ViemResolvedTextStyleV1 style)
+    private static (string Family, FontStretch Stretch) ResolveFont(ViemResolvedTextStyle style)
     {
         for (ulong i = 0; i < style.font_family_count; i++)
         {
@@ -670,12 +670,12 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         return ("Segoe UI", FontStretch.Normal);
     }
     private static FontStyle Slant(uint slant) => slant switch { 1 => FontStyle.Italic, 2 => FontStyle.Oblique, _ => FontStyle.Normal };
-    private static FontStyle ResolvedSlant(ViemResolvedTextStyleV1 style)
+    private static FontStyle ResolvedSlant(ViemResolvedTextStyle style)
     {
         if (style.slant != 0) return Slant(style.slant);
         return style.font_family_count > 0 ? FontCatalog.Match(Text(style.font_families[0]), Text(style.font_face))?.Slant ?? FontStyle.Normal : FontStyle.Normal;
     }
-    private static Dictionary<string, float> ResolvedAxes(ViemResolvedTextStyleV1 style, string family, FontFace? face)
+    private static Dictionary<string, float> ResolvedAxes(ViemResolvedTextStyle style, string family, FontFace? face)
     {
         string requested = style.font_family_count > 0 ? Text(style.font_families[0]) : family;
         var coordinates = new Dictionary<string, float>();
@@ -683,9 +683,9 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             coordinates = FontCatalog.NamedCoordinates(face, Text(style.font_face));
             foreach (var (tag, value) in FontVariations.Decode(Text(style.font_axes))) coordinates[tag] = value;
         }
-        return FontVariations.Effective(FontVariations.For(face), coordinates, style.weight, (style.reserved & 1) != 0, style.slant);
+        return FontVariations.Effective(FontVariations.For(face), coordinates, style.weight, style.relative_bold != 0, style.slant);
     }
-    private static FontFace? ResolvedFace(ViemResolvedTextStyleV1 style, string family, FontStyle slant, FontStretch stretch)
+    private static FontFace? ResolvedFace(ViemResolvedTextStyle style, string family, FontStyle slant, FontStretch stretch)
     {
         string requested = style.font_family_count > 0 ? Text(style.font_families[0]) : family;
         var selected = FontCatalog.Match(requested, Text(style.font_face));
@@ -694,7 +694,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         bool discoverSystem = Text(style.font_face).Length != 0 || Text(style.font_axes) is not ("" or "{}");
         return FontCatalog.RenderingFace(family, (ushort)Math.Clamp(style.weight, 1, 999), slant, stretch, discoverSystem);
     }
-    private static bool ApplyStyle(CanvasTextLayout layout, nint native, int start, int count, ViemResolvedTextStyleV1 style, float scale)
+    private static bool ApplyStyle(CanvasTextLayout layout, nint native, int start, int count, ViemResolvedTextStyle style, float scale)
     {
         var font = ResolveFont(style);
         var slant = ResolvedSlant(style);
@@ -726,7 +726,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         return axes.Count != 0;
     }
 
-    private nint Retain(nint context, ViemRenderRunHandleV1* handles, ulong count)
+    private nint Retain(nint context, ViemRenderRunHandle* handles, ulong count)
     {
         try
         {
@@ -802,13 +802,13 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         public string? ImageDocumentPath;
     }
     private sealed class Fragment(CanvasTextLayout layout) { public CanvasTextLayout Layout = layout; public int References; }
-    private sealed class Resource(Fragment fragment, List<GlyphPart> parts, float left, float baseline, ViemShapedBoundsV1 bounds, MarkerFont markerFont)
+    private sealed class Resource(Fragment fragment, List<GlyphPart> parts, float left, float baseline, ViemShapedBounds bounds, MarkerFont markerFont)
     {
         public string? ImageDestination;
         public uint ImageWidth, ImageHeight;
         public MarkerFont MarkerFont = markerFont;
         public Fragment Fragment = fragment; public List<GlyphPart> Parts = parts; public int References = 1;
-        public float Left = left, Baseline = baseline; public ViemShapedBoundsV1 Bounds = bounds;
+        public float Left = left, Baseline = baseline; public ViemShapedBounds Bounds = bounds;
         public bool ColorGlyph = parts.Any(p => p.Metadata.ColorGlyph);
     }
 }

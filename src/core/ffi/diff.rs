@@ -62,8 +62,7 @@ pub const VIEM_DIFF_FILE_UNSAVED: u32 = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
-pub struct ViemDiffBaseRequestV1 {
-    pub struct_size: u32,
+pub struct ViemDiffBaseRequest {
     pub kind: u32,
     /// The document's absolute path; for VIEM_DIFF_BASE_FILE, the chosen
     /// base file. For a renamed file's git base, its base path.
@@ -82,16 +81,13 @@ pub struct ViemDiffBaseRequestV1 {
     /// `git diff -- <folder>` does. Empty lists the whole repository.
     pub scope_path: ViemUtf8Slice,
 }
-pub const VIEM_DIFF_BASE_REQUEST_V1_SIZE: u32 = size_of::<ViemDiffBaseRequestV1>() as u32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemDiffResultInfoV1 {
-    pub struct_size: u32,
+pub struct ViemDiffResultInfo {
     pub flags: u32,
     /// A VIEM_DIFF_RESULT_* code.
     pub result: u32,
-    pub reserved: u32,
     /// Base bytes for a base load.
     pub byte_count: u64,
     /// Files or branches for a list.
@@ -99,12 +95,10 @@ pub struct ViemDiffResultInfoV1 {
     /// UTF-8 bytes of the failure message, when there is one.
     pub message_bytes: u64,
 }
-pub const VIEM_DIFF_RESULT_INFO_V1_SIZE: u32 = size_of::<ViemDiffResultInfoV1>() as u32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemDiffListItemV1 {
-    pub struct_size: u32,
+pub struct ViemDiffListItem {
     /// A VIEM_DIFF_FILE_* code; zero for branches.
     pub change: u32,
     /// UTF-8 path (or branch name) bytes, then base path bytes, are copied
@@ -114,12 +108,10 @@ pub struct ViemDiffListItemV1 {
     pub added: u64,
     pub removed: u64,
 }
-pub const VIEM_DIFF_LIST_ITEM_V1_SIZE: u32 = size_of::<ViemDiffListItemV1>() as u32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemDiffSessionInfoV1 {
-    pub struct_size: u32,
+pub struct ViemDiffSessionInfo {
     pub flags: u32,
     pub hunk_count: u64,
     pub added: u64,
@@ -127,12 +119,10 @@ pub struct ViemDiffSessionInfoV1 {
     pub base_line_count: u64,
     pub new_line_count: u64,
 }
-pub const VIEM_DIFF_SESSION_INFO_V1_SIZE: u32 = size_of::<ViemDiffSessionInfoV1>() as u32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemDiffNavigationV1 {
-    pub struct_size: u32,
+pub struct ViemDiffNavigation {
     /// VIEM_DIFF_NAVIGATION_* flags.
     pub flags: u32,
     pub change_index: u64,
@@ -140,17 +130,15 @@ pub struct ViemDiffNavigationV1 {
     /// The new side's zero-based hard line that received the caret.
     pub caret_line: u64,
 }
-pub const VIEM_DIFF_NAVIGATION_V1_SIZE: u32 = size_of::<ViemDiffNavigationV1>() as u32;
 
 /// One stretch of a scrollbar track, in layout units from the document top.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct ViemDiffScrollbarMarkV1 {
+pub struct ViemDiffScrollbarMark {
     pub top: f32,
     pub bottom: f32,
     /// VIEM_DIFF_MARK_* flags.
     pub flags: u32,
-    pub reserved: u32,
 }
 
 enum DiffResult {
@@ -420,8 +408,7 @@ pub unsafe extern "C" fn viem_diff_session_sync_scroll(
 /// is already visible on both. Hosts then refresh both views.
 ///
 /// # Safety
-/// `out_navigation` must point to an aligned, writable value whose
-/// `struct_size` is at least `VIEM_DIFF_NAVIGATION_V1_SIZE`.
+/// `out_navigation` must point to an aligned, writable value.
 #[no_mangle]
 pub unsafe extern "C" fn viem_diff_session_navigate(
     session: ViemDiffSessionHandle,
@@ -430,14 +417,11 @@ pub unsafe extern "C" fn viem_diff_session_navigate(
     new_core: ViemCoreHandle,
     new_view: ViemViewId,
     direction: u32,
-    out_navigation: *mut ViemDiffNavigationV1,
+    out_navigation: *mut ViemDiffNavigation,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_navigation, 1)?;
-        if unsafe { (*out_navigation).struct_size } < VIEM_DIFF_NAVIGATION_V1_SIZE {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        unsafe { out_navigation.write(ViemDiffNavigationV1 { struct_size: VIEM_DIFF_NAVIGATION_V1_SIZE, ..Default::default() }) };
+        unsafe { out_navigation.write(ViemDiffNavigation { ..Default::default() }) };
         let direction = match direction {
             VIEM_DIFF_NAVIGATE_NEXT => crate::coordinator::ChangeDirection::Next,
             VIEM_DIFF_NAVIGATE_PREVIOUS => crate::coordinator::ChangeDirection::Previous,
@@ -456,8 +440,7 @@ pub unsafe extern "C" fn viem_diff_session_navigate(
         if let Some(navigation) = navigation {
             let flags = VIEM_DIFF_NAVIGATION_FOUND | if navigation.scrolled { VIEM_DIFF_NAVIGATION_SCROLLED } else { 0 };
             unsafe {
-                out_navigation.write(ViemDiffNavigationV1 {
-                    struct_size: VIEM_DIFF_NAVIGATION_V1_SIZE,
+                out_navigation.write(ViemDiffNavigation {
                     flags,
                     change_index: navigation.change as u64,
                     change_count: navigation.change_count as u64,
@@ -483,7 +466,7 @@ pub unsafe extern "C" fn viem_diff_session_scrollbar_marks(
     core: ViemCoreHandle,
     view: ViemViewId,
     is_new: u32,
-    marks: *mut ViemDiffScrollbarMarkV1,
+    marks: *mut ViemDiffScrollbarMark,
     capacity: u64,
     out_count: *mut u64,
     out_extent: *mut f32,
@@ -522,11 +505,10 @@ pub unsafe extern "C" fn viem_diff_session_scrollbar_marks(
             return Err(ViemStatus::BufferTooSmall);
         }
         for (index, mark) in found.iter().enumerate() {
-            let value = ViemDiffScrollbarMarkV1 {
+            let value = ViemDiffScrollbarMark {
                 top: mark.top,
                 bottom: mark.bottom,
                 flags: if mark.added { VIEM_DIFF_MARK_ADDED } else { 0 },
-                reserved: 0,
             };
             unsafe { marks.add(index).write(value) };
         }
@@ -540,12 +522,12 @@ pub unsafe extern "C" fn viem_diff_session_scrollbar_marks(
 /// # Safety
 /// Both outputs are aligned, writable and disjoint.
 #[no_mangle]
-pub unsafe extern "C" fn viem_diff_line_colors(out_added: *mut ViemRgbaV1, out_removed: *mut ViemRgbaV1) -> ViemStatus {
+pub unsafe extern "C" fn viem_diff_line_colors(out_added: *mut ViemRgba, out_removed: *mut ViemRgba) -> ViemStatus {
     ffi_boundary(|| {
         validate_disjoint_regions(&[typed_pointer_region(out_added, 1)?, typed_pointer_region(out_removed, 1)?])?;
         let color = |added| {
             let color = crate::document::code_style::diff_line_background(added);
-            ViemRgbaV1 { red: color.red, green: color.green, blue: color.blue, alpha: color.alpha }
+            ViemRgba { red: color.red, green: color.green, blue: color.blue, alpha: color.alpha }
         };
         unsafe {
             out_added.write(color(true));
@@ -556,23 +538,18 @@ pub unsafe extern "C" fn viem_diff_line_colors(out_added: *mut ViemRgbaV1, out_r
 }
 
 /// # Safety
-/// `out_info` must point to an aligned, writable value whose `struct_size`
-/// is at least `VIEM_DIFF_SESSION_INFO_V1_SIZE`.
+/// `out_info` must point to an aligned, writable value.
 #[no_mangle]
 pub unsafe extern "C" fn viem_diff_session_info(
     session: ViemDiffSessionHandle,
-    out_info: *mut ViemDiffSessionInfoV1,
+    out_info: *mut ViemDiffSessionInfo,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_info, 1)?;
-        if unsafe { (*out_info).struct_size } < VIEM_DIFF_SESSION_INFO_V1_SIZE {
-            return Err(ViemStatus::InvalidArgument);
-        }
         let info = with_session(session, |session| {
             let (added, removed) = session.line_totals();
-            Ok(ViemDiffSessionInfoV1 {
+            Ok(ViemDiffSessionInfo {
                 added: added as u64, removed: removed as u64,
-                struct_size: VIEM_DIFF_SESSION_INFO_V1_SIZE,
                 flags: if session.aligned() { VIEM_DIFF_SESSION_ALIGNED } else { 0 }
                     | if session.collapsed() { VIEM_DIFF_SESSION_COLLAPSED } else { 0 },
                 hunk_count: session.state().hunk_count() as u64,
@@ -715,15 +692,12 @@ unsafe fn utf8_input<'a>(slice: ViemUtf8Slice) -> Result<&'a str, ViemStatus> {
     std::str::from_utf8(bytes).map_err(|_| ViemStatus::InvalidUtf8)
 }
 
-unsafe fn base_request(request: *const ViemDiffBaseRequestV1) -> Result<BaseRequest, ViemStatus> {
+unsafe fn base_request(request: *const ViemDiffBaseRequest) -> Result<BaseRequest, ViemStatus> {
     if request.is_null() {
         return Err(ViemStatus::NullPointer);
     }
     typed_pointer_region(request, 1)?;
     let request = unsafe { *request };
-    if request.struct_size < VIEM_DIFF_BASE_REQUEST_V1_SIZE {
-        return Err(ViemStatus::InvalidArgument);
-    }
     let path = PathBuf::from(unsafe { utf8_input(request.file_path)? });
     if !path.is_absolute() {
         return Err(ViemStatus::InvalidArgument);
@@ -786,7 +760,7 @@ fn publish(result: DiffResult, out_result: *mut ViemDiffResultHandle) -> Result<
 /// `request` points to a readable request; `out_result` to one writable handle.
 #[no_mangle]
 pub unsafe extern "C" fn viem_diff_load_base(
-    request: *const ViemDiffBaseRequestV1,
+    request: *const ViemDiffBaseRequest,
     out_result: *mut ViemDiffResultHandle,
 ) -> ViemStatus {
     ffi_boundary(|| {
@@ -810,7 +784,7 @@ pub unsafe extern "C" fn viem_diff_load_base(
 /// As for [`viem_diff_load_base`].
 #[no_mangle]
 pub unsafe extern "C" fn viem_diff_list_files(
-    request: *const ViemDiffBaseRequestV1,
+    request: *const ViemDiffBaseRequest,
     out_result: *mut ViemDiffResultHandle,
 ) -> ViemStatus {
     ffi_boundary(|| {
@@ -840,7 +814,7 @@ pub unsafe extern "C" fn viem_diff_list_files(
 /// As for [`viem_diff_load_base`].
 #[no_mangle]
 pub unsafe extern "C" fn viem_diff_list_branches(
-    request: *const ViemDiffBaseRequestV1,
+    request: *const ViemDiffBaseRequest,
     out_result: *mut ViemDiffResultHandle,
 ) -> ViemStatus {
     ffi_boundary(|| {
@@ -861,7 +835,7 @@ fn result(handle: ViemDiffResultHandle) -> Result<Arc<DiffResult>, ViemStatus> {
 /// As for [`viem_diff_load_base`].
 #[no_mangle]
 pub unsafe extern "C" fn viem_diff_query_commits(
-    request: *const ViemDiffBaseRequestV1,
+    request: *const ViemDiffBaseRequest,
     out_result: *mut ViemDiffResultHandle,
 ) -> ViemStatus {
     ffi_boundary(|| {
@@ -902,17 +876,13 @@ fn result_error(result: &DiffResult) -> Option<&BaseError> {
 }
 
 /// # Safety
-/// `out_info` points to an aligned, writable value whose `struct_size` is at
-/// least `VIEM_DIFF_RESULT_INFO_V1_SIZE`.
+/// `out_info` points to an aligned, writable value.
 #[no_mangle]
-pub unsafe extern "C" fn viem_diff_result_info(handle: ViemDiffResultHandle, out_info: *mut ViemDiffResultInfoV1) -> ViemStatus {
+pub unsafe extern "C" fn viem_diff_result_info(handle: ViemDiffResultHandle, out_info: *mut ViemDiffResultInfo) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_info, 1)?;
-        if unsafe { (*out_info).struct_size } < VIEM_DIFF_RESULT_INFO_V1_SIZE {
-            return Err(ViemStatus::InvalidArgument);
-        }
         let result = result(handle)?;
-        let mut info = ViemDiffResultInfoV1 { struct_size: VIEM_DIFF_RESULT_INFO_V1_SIZE, ..Default::default() };
+        let mut info = ViemDiffResultInfo { ..Default::default() };
         if let Some(error) = result_error(&result) {
             info.result = error_code(error);
             info.message_bytes = error.to_string().len() as u64;
@@ -993,15 +963,14 @@ pub unsafe extern "C" fn viem_diff_result_copy_message(
 /// path (for files) into `text`. Two-pass on `text`.
 ///
 /// # Safety
-/// `out_item` points to an aligned, writable value whose `struct_size` is at
-/// least `VIEM_DIFF_LIST_ITEM_V1_SIZE`; `out_required` is aligned and
+/// `out_item` points to an aligned, writable value; `out_required` is aligned and
 /// writable; nonzero `text_capacity` requires writable storage of that size.
 /// All three are disjoint.
 #[no_mangle]
 pub unsafe extern "C" fn viem_diff_result_copy_item(
     handle: ViemDiffResultHandle,
     index: u64,
-    out_item: *mut ViemDiffListItemV1,
+    out_item: *mut ViemDiffListItem,
     text: *mut u8,
     text_capacity: u64,
     out_required: *mut u64,
@@ -1013,9 +982,6 @@ pub unsafe extern "C" fn viem_diff_result_copy_item(
             typed_pointer_region(text, text_capacity)?,
             typed_pointer_region(out_required, 1)?,
         ])?;
-        if unsafe { (*out_item).struct_size } < VIEM_DIFF_LIST_ITEM_V1_SIZE {
-            return Err(ViemStatus::InvalidArgument);
-        }
         unsafe { out_required.write(0) };
         let index = usize::try_from(index).map_err(|_| ViemStatus::InvalidRange)?;
         let result = result(handle)?;
@@ -1039,8 +1005,7 @@ pub unsafe extern "C" fn viem_diff_result_copy_item(
             _ => return Err(ViemStatus::InvalidArgument),
         };
         unsafe {
-            out_item.write(ViemDiffListItemV1 {
-                struct_size: VIEM_DIFF_LIST_ITEM_V1_SIZE,
+            out_item.write(ViemDiffListItem {
                 change, added, removed,
                 path_bytes: path.len() as u64,
                 base_path_bytes: base_path.len() as u64,

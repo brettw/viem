@@ -12,10 +12,11 @@
 //! are backed by a lazy compatibility cache and are not used for regional
 //! layout queries.
 
-use std::cmp::Ordering;
 use std::fmt;
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
+
+use crate::persistent::{self, Item, Node, Summary, Tag, Tree, View, Work};
 
 pub(super) const RANGE_INDEX_LEAF_ITEMS: usize = 64;
 
@@ -69,21 +70,14 @@ pub(super) trait RangedItem {
     }
 }
 
-pub(super) struct OrderedRangeStore<T> {
+pub(super) struct OrderedRangeStore<T: Clone + RangedItem> {
     inner: PersistentRangeStore<T>,
 }
 
 impl<T: Clone + RangedItem> OrderedRangeStore<T> {
     /// Conservative O(1) identity comparison, including lazy transforms.
     pub(super) fn shares_storage_with(&self, other: &Self) -> bool {
-        self.inner.root_origin == other.inner.root_origin
-            && self.inner.root_auxiliary_shift == other.inner.root_auxiliary_shift
-            && self.inner.root_revision == other.inner.root_revision
-            && match (&self.inner.root, &other.inner.root) {
-                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-                (None, None) => true,
-                _ => false,
-            }
+        self.inner.shares_storage_with(&other.inner)
     }
 
     pub(super) fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
@@ -99,9 +93,12 @@ impl<T: Clone + RangedItem> OrderedRangeStore<T> {
     /// Translate a complete immutable tree without copying its records.
     pub(super) fn shifted(&self, text_delta: i128, source_delta: i128) -> Option<Self> {
         let mut inner = self.inner.clone();
-        if inner.root.is_some() {
-            inner.root_origin = usize::try_from(inner.root_origin as i128 + text_delta).ok()?;
-            inner.root_auxiliary_shift = inner.root_auxiliary_shift.checked_add(source_delta)?;
+        if !inner.tree.is_empty() {
+            inner.origin = usize::try_from(inner.origin as i128 + text_delta).ok()?;
+            if source_delta != 0 {
+                let lazy = Lazy { auxiliary_shift: source_delta, revision: None };
+                inner.tree = inner.tree.tagged(&lazy, &mut Work::default());
+            }
         }
         inner.compatibility_flat = OnceLock::new();
         Some(Self { inner })
@@ -129,11 +126,11 @@ impl<T: Clone + RangedItem> OrderedRangeStore<T> {
     }
 
     pub(super) fn len(&self) -> usize {
-        self.inner.item_count
+        self.inner.len()
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        self.inner.item_count == 0
+        self.inner.len() == 0
     }
 
     pub(super) fn get(&self, index: usize) -> Option<T> {
@@ -209,8 +206,8 @@ impl<T: Clone + RangedItem> OrderedRangeStore<T> {
         offset: usize,
     ) -> (Option<usize>, QueryStats) {
         let mut stats = QueryStats::default();
-        let result = self.inner.root.as_ref().and_then(|root| {
-            find_touching_index(root, self.inner.root_origin, offset, 0, &mut stats)
+        let result = self.inner.root().and_then(|(root, place)| {
+            find_touching_index(root, place.origin, offset, 0, &mut stats)
         });
         (result, stats)
     }
@@ -226,12 +223,14 @@ impl<T: Clone + RangedItem> OrderedRangeStore<T> {
     /// false for an aggregate only when no descendant can match it.
     pub(super) fn find_navigation(&self, indices: Range<usize>, reverse: bool,
         matches: impl Fn(NavigationSummary) -> bool) -> Option<usize> {
-        fn find<T: RangedItem>(node: &RangeNode<T>, base: usize, range: &Range<usize>, reverse: bool,
+        fn find<T: Clone + RangedItem>(node: &RangeNode<T>, base: usize, range: &Range<usize>, reverse: bool,
             matches: &impl Fn(NavigationSummary) -> bool) -> Option<usize> {
             super::work_statistics::record(|work| work.list_capability_nodes_visited += 1);
-            if base >= range.end || base + node.item_count <= range.start || !matches(node.navigation) { return None; }
-            match &node.kind {
-                RangeNodeKind::Leaf(items) => {
+            let extent = node.summary();
+            if base >= range.end || base + extent.items <= range.start || !matches(extent.navigation) { return None; }
+            match node.view() {
+                View::Leaf(chunk) => {
+                    let items = &chunk.items;
                     let mut indices = range.start.saturating_sub(base)..items.len().min(range.end - base);
                     let mut visit = |index: usize| {
                         super::work_statistics::record(|work| work.list_capability_blocks_visited += 1);
@@ -239,8 +238,8 @@ impl<T: Clone + RangedItem> OrderedRangeStore<T> {
                     };
                     if reverse { indices.rev().find_map(visit) } else { indices.find_map(&mut visit) }
                 }
-                RangeNodeKind::Branch { left, right, .. } => {
-                    let right_base = base + left.item_count;
+                View::Branch(left, right) => {
+                    let right_base = base + left.summary().items;
                     if reverse {
                         find(right, right_base, range, reverse, matches).or_else(|| find(left, base, range, reverse, matches))
                     } else {
@@ -249,7 +248,7 @@ impl<T: Clone + RangedItem> OrderedRangeStore<T> {
                 }
             }
         }
-        self.inner.root.as_ref().and_then(|root| find(root, 0, &indices, reverse, &matches))
+        self.inner.tree.root().and_then(|root| find(root, 0, &indices, reverse, &matches))
     }
 
     /// Reuses equal leaves and unchanged ancestor nodes from `previous`.
@@ -317,21 +316,19 @@ impl<T: Clone + RangedItem + PartialEq> PartialEq for OrderedRangeStore<T> {
     }
 }
 
-pub(super) struct IntervalRangeStore<T> {
+pub(super) struct IntervalRangeStore<T: Clone + RangedItem> {
     inner: PersistentRangeStore<T>,
 }
 
 impl<T: Clone + RangedItem> IntervalRangeStore<T> {
     pub(super) fn partition_point_auxiliary_start(&self, offset: usize) -> usize {
-        self.inner.root.as_ref().map_or(0, |root|
-            count_auxiliary_starts_before(root, self.inner.root_auxiliary_shift, offset))
+        self.inner.tree.root().map_or(0, |root| count_auxiliary_starts_before(root, 0, offset))
     }
 
     pub(super) fn query_auxiliary_touching(&self, query: &Range<usize>) -> Vec<T> {
         let mut output = Vec::new();
-        if let Some(root) = &self.inner.root {
-            query_auxiliary_node(root, self.inner.root_origin, self.inner.root_auxiliary_shift,
-                self.inner.root_revision, query, &mut output, None);
+        if let Some((root, place)) = self.inner.root() {
+            query_auxiliary_node(root, place, query, &mut output, None);
         }
         output
     }
@@ -340,9 +337,8 @@ impl<T: Clone + RangedItem> IntervalRangeStore<T> {
     pub(super) fn query_auxiliary_touching_with_stats(&self, query: &Range<usize>) -> (Vec<T>, QueryStats) {
         let mut output = Vec::new();
         let mut stats = QueryStats::default();
-        if let Some(root) = &self.inner.root {
-            query_auxiliary_node(root, self.inner.root_origin, self.inner.root_auxiliary_shift,
-                self.inner.root_revision, query, &mut output, Some(&mut stats));
+        if let Some((root, place)) = self.inner.root() {
+            query_auxiliary_node(root, place, query, &mut output, Some(&mut stats));
         }
         (output, stats)
     }
@@ -383,11 +379,11 @@ impl<T: Clone + RangedItem> IntervalRangeStore<T> {
     }
 
     pub(super) fn len(&self) -> usize {
-        self.inner.item_count
+        self.inner.len()
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        self.inner.item_count == 0
+        self.inner.len() == 0
     }
 
     /// Reports spans with a non-empty intersection with `query`.
@@ -519,12 +515,179 @@ impl<T: Clone + RangedItem + PartialEq> PartialEq for IntervalRangeStore<T> {
     }
 }
 
-struct PersistentRangeStore<T> {
-    root: Option<Arc<RangeNode<T>>>,
-    root_origin: usize,
-    root_auxiliary_shift: i128,
-    root_revision: Option<u64>,
-    item_count: usize,
+/// A lazily applied change to every record of a subtree: a shift of the
+/// auxiliary coordinate and, when set, a newer snapshot revision.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct Lazy {
+    auxiliary_shift: i128,
+    revision: Option<u64>,
+}
+
+impl Lazy {
+    /// This change followed by the later change `outer`.
+    fn under(self, outer: Self) -> Self {
+        Self {
+            auxiliary_shift: self.auxiliary_shift + outer.auxiliary_shift,
+            revision: outer.revision.or(self.revision),
+        }
+    }
+}
+
+impl<T: Clone + RangedItem> Tag<Chunk<T>> for Lazy {
+    fn then(&mut self, later: &Self) {
+        *self = self.under(*later);
+    }
+
+    fn item(&self, chunk: &Chunk<T>) -> Chunk<T> {
+        Chunk { lazy: chunk.lazy.under(*self), ..chunk.clone() }
+    }
+
+    fn summary(&self, summary: &mut Extent) {
+        summary.auxiliary = shifted_auxiliary_bounds(&summary.auxiliary, self.auxiliary_shift);
+    }
+}
+
+/// One bounded leaf of records. Their ranges are relative to the chunk's
+/// origin, the start of its first record, so an edit moves the records after
+/// it by changing one `advance`, and equal chunks compare equal wherever they
+/// lie.
+#[derive(Clone)]
+struct Chunk<T> {
+    items: Arc<[T]>,
+    /// Distance to the following chunk's origin; zero in a store's last chunk.
+    advance: usize,
+    /// Not yet applied to `items`.
+    lazy: Lazy,
+}
+
+impl<T: PartialEq> PartialEq for Chunk<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.advance == other.advance
+            && self.lazy == other.lazy
+            && (Arc::ptr_eq(&self.items, &other.items) || self.items == other.items)
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Extent {
+    items: usize,
+    /// Distance from the first chunk's origin to the origin after the last.
+    span: usize,
+    /// Greatest record end, relative to the first chunk's origin.
+    max_end: usize,
+    navigation: NavigationSummary,
+    auxiliary: Option<Range<usize>>,
+}
+
+impl Summary for Extent {
+    fn add(&mut self, right: &Self) {
+        self.max_end = self.max_end.max(self.span + right.max_end);
+        self.items += right.items;
+        self.span += right.span;
+        self.navigation = self.navigation.union(right.navigation);
+        self.auxiliary = self.auxiliary.iter().chain(&right.auxiliary).cloned().reduce(union);
+    }
+}
+
+fn union(a: Range<usize>, b: Range<usize>) -> Range<usize> {
+    a.start.min(b.start)..a.end.max(b.end)
+}
+
+fn shifted_auxiliary_bounds(bounds: &Option<Range<usize>>, shift: i128) -> Option<Range<usize>> {
+    bounds.as_ref().map(|bounds| {
+        usize::try_from(bounds.start as i128 + shift)
+            .expect("range-index auxiliary start is representable")
+            ..usize::try_from(bounds.end as i128 + shift)
+                .expect("range-index auxiliary end is representable")
+    })
+}
+
+impl<T: Clone + RangedItem> Item for Chunk<T> {
+    type Summary = Extent;
+    type Tag = Lazy;
+
+    fn summary(&self) -> Extent {
+        Extent {
+            items: self.items.len(),
+            span: self.advance,
+            max_end: self.items.iter().map(|item| item.range().end).max().unwrap_or(0),
+            navigation: self.items.iter().fold(NavigationSummary::default(), |value, item| {
+                value.union(item.navigation_summary())
+            }),
+            auxiliary: shifted_auxiliary_bounds(
+                &self.items.iter().filter_map(RangedItem::auxiliary_range).cloned().reduce(union),
+                self.lazy.auxiliary_shift,
+            ),
+        }
+    }
+}
+
+impl<T: Clone + RangedItem> Chunk<T> {
+    /// A chunk of ordered records in absolute coordinates starting at `origin`.
+    fn new(items: &[T], origin: usize, advance: usize) -> Self {
+        let relative = |offset: usize| {
+            offset.checked_sub(origin).expect("range-index input is ordered by start boundary")
+        };
+        let items = items
+            .iter()
+            .map(|item| item.with_range(relative(item.range().start)..relative(item.range().end)))
+            .collect();
+        Self { items, advance, lazy: Lazy::default() }
+    }
+
+    /// The record at `index` as its owner sees it.
+    fn item(&self, index: usize, place: Place) -> T {
+        let item = &self.items[index];
+        let lazy = self.lazy.under(place.lazy);
+        item.with_transform(
+            place.origin + item.range().start..place.origin + item.range().end,
+            lazy.auxiliary_shift,
+            lazy.revision,
+        )
+        .expect("validated lazy range-index transformation is representable")
+    }
+
+    /// The records before and from `at`, which lies strictly inside.
+    fn cut(&self, at: usize) -> (Self, Self) {
+        let start = self.items[at].range().start;
+        let after = self.items[at..]
+            .iter()
+            .map(|item| item.with_range(item.range().start - start..item.range().end - start))
+            .collect();
+        (
+            Self { items: Arc::from(&self.items[..at]), advance: start, lazy: self.lazy },
+            // A store's last chunk has no following origin to keep.
+            Self { items: after, advance: self.advance.saturating_sub(start), lazy: self.lazy },
+        )
+    }
+}
+
+type RangeNode<T> = Node<Chunk<T>>;
+
+/// Where a subtree lies and what its ancestors have yet to apply to it.
+#[derive(Clone, Copy, Default)]
+struct Place {
+    origin: usize,
+    lazy: Lazy,
+}
+
+impl Place {
+    fn children<T: Clone + RangedItem>(self, node: &RangeNode<T>, left: &RangeNode<T>) -> (Self, Self) {
+        let lazy = node.tag().map_or(self.lazy, |tag| tag.under(self.lazy));
+        (Self { origin: self.origin, lazy }, Self { origin: self.origin + left.summary().span, lazy })
+    }
+}
+
+/// A run of chunks and the origin of its first one.
+struct Piece<T: Clone + RangedItem> {
+    tree: Tree<Chunk<T>>,
+    origin: usize,
+}
+
+struct PersistentRangeStore<T: Clone + RangedItem> {
+    tree: Tree<Chunk<T>>,
+    /// Start of the first record; zero when empty.
+    origin: usize,
     compatibility_flat: OnceLock<Arc<Vec<T>>>,
 }
 
@@ -536,23 +699,37 @@ pub(super) struct RangeSpliceStats {
     pub(super) items_copied: usize,
 }
 
+fn item_count(extent: &Extent) -> usize {
+    extent.items
+}
+
 impl<T: Clone + RangedItem> PersistentRangeStore<T> {
     fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
-        fn visit<T: RangedItem>(node: &Arc<RangeNode<T>>, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
-            match &node.kind {
-                // Nodes are immutable and alone own their item vectors.
-                RangeNodeKind::Leaf(items) => visitor.arc_owning(
-                    node,
-                    super::history_memory::vector_bytes(items, items.iter().map(RangedItem::owned_heap_bytes).sum()),
-                    |visitor| for item in items { item.visit_shared_memory(visitor); },
-                ),
-                RangeNodeKind::Branch { left, right, .. } => visitor.arc(node, |visitor| {
+        fn visit<T: Clone + RangedItem>(
+            node: &Arc<RangeNode<T>>,
+            visitor: &mut super::history_memory::MemoryVisitor<'_>,
+        ) {
+            match node.view() {
+                // One entry covers a leaf and its records, which keeps the
+                // accounting table at one entry for each leaf. A leaf node
+                // that shares another's records is the only part left out.
+                View::Leaf(chunk) => {
+                    let owned = chunk.items.iter().map(RangedItem::owned_heap_bytes).sum::<usize>();
+                    visitor.arc_owning(&chunk.items, owned + size_of::<RangeNode<T>>() + 16, |visitor| {
+                        for item in chunk.items.iter() {
+                            item.visit_shared_memory(visitor);
+                        }
+                    });
+                }
+                View::Branch(left, right) => visitor.arc(node, |visitor| {
                     visit(left, visitor);
                     visit(right, visitor);
                 }),
             }
         }
-        if let Some(root) = &self.root { visit(root, visitor); }
+        if let Some(root) = self.tree.root() {
+            visit(root, visitor);
+        }
         // The compatibility cache may be populated after a snapshot was first
         // retained. It is a separate root, so refreshing history can discover
         // it without revisiting the immutable range tree.
@@ -565,35 +742,40 @@ impl<T: Clone + RangedItem> PersistentRangeStore<T> {
     }
 
     fn new(items: Vec<T>) -> Self {
-        let item_count = items.len();
-        // Release each input record as its bounded leaf is built. Cloning
+        // Release each input record as its bounded chunk is built. Cloning
         // all chunks first keeps a second whole-document set of owned table,
         // style and provenance payloads alive during projection construction.
-        let mut items = items.into_iter();
-        let mut leaves = Vec::with_capacity(item_count.div_ceil(RANGE_INDEX_LEAF_ITEMS));
-        while items.len() != 0 {
-            leaves.push(RangeNode::leaf(items.by_ref().take(RANGE_INDEX_LEAF_ITEMS).collect()));
+        let mut items = items.into_iter().peekable();
+        let origin = items.peek().map_or(0, |item| item.range().start);
+        let mut chunks = Vec::with_capacity(items.len().div_ceil(RANGE_INDEX_LEAF_ITEMS));
+        let mut chunk_origin = origin;
+        while items.peek().is_some() {
+            let chunk = items.by_ref().take(RANGE_INDEX_LEAF_ITEMS).collect::<Vec<_>>();
+            let next = items.peek().map_or(chunk_origin, |item| item.range().start);
+            chunks.push(Chunk::new(&chunk, chunk_origin, next.checked_sub(chunk_origin)
+                .expect("range-index input is ordered by start boundary")));
+            chunk_origin = next;
         }
-        drop(items);
-        let positioned_root = build_balanced_root(&leaves, 0..leaves.len());
-        let (root_origin, root) = positioned_root
-            .map(|positioned| (positioned.origin, Some(positioned.node)))
-            .unwrap_or((0, None));
         Self {
-            root,
-            root_origin,
-            root_auxiliary_shift: 0,
-            root_revision: None,
-            item_count,
+            tree: Tree::from_items(chunks, &mut Work::default()),
+            origin,
             compatibility_flat: OnceLock::new(),
         }
+    }
+
+    fn len(&self) -> usize {
+        self.tree.measure(item_count)
+    }
+
+    fn root(&self) -> Option<(&RangeNode<T>, Place)> {
+        Some((self.tree.root()?, Place { origin: self.origin, lazy: Lazy::default() }))
     }
 
     fn partition_point(&self, mut pred: impl FnMut(&T) -> bool) -> usize {
         if let Some(flat) = self.compatibility_flat.get() {
             return flat.partition_point(pred);
         }
-        let (mut low, mut high) = (0, self.item_count);
+        let (mut low, mut high) = (0, self.len());
         while low < high {
             let middle = low + (high - low) / 2;
             if pred(&self.get(middle).expect("ordinal inside the store")) {
@@ -612,7 +794,7 @@ impl<T: Clone + RangedItem> PersistentRangeStore<T> {
             .get_or_init(|| {
                 super::work_statistics::record(|stats| {
                     stats.compatibility_record_materializations += 1;
-                    stats.compatibility_records_materialized += self.item_count;
+                    stats.compatibility_records_materialized += self.len();
                 });
                 Arc::new(self.to_vec())
             })
@@ -620,44 +802,33 @@ impl<T: Clone + RangedItem> PersistentRangeStore<T> {
     }
 
     fn to_vec(&self) -> Vec<T> {
-        let mut items = Vec::with_capacity(self.item_count);
-        if let Some(root) = &self.root {
-            append_items(
-                root,
-                self.root_origin,
-                self.root_auxiliary_shift,
-                self.root_revision,
-                &mut items,
-            );
-        }
-        items
+        self.get_range(&(0..self.len()), None).expect("the whole store is inside it")
     }
 
     fn get(&self, index: usize) -> Option<T> {
-        let root = self.root.as_ref()?;
-        (index < self.item_count).then(|| {
-            get_item(
-                root,
-                self.root_origin,
-                self.root_auxiliary_shift,
-                self.root_revision,
-                index,
-                None,
-            )
-        })
+        let (mut node, mut place) = self.root()?;
+        let mut index = (index < self.len()).then_some(index)?;
+        loop {
+            match node.view() {
+                View::Leaf(chunk) => return Some(chunk.item(index, place)),
+                View::Branch(left, right) => {
+                    let places = place.children(node, left);
+                    let before = left.summary().items;
+                    (node, place) = if index < before { (left, places.0) } else { (right, places.1) };
+                    index -= if index < before { 0 } else { before };
+                }
+            }
+        }
     }
 
     fn partition_point_start(&self, offset: usize) -> usize {
-        self.root.as_ref().map_or(0, |root| {
-            count_starts_before(root, self.root_origin, offset)
-        })
+        self.root().map_or(0, |(root, place)| count_starts_before(root, place.origin, offset))
     }
 
     fn first_index_ending_after(&self, offset: usize) -> usize {
-        self.root
-            .as_ref()
-            .and_then(|root| first_index_ending_after(root, self.root_origin, offset, 0))
-            .unwrap_or(self.item_count)
+        self.root()
+            .and_then(|(root, place)| first_index_ending_after(root, place.origin, offset, 0))
+            .unwrap_or(self.len())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -671,89 +842,69 @@ impl<T: Clone + RangedItem> PersistentRangeStore<T> {
         revision: Option<u64>,
         stats: &mut RangeSpliceStats,
     ) -> Option<Self> {
-        if indices.start > indices.end || indices.end > self.item_count {
+        if indices.start > indices.end || indices.end > self.len() {
             return None;
         }
-        let positioned = self.root.as_ref().map(|root| PositionedNode {
-            origin: self.root_origin,
-            auxiliary_shift: self.root_auxiliary_shift,
-            revision: self.root_revision,
-            node: root.clone(),
-        });
-        let (before, remainder) = split_positioned(positioned, indices.start, stats)?;
-        let (_, after) = split_positioned(remainder, indices.len(), stats)?;
-        let replacement_count = replacement.len();
-        let inserted_store = PersistentRangeStore::new(replacement);
-        stats.items_copied = stats.items_copied.saturating_add(replacement_count);
-        if let Some(root) = &inserted_store.root {
-            stats.leaves_copied = stats.leaves_copied.saturating_add(root.leaf_count);
-            stats.nodes_copied = stats
-                .nodes_copied
-                .saturating_add(root.leaf_count.saturating_mul(2).saturating_sub(1));
-        }
-        let inserted = inserted_store.root.map(|node| PositionedNode {
-            origin: inserted_store.root_origin,
-            auxiliary_shift: inserted_store.root_auxiliary_shift,
-            revision: inserted_store.root_revision,
-            node,
-        });
-        let after = match after {
-            Some(positioned) => Some(shift_positioned(
-                positioned,
-                old_coordinate_end,
-                new_coordinate_end,
-                auxiliary_ends,
-            )?),
-            None => None,
+        let mut work = Work::default();
+        let mut split = |piece: &Piece<T>, at: usize| {
+            let (before, after) = piece.tree.split_at(
+                at,
+                item_count,
+                |chunk, at| {
+                    stats.items_copied = stats.items_copied.saturating_add(chunk.items.len());
+                    stats.leaves_copied = stats.leaves_copied.saturating_add(2);
+                    chunk.cut(at)
+                },
+                &mut work,
+            );
+            let origin = piece.origin + before.measure(|extent| extent.span);
+            (Piece { tree: before, origin: piece.origin }, Piece { tree: after, origin })
         };
-        let root = join_optional_positioned(
-            join_optional_positioned(before, inserted, stats)?,
-            after,
-            stats,
-        )?;
-        let item_count = self
-            .item_count
-            .checked_sub(indices.len())?
-            .checked_add(replacement_count)?;
-        let (root_origin, root_auxiliary_shift, root_revision, root) = root
-            .map(|mut positioned| {
-                if let Some(revision) = revision {
-                    positioned.revision = Some(revision);
-                }
-                (
-                    positioned.origin,
-                    positioned.auxiliary_shift,
-                    positioned.revision,
-                    Some(positioned.node),
-                )
-            })
-            .unwrap_or((0, 0, revision, None));
+        let (before, rest) = split(&Piece { tree: self.tree.clone(), origin: self.origin }, indices.start);
+        let (_, mut after) = split(&rest, indices.len());
+        stats.nodes_visited = stats.nodes_visited.saturating_add(work.visited);
+
+        let inserted = Self::new(replacement);
+        stats.items_copied = stats.items_copied.saturating_add(inserted.len());
+        stats.leaves_copied =
+            stats.leaves_copied.saturating_add(inserted.len().div_ceil(RANGE_INDEX_LEAF_ITEMS));
+        // The untouched suffix moves without copying its records.
+        if !after.tree.is_empty() {
+            after.origin = if new_coordinate_end >= old_coordinate_end {
+                after.origin.checked_add(new_coordinate_end - old_coordinate_end)?
+            } else {
+                after.origin.checked_sub(old_coordinate_end - new_coordinate_end)?
+            };
+        }
+        if let Some((old_end, new_end)) = auxiliary_ends.filter(|(old_end, new_end)| old_end != new_end) {
+            let auxiliary_shift = i128::try_from(new_end).ok()? - i128::try_from(old_end).ok()?;
+            after.tree = after.tree.tagged(&Lazy { auxiliary_shift, revision: None }, &mut work);
+        }
+        let inserted = Piece { tree: inserted.tree, origin: inserted.origin };
+        let joined = join(join(before, inserted, &mut work, stats)?, after, &mut work, stats)?;
+        let mut tree = joined.tree;
+        if let Some(last) = tree.last() {
+            let span = tree.measure(|extent| extent.span) - last.advance;
+            tree = with_span(&tree, span, &mut work)?;
+        }
+        if revision.is_some() {
+            tree = tree.tagged(&Lazy { auxiliary_shift: 0, revision }, &mut work);
+        }
+        stats.nodes_copied = stats.nodes_copied.saturating_add(work.created);
         Some(Self {
-            root,
-            root_origin,
-            root_auxiliary_shift,
-            root_revision,
-            item_count,
+            origin: if tree.is_empty() { 0 } else { joined.origin },
+            tree,
             compatibility_flat: OnceLock::new(),
         })
     }
 
     fn get_range(&self, indices: &Range<usize>, stats: Option<&mut QueryStats>) -> Option<Vec<T>> {
-        if indices.start > indices.end || indices.end > self.item_count {
+        if indices.start > indices.end || indices.end > self.len() {
             return None;
         }
         let mut items = Vec::with_capacity(indices.end - indices.start);
-        if let Some(root) = &self.root {
-            append_item_range(
-                root,
-                self.root_origin,
-                self.root_auxiliary_shift,
-                self.root_revision,
-                0,
-                indices,
-                &mut items,
-                stats,
-            );
+        if let Some((root, place)) = self.root() {
+            append_item_range(root, place, 0, indices, &mut items, stats);
         }
         Some(items)
     }
@@ -765,17 +916,8 @@ impl<T: Clone + RangedItem> PersistentRangeStore<T> {
         stats: Option<&mut QueryStats>,
     ) -> Vec<T> {
         let mut matches = Vec::new();
-        if let Some(root) = &self.root {
-            query_node(
-                root,
-                self.root_origin,
-                self.root_auxiliary_shift,
-                self.root_revision,
-                query,
-                intersection,
-                &mut matches,
-                stats,
-            );
+        if let Some((root, place)) = self.root() {
+            query_node(root, place, query, intersection, &mut matches, stats);
         }
         matches
     }
@@ -784,64 +926,63 @@ impl<T: Clone + RangedItem> PersistentRangeStore<T> {
     where
         T: PartialEq,
     {
-        let Some(candidate) = self.root.take() else {
-            if previous.root.is_none() {
+        if self.tree.is_empty() || previous.tree.is_empty() {
+            if self.tree.is_empty() && previous.tree.is_empty() {
                 self.compatibility_flat = clone_once_lock(&previous.compatibility_flat);
             }
             return;
-        };
-        let Some(old) = &previous.root else {
-            self.root = Some(candidate);
-            return;
-        };
-        if self.root_auxiliary_shift != previous.root_auxiliary_shift
-            || self.root_revision != previous.root_revision
-        {
-            self.root = Some(candidate);
-            self.compatibility_flat = OnceLock::new();
-            return;
         }
-        let reconciled = reuse_node(candidate, old);
-        let shares_root = Arc::ptr_eq(&reconciled, old);
-        self.root = Some(reconciled);
-        if shares_root && self.root_origin == previous.root_origin {
-            self.compatibility_flat = clone_once_lock(&previous.compatibility_flat);
+        self.tree = self.tree.reusing(
+            &previous.tree,
+            |new, old| new.items == old.items,
+            |new, old| {
+                (new.items == old.items).then(|| Chunk { items: old.items.clone(), ..new.clone() })
+            },
+        );
+        self.compatibility_flat = if self.shares_storage_with(previous) {
+            clone_once_lock(&previous.compatibility_flat)
         } else {
-            self.compatibility_flat = OnceLock::new();
-        }
+            OnceLock::new()
+        };
+    }
+
+    /// Conservative O(1) identity comparison, including lazy transforms.
+    fn shares_storage_with(&self, other: &Self) -> bool {
+        self.origin == other.origin && self.tree.ptr_eq(&other.tree)
     }
 
     fn items_equal(&self, other: &Self) -> bool
     where
         T: PartialEq,
     {
-        if self.item_count != other.item_count
-            || self.root_origin != other.root_origin
-            || self.root_auxiliary_shift != other.root_auxiliary_shift
-            || self.root_revision != other.root_revision
-        {
-            return false;
+        fn equal<T: Clone + RangedItem + PartialEq>(left: &RangeNode<T>, right: &RangeNode<T>) -> bool {
+            std::ptr::eq(left, right)
+                || match (left.view(), right.view()) {
+                    (View::Leaf(left), View::Leaf(right)) => left == right,
+                    (View::Branch(left_left, left_right), View::Branch(right_left, right_right)) => {
+                        left.tag() == right.tag()
+                            && equal(left_left, right_left)
+                            && equal(left_right, right_right)
+                    }
+                    _ => false,
+                }
         }
-        match (&self.root, &other.root) {
-            (None, None) => true,
-            (Some(left), Some(right)) => node_items_equal(left, right),
-            _ => false,
-        }
+        self.origin == other.origin
+            && match (self.tree.root(), other.tree.root()) {
+                (None, None) => true,
+                (Some(left), Some(right)) => equal(left, right),
+                _ => false,
+            }
     }
-
-
 
     #[cfg(test)]
     fn shared_leaf_count_with(&self, other: &Self) -> usize {
-        match (&self.root, &other.root) {
-            (Some(left), Some(right)) => shared_leaf_count(left, right),
-            _ => 0,
-        }
+        self.tree.shared_leaf_count(&other.tree)
     }
 
     #[cfg(test)]
     fn leaf_count(&self) -> usize {
-        self.root.as_ref().map_or(0, |root| root.leaf_count)
+        self.tree.iter().count()
     }
 
     #[cfg(test)]
@@ -851,24 +992,26 @@ impl<T: Clone + RangedItem> PersistentRangeStore<T> {
             pair[0].range().start <= pair[1].range().start
                 && (!require_nondecreasing_end || pair[0].range().end <= pair[1].range().end)
         });
-        if !ordered {
-            return false;
-        }
-        match &self.root {
-            None => self.item_count == 0,
-            Some(root) => root.item_count == self.item_count && validate_node(root).is_some(),
-        }
+        let chunks = self.tree.iter().collect::<Vec<_>>();
+        ordered
+            && self.tree.invariant_holds()
+            && chunks.last().map_or(self.origin == 0, |last| last.advance == 0)
+            && chunks.iter().all(|chunk| {
+                (1..=RANGE_INDEX_LEAF_ITEMS).contains(&chunk.items.len())
+                    && chunk.items[0].range().start == 0
+                    && chunk.items.windows(2).all(|pair| pair[0].range().start <= pair[1].range().start)
+            })
+            && chunks.windows(2).all(|pair| {
+                pair[0].items.last().is_some_and(|item| item.range().start <= pair[0].advance)
+            })
     }
 }
 
 impl<T: Clone + RangedItem> Clone for PersistentRangeStore<T> {
     fn clone(&self) -> Self {
         Self {
-            root: self.root.clone(),
-            root_origin: self.root_origin,
-            root_auxiliary_shift: self.root_auxiliary_shift,
-            root_revision: self.root_revision,
-            item_count: self.item_count,
+            tree: self.tree.clone(),
+            origin: self.origin,
             compatibility_flat: clone_once_lock(&self.compatibility_flat),
         }
     }
@@ -882,760 +1025,154 @@ fn clone_once_lock<T>(source: &OnceLock<Arc<Vec<T>>>) -> OnceLock<Arc<Vec<T>>> {
     cloned
 }
 
-struct RangeNode<T> {
-    navigation: NavigationSummary,
-    auxiliary_bounds: Option<Range<usize>>,
-    max_end: usize,
-    item_count: usize,
-    leaf_count: usize,
-    height: usize,
-    kind: RangeNodeKind<T>,
-}
-
-enum RangeNodeKind<T> {
-    Leaf(Vec<T>),
-    Branch {
-        left: Arc<RangeNode<T>>,
-        left_offset: usize,
-        left_auxiliary_shift: i128,
-        left_revision: Option<u64>,
-        right: Arc<RangeNode<T>>,
-        right_offset: usize,
-        right_auxiliary_shift: i128,
-        right_revision: Option<u64>,
-    },
-}
-
-struct PositionedNode<T> {
-    origin: usize,
-    auxiliary_shift: i128,
-    revision: Option<u64>,
-    node: Arc<RangeNode<T>>,
-}
-
-impl<T: Clone + RangedItem> RangeNode<T> {
-    fn leaf(items: Vec<T>) -> PositionedNode<T> {
-        let origin = items
-            .first()
-            .expect("range-index leaves are constructed from non-empty chunks")
-            .range()
-            .start;
-        let normalized = items
-            .iter()
-            .map(|item| {
-                let range = item.range();
-                let start = range
-                    .start
-                    .checked_sub(origin)
-                    .expect("range-index input is ordered by start boundary");
-                let end = range
-                    .end
-                    .checked_sub(origin)
-                    .expect("a valid range ends at or after its leaf origin");
-                item.with_range(start..end)
-            })
-            .collect::<Vec<_>>();
-        let max_end = normalized
-            .iter()
-            .map(|item| item.range().end)
-            .max()
-            .expect("a non-empty range-index leaf has an end boundary");
-        PositionedNode {
-            origin,
-            auxiliary_shift: 0,
-            revision: None,
-            node: Arc::new(Self {
-                navigation: normalized.iter().fold(NavigationSummary::default(), |value, item| value.union(item.navigation_summary())),
-                auxiliary_bounds: normalized.iter().filter_map(RangedItem::auxiliary_range)
-                    .cloned().reduce(|a, b| a.start.min(b.start)..a.end.max(b.end)),
-                max_end,
-                item_count: normalized.len(),
-                leaf_count: 1,
-                height: 1,
-                kind: RangeNodeKind::Leaf(normalized),
-            }),
-        }
+/// `tree` with its last chunk's advance changed so that the chunks span `span`.
+fn with_span<T: Clone + RangedItem>(
+    tree: &Tree<Chunk<T>>,
+    span: usize,
+    work: &mut Work,
+) -> Option<Tree<Chunk<T>>> {
+    let current = tree.measure(|extent| extent.span);
+    if current == span {
+        return Some(tree.clone());
     }
-
-    fn branch(left: PositionedNode<T>, right: PositionedNode<T>) -> PositionedNode<T> {
-        let origin = left.origin.min(right.origin);
-        let left_offset = left
-            .origin
-            .checked_sub(origin)
-            .expect("left range-index origin follows its parent origin");
-        let right_offset = right
-            .origin
-            .checked_sub(origin)
-            .expect("right range-index origin follows its parent origin");
-        let node = Self::branch_with_offsets(
-            left.node,
-            left_offset,
-            left.auxiliary_shift,
-            left.revision,
-            right.node,
-            right_offset,
-            right.auxiliary_shift,
-            right.revision,
-        );
-        PositionedNode {
-            origin,
-            auxiliary_shift: 0,
-            revision: None,
-            node,
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn branch_with_offsets(
-        left: Arc<Self>,
-        left_offset: usize,
-        left_auxiliary_shift: i128,
-        left_revision: Option<u64>,
-        right: Arc<Self>,
-        right_offset: usize,
-        right_auxiliary_shift: i128,
-        right_revision: Option<u64>,
-    ) -> Arc<Self> {
-        let left_end = left_offset
-            .checked_add(left.max_end)
-            .expect("range-index left aggregate is representable");
-        let right_end = right_offset
-            .checked_add(right.max_end)
-            .expect("range-index right aggregate is representable");
-        Arc::new(Self {
-            navigation: left.navigation.union(right.navigation),
-            auxiliary_bounds: shifted_auxiliary_bounds(&left.auxiliary_bounds, left_auxiliary_shift)
-                .into_iter().chain(shifted_auxiliary_bounds(&right.auxiliary_bounds, right_auxiliary_shift))
-                .reduce(|a, b| a.start.min(b.start)..a.end.max(b.end)),
-            max_end: left_end.max(right_end),
-            item_count: left.item_count + right.item_count,
-            leaf_count: left.leaf_count + right.leaf_count,
-            height: left.height.max(right.height) + 1,
-            kind: RangeNodeKind::Branch {
-                left,
-                left_offset,
-                left_auxiliary_shift,
-                left_revision,
-                right,
-                right_offset,
-                right_auxiliary_shift,
-                right_revision,
-            },
-        })
-    }
+    let advance = (tree.last()?.advance + span).checked_sub(current)?;
+    let last = tree.measure(item_count) - 1;
+    Some(tree.update(&mut persistent::at(last, item_count), |chunk, _| Chunk { advance, ..chunk.clone() }, work))
 }
 
-fn build_balanced_root<T: Clone + RangedItem>(
-    leaves: &[PositionedNode<T>],
-    range: Range<usize>,
-) -> Option<PositionedNode<T>> {
-    match range.len() {
-        0 => None,
-        1 => Some(PositionedNode {
-            origin: leaves[range.start].origin,
-            auxiliary_shift: leaves[range.start].auxiliary_shift,
-            revision: leaves[range.start].revision,
-            node: leaves[range.start].node.clone(),
-        }),
-        _ => {
-            let middle = range.start + range.len() / 2;
-            let left = build_balanced_root(leaves, range.start..middle)
-                .expect("a split range-index node has a left child");
-            let right = build_balanced_root(leaves, middle..range.end)
-                .expect("a split range-index node has a right child");
-            Some(RangeNode::branch(left, right))
-        }
+/// `left` followed by `right`. Small chunks meeting at the seam are merged, so
+/// repeated splices do not fragment the leaves.
+fn join<T: Clone + RangedItem>(
+    left: Piece<T>,
+    right: Piece<T>,
+    work: &mut Work,
+    stats: &mut RangeSpliceStats,
+) -> Option<Piece<T>> {
+    let (Some(last), Some(first)) = (left.tree.last(), right.tree.first()) else {
+        return Some(if left.tree.is_empty() { right } else { left });
+    };
+    let (last_items, first_items) = (last.items.len(), first.items.len());
+    if last_items + first_items > RANGE_INDEX_LEAF_ITEMS {
+        let tree = with_span(&left.tree, right.origin.checked_sub(left.origin)?, work)?;
+        return Some(Piece { tree: tree.concat(&right.tree, work), origin: left.origin });
     }
+    let whole = |_: &Chunk<T>, _| unreachable!("a chunk boundary divides no chunk");
+    let (prefix, last) =
+        left.tree.split_at(left.tree.measure(item_count) - last_items, item_count, whole, work);
+    let (first, suffix) = right.tree.split_at(first_items, item_count, whole, work);
+    // The splits applied every pending change to the two chunks.
+    let (last, first) = (last.first()?, first.first()?);
+    let last_place = Place { origin: left.origin + prefix.measure(|extent| extent.span), ..Place::default() };
+    let first_place = Place { origin: right.origin, ..Place::default() };
+    let suffix_origin = right.origin + first.advance;
+    let items = (0..last_items)
+        .map(|index| last.item(index, last_place))
+        .chain((0..first_items).map(|index| first.item(index, first_place)))
+        .collect::<Vec<_>>();
+    stats.items_copied = stats.items_copied.saturating_add(items.len());
+    stats.leaves_copied = stats.leaves_copied.saturating_add(1);
+    let advance = if suffix.is_empty() { 0 } else { suffix_origin.checked_sub(last_place.origin)? };
+    let merged = Chunk::new(&items, last_place.origin, advance);
+    let merged = Piece { tree: Tree::from_items([merged], work), origin: last_place.origin };
+    let prefix = Piece { tree: prefix, origin: left.origin };
+    join(join(prefix, merged, work, stats)?, Piece { tree: suffix, origin: suffix_origin }, work, stats)
 }
 
-fn count_starts_before<T: RangedItem>(node: &RangeNode<T>, origin: usize, offset: usize) -> usize {
-    match &node.kind {
-        RangeNodeKind::Leaf(items) => items.partition_point(|item| {
-            origin
-                .checked_add(item.range().start)
-                .is_some_and(|start| start < offset)
-        }),
-        RangeNodeKind::Branch {
-            left,
-            left_offset,
-            right,
-            right_offset,
-            ..
-        } => {
-            let left_origin = origin
-                .checked_add(*left_offset)
-                .expect("range-index left origin is representable");
-            let right_origin = origin
-                .checked_add(*right_offset)
-                .expect("range-index right origin is representable");
+fn count_starts_before<T: Clone + RangedItem>(node: &RangeNode<T>, origin: usize, offset: usize) -> usize {
+    match node.view() {
+        View::Leaf(chunk) => chunk.items.partition_point(|item| origin + item.range().start < offset),
+        View::Branch(left, right) => {
+            let right_origin = origin + left.summary().span;
             if right_origin >= offset {
-                count_starts_before(left, left_origin, offset)
+                count_starts_before(left, origin, offset)
             } else {
-                left.item_count + count_starts_before(right, right_origin, offset)
+                left.summary().items + count_starts_before(right, right_origin, offset)
             }
         }
     }
 }
 
-fn shifted_auxiliary_bounds(bounds: &Option<Range<usize>>, shift: i128) -> Option<Range<usize>> {
-    bounds.as_ref().map(|bounds| {
-        usize::try_from(bounds.start as i128 + shift)
-            .expect("range-index auxiliary start is representable")
-            ..usize::try_from(bounds.end as i128 + shift)
-                .expect("range-index auxiliary end is representable")
-    })
-}
-
-fn count_auxiliary_starts_before<T: RangedItem>(
+/// `shift` is what the node's ancestors have yet to apply to it.
+fn count_auxiliary_starts_before<T: Clone + RangedItem>(
     node: &RangeNode<T>, shift: i128, offset: usize,
 ) -> usize {
-    match &node.kind {
-        RangeNodeKind::Leaf(items) => items.partition_point(|item| {
-            item.auxiliary_range().is_some_and(|range| range.start as i128 + shift < offset as i128)
+    let starts_before = |start: usize, shift: i128| start as i128 + shift < offset as i128;
+    match node.view() {
+        View::Leaf(chunk) => chunk.items.partition_point(|item| {
+            item.auxiliary_range()
+                .is_some_and(|range| starts_before(range.start, shift + chunk.lazy.auxiliary_shift))
         }),
-        RangeNodeKind::Branch {
-            left, left_auxiliary_shift, right, right_auxiliary_shift, ..
-        } => {
-            let right_shift = shift + right_auxiliary_shift;
-            if right.auxiliary_bounds.as_ref()
-                .is_some_and(|range| range.start as i128 + right_shift >= offset as i128)
-            {
-                count_auxiliary_starts_before(left, shift + left_auxiliary_shift, offset)
+        View::Branch(left, right) => {
+            let shift = shift + node.tag().map_or(0, |tag| tag.auxiliary_shift);
+            if right.summary().auxiliary.as_ref().is_some_and(|range| !starts_before(range.start, shift)) {
+                count_auxiliary_starts_before(left, shift, offset)
             } else {
-                left.item_count + count_auxiliary_starts_before(right, right_shift, offset)
+                left.summary().items + count_auxiliary_starts_before(right, shift, offset)
             }
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn query_auxiliary_node<T: Clone + RangedItem>(
-    node: &RangeNode<T>, origin: usize, auxiliary_shift: i128, revision: Option<u64>,
-    query: &Range<usize>, matches: &mut Vec<T>, mut stats: Option<&mut QueryStats>,
+    node: &RangeNode<T>, place: Place, query: &Range<usize>, matches: &mut Vec<T>,
+    mut stats: Option<&mut QueryStats>,
 ) {
     if let Some(stats) = stats.as_deref_mut() { stats.nodes_visited += 1; }
-    let Some(bounds) = &node.auxiliary_bounds else { return; };
-    if bounds.end as i128 + auxiliary_shift < query.start as i128
-        || bounds.start as i128 + auxiliary_shift > query.end as i128
-    {
+    let Some(bounds) = &node.summary().auxiliary else { return; };
+    let shift = place.lazy.auxiliary_shift;
+    if bounds.end as i128 + shift < query.start as i128 || bounds.start as i128 + shift > query.end as i128 {
         return;
     }
-    match &node.kind {
-        RangeNodeKind::Leaf(items) => {
-            for item in items {
+    match node.view() {
+        View::Leaf(chunk) => {
+            let shift = shift + chunk.lazy.auxiliary_shift;
+            for (index, item) in chunk.items.iter().enumerate() {
                 if let Some(stats) = stats.as_deref_mut() { stats.items_examined += 1; }
                 let Some(auxiliary) = item.auxiliary_range() else { continue; };
-                if auxiliary.start as i128 + auxiliary_shift > query.end as i128 { break; }
-                if auxiliary.end as i128 + auxiliary_shift >= query.start as i128 {
-                    let range = origin + item.range().start..origin + item.range().end;
-                    matches.push(item.with_transform(range, auxiliary_shift, revision)
-                        .expect("validated lazy range-index transformation is representable"));
+                if auxiliary.start as i128 + shift > query.end as i128 { break; }
+                if auxiliary.end as i128 + shift >= query.start as i128 {
+                    matches.push(chunk.item(index, place));
                 }
             }
         }
-        RangeNodeKind::Branch { left, left_offset, left_auxiliary_shift, left_revision,
-            right, right_offset, right_auxiliary_shift, right_revision } => {
-            query_auxiliary_node(left, origin + left_offset, auxiliary_shift + left_auxiliary_shift,
-                revision.or(*left_revision), query, matches, stats.as_deref_mut());
-            query_auxiliary_node(right, origin + right_offset, auxiliary_shift + right_auxiliary_shift,
-                revision.or(*right_revision), query, matches, stats);
+        View::Branch(left, right) => {
+            let places = place.children(node, left);
+            query_auxiliary_node(left, places.0, query, matches, stats.as_deref_mut());
+            query_auxiliary_node(right, places.1, query, matches, stats);
         }
     }
 }
 
-fn first_index_ending_after<T: RangedItem>(
+fn first_index_ending_after<T: Clone + RangedItem>(
     node: &RangeNode<T>,
     origin: usize,
     offset: usize,
     base_index: usize,
 ) -> Option<usize> {
-    if origin.checked_add(node.max_end)? <= offset {
+    if origin + node.summary().max_end <= offset {
         return None;
     }
-    match &node.kind {
-        RangeNodeKind::Leaf(items) => items
+    match node.view() {
+        View::Leaf(chunk) => chunk
+            .items
             .iter()
-            .position(|item| origin.checked_add(item.range().end).is_some_and(|end| end > offset))
-            .and_then(|position| base_index.checked_add(position)),
-        RangeNodeKind::Branch {
-            left,
-            left_offset,
-            right,
-            right_offset,
-            ..
-        } => first_index_ending_after(left, origin.checked_add(*left_offset)?, offset, base_index)
+            .position(|item| origin + item.range().end > offset)
+            .map(|position| base_index + position),
+        View::Branch(left, right) => first_index_ending_after(left, origin, offset, base_index)
             .or_else(|| {
                 first_index_ending_after(
                     right,
-                    origin.checked_add(*right_offset)?,
+                    origin + left.summary().span,
                     offset,
-                    base_index.checked_add(left.item_count)?,
+                    base_index + left.summary().items,
                 )
             }),
     }
 }
 
-#[allow(clippy::type_complexity)]
-fn split_positioned<T: Clone + RangedItem>(
-    positioned: Option<PositionedNode<T>>,
-    at: usize,
-    stats: &mut RangeSpliceStats,
-) -> Option<(Option<PositionedNode<T>>, Option<PositionedNode<T>>)> {
-    let Some(positioned) = positioned else {
-        return (at == 0).then_some((None, None));
-    };
-    if at > positioned.node.item_count {
-        return None;
-    }
-    if at == 0 {
-        return Some((None, Some(positioned)));
-    }
-    if at == positioned.node.item_count {
-        return Some((Some(positioned), None));
-    }
-    stats.nodes_visited = stats.nodes_visited.saturating_add(1);
-    match &positioned.node.kind {
-        RangeNodeKind::Leaf(items) => {
-            let absolute = |item: &T| {
-                let range = item.range();
-                item.with_transform(
-                    positioned.origin.checked_add(range.start).unwrap()
-                        ..positioned.origin.checked_add(range.end).unwrap(),
-                    positioned.auxiliary_shift,
-                    positioned.revision,
-                )
-            };
-            let left_items = items[..at]
-                .iter()
-                .map(&absolute)
-                .collect::<Option<Vec<_>>>()?;
-            let right_items = items[at..]
-                .iter()
-                .map(absolute)
-                .collect::<Option<Vec<_>>>()?;
-            stats.items_copied = stats.items_copied.saturating_add(items.len());
-            stats.leaves_copied = stats.leaves_copied.saturating_add(2);
-            stats.nodes_copied = stats.nodes_copied.saturating_add(2);
-            Some((
-                Some(RangeNode::leaf(left_items)),
-                Some(RangeNode::leaf(right_items)),
-            ))
-        }
-        RangeNodeKind::Branch {
-            left,
-            left_offset,
-            left_auxiliary_shift,
-            left_revision,
-            right,
-            right_offset,
-            right_auxiliary_shift,
-            right_revision,
-        } => {
-            let left_positioned = PositionedNode {
-                origin: positioned.origin.checked_add(*left_offset)?,
-                auxiliary_shift: positioned
-                    .auxiliary_shift
-                    .checked_add(*left_auxiliary_shift)?,
-                revision: positioned.revision.or(*left_revision),
-                node: left.clone(),
-            };
-            let right_positioned = PositionedNode {
-                origin: positioned.origin.checked_add(*right_offset)?,
-                auxiliary_shift: positioned
-                    .auxiliary_shift
-                    .checked_add(*right_auxiliary_shift)?,
-                revision: positioned.revision.or(*right_revision),
-                node: right.clone(),
-            };
-            match at.cmp(&left.item_count) {
-                Ordering::Less => {
-                    let (before, middle) = split_positioned(Some(left_positioned), at, stats)?;
-                    let after = join_optional_positioned(middle, Some(right_positioned), stats)?;
-                    Some((before, after))
-                }
-                Ordering::Equal => Some((Some(left_positioned), Some(right_positioned))),
-                Ordering::Greater => {
-                    let (middle, after) = split_positioned(
-                        Some(right_positioned),
-                        at.checked_sub(left.item_count)?,
-                        stats,
-                    )?;
-                    let before = join_optional_positioned(Some(left_positioned), middle, stats)?;
-                    Some((before, after))
-                }
-            }
-        }
-    }
-}
-
-fn shift_positioned<T>(
-    mut positioned: PositionedNode<T>,
-    old_coordinate_end: usize,
-    new_coordinate_end: usize,
-    auxiliary_ends: Option<(usize, usize)>,
-) -> Option<PositionedNode<T>> {
-    positioned.origin = if new_coordinate_end >= old_coordinate_end {
-        positioned
-            .origin
-            .checked_add(new_coordinate_end - old_coordinate_end)?
-    } else {
-        positioned
-            .origin
-            .checked_sub(old_coordinate_end - new_coordinate_end)?
-    };
-    if let Some((old_end, new_end)) = auxiliary_ends {
-        let delta = i128::try_from(new_end).ok()? - i128::try_from(old_end).ok()?;
-        positioned.auxiliary_shift = positioned.auxiliary_shift.checked_add(delta)?;
-    }
-    Some(positioned)
-}
-
-fn join_optional_positioned<T: Clone + RangedItem>(
-    left: Option<PositionedNode<T>>,
-    right: Option<PositionedNode<T>>,
-    stats: &mut RangeSpliceStats,
-) -> Option<Option<PositionedNode<T>>> {
-    match (left, right) {
-        (None, None) => Some(None),
-        (Some(node), None) | (None, Some(node)) => Some(Some(node)),
-        (Some(left), Some(right)) => join_positioned(left, right, stats).map(Some),
-    }
-}
-
-fn join_positioned<T: Clone + RangedItem>(
-    left: PositionedNode<T>,
-    right: PositionedNode<T>,
-    stats: &mut RangeSpliceStats,
-) -> Option<PositionedNode<T>> {
-    let boundary_items = rightmost_leaf_item_count(&left.node)
-        .checked_add(leftmost_leaf_item_count(&right.node))?;
-    if boundary_items <= RANGE_INDEX_LEAF_ITEMS {
-        let (left_prefix, left_leaf) = take_last_leaf(left, stats)?;
-        let (right_leaf, right_suffix) = take_first_leaf(right, stats)?;
-        let merged = merge_positioned_leaves(&left_leaf, &right_leaf, stats)?;
-        let prefix_and_merged = join_optional_positioned(left_prefix, Some(merged), stats)?;
-        return join_optional_positioned(prefix_and_merged, right_suffix, stats)?;
-    }
-    join_positioned_balanced(left, right, stats)
-}
-
-fn join_positioned_balanced<T: Clone + RangedItem>(
-    left: PositionedNode<T>,
-    right: PositionedNode<T>,
-    stats: &mut RangeSpliceStats,
-) -> Option<PositionedNode<T>> {
-    if left.node.height > right.node.height.saturating_add(1) {
-        let (left_left, left_right) = positioned_children(&left)?;
-        let joined = join_positioned_balanced(left_right, right, stats)?;
-        rebalance_positioned(left_left, joined, stats)
-    } else if right.node.height > left.node.height.saturating_add(1) {
-        let (right_left, right_right) = positioned_children(&right)?;
-        let joined = join_positioned_balanced(left, right_left, stats)?;
-        rebalance_positioned(joined, right_right, stats)
-    } else {
-        Some(copied_branch(left, right, stats))
-    }
-}
-
-fn rightmost_leaf_item_count<T>(node: &RangeNode<T>) -> usize {
-    match &node.kind {
-        RangeNodeKind::Leaf(items) => items.len(),
-        RangeNodeKind::Branch { right, .. } => rightmost_leaf_item_count(right),
-    }
-}
-
-fn leftmost_leaf_item_count<T>(node: &RangeNode<T>) -> usize {
-    match &node.kind {
-        RangeNodeKind::Leaf(items) => items.len(),
-        RangeNodeKind::Branch { left, .. } => leftmost_leaf_item_count(left),
-    }
-}
-
-fn take_last_leaf<T: Clone + RangedItem>(
-    positioned: PositionedNode<T>,
-    stats: &mut RangeSpliceStats,
-) -> Option<(Option<PositionedNode<T>>, PositionedNode<T>)> {
-    if matches!(&positioned.node.kind, RangeNodeKind::Leaf(_)) {
-        return Some((None, positioned));
-    }
-    let (left, right) = positioned_children(&positioned)?;
-    let (right_prefix, leaf) = take_last_leaf(right, stats)?;
-    let prefix = join_optional_positioned_balanced(Some(left), right_prefix, stats)?;
-    Some((prefix, leaf))
-}
-
-fn take_first_leaf<T: Clone + RangedItem>(
-    positioned: PositionedNode<T>,
-    stats: &mut RangeSpliceStats,
-) -> Option<(PositionedNode<T>, Option<PositionedNode<T>>)> {
-    if matches!(&positioned.node.kind, RangeNodeKind::Leaf(_)) {
-        return Some((positioned, None));
-    }
-    let (left, right) = positioned_children(&positioned)?;
-    let (leaf, left_suffix) = take_first_leaf(left, stats)?;
-    let suffix = join_optional_positioned_balanced(left_suffix, Some(right), stats)?;
-    Some((leaf, suffix))
-}
-
-fn join_optional_positioned_balanced<T: Clone + RangedItem>(
-    left: Option<PositionedNode<T>>,
-    right: Option<PositionedNode<T>>,
-    stats: &mut RangeSpliceStats,
-) -> Option<Option<PositionedNode<T>>> {
-    match (left, right) {
-        (None, None) => Some(None),
-        (Some(node), None) | (None, Some(node)) => Some(Some(node)),
-        (Some(left), Some(right)) => join_positioned_balanced(left, right, stats).map(Some),
-    }
-}
-
-fn merge_positioned_leaves<T: Clone + RangedItem>(
-    left: &PositionedNode<T>,
-    right: &PositionedNode<T>,
-    stats: &mut RangeSpliceStats,
-) -> Option<PositionedNode<T>> {
-    let item_count = left.node.item_count.checked_add(right.node.item_count)?;
-    if item_count > RANGE_INDEX_LEAF_ITEMS {
-        return None;
-    }
-    let mut items = positioned_leaf_items(left)?;
-    items.extend(positioned_leaf_items(right)?);
-    stats.items_copied = stats.items_copied.saturating_add(item_count);
-    stats.leaves_copied = stats.leaves_copied.saturating_add(1);
-    stats.nodes_copied = stats.nodes_copied.saturating_add(1);
-    Some(RangeNode::leaf(items))
-}
-
-fn positioned_leaf_items<T: Clone + RangedItem>(
-    positioned: &PositionedNode<T>,
-) -> Option<Vec<T>> {
-    let RangeNodeKind::Leaf(items) = &positioned.node.kind else {
-        return None;
-    };
-    items
-        .iter()
-        .map(|item| {
-            let range = item.range();
-            item.with_transform(
-                positioned.origin.checked_add(range.start)?
-                    ..positioned.origin.checked_add(range.end)?,
-                positioned.auxiliary_shift,
-                positioned.revision,
-            )
-        })
-        .collect()
-}
-
-fn rebalance_positioned<T: Clone + RangedItem>(
-    left: PositionedNode<T>,
-    right: PositionedNode<T>,
-    stats: &mut RangeSpliceStats,
-) -> Option<PositionedNode<T>> {
-    if left.node.height > right.node.height.saturating_add(1) {
-        let (left_left, left_right) = positioned_children(&left)?;
-        if left_left.node.height >= left_right.node.height {
-            let new_right = copied_branch(left_right, right, stats);
-            return Some(copied_branch(left_left, new_right, stats));
-        }
-        let (middle_left, middle_right) = positioned_children(&left_right)?;
-        let new_left = copied_branch(left_left, middle_left, stats);
-        let new_right = copied_branch(middle_right, right, stats);
-        return Some(copied_branch(new_left, new_right, stats));
-    }
-    if right.node.height > left.node.height.saturating_add(1) {
-        let (right_left, right_right) = positioned_children(&right)?;
-        if right_right.node.height >= right_left.node.height {
-            let new_left = copied_branch(left, right_left, stats);
-            return Some(copied_branch(new_left, right_right, stats));
-        }
-        let (middle_left, middle_right) = positioned_children(&right_left)?;
-        let new_left = copied_branch(left, middle_left, stats);
-        let new_right = copied_branch(middle_right, right_right, stats);
-        return Some(copied_branch(new_left, new_right, stats));
-    }
-    Some(copied_branch(left, right, stats))
-}
-
-fn positioned_children<T>(
-    positioned: &PositionedNode<T>,
-) -> Option<(PositionedNode<T>, PositionedNode<T>)> {
-    let RangeNodeKind::Branch {
-        left,
-        left_offset,
-        left_auxiliary_shift,
-        left_revision,
-        right,
-        right_offset,
-        right_auxiliary_shift,
-        right_revision,
-    } = &positioned.node.kind
-    else {
-        return None;
-    };
-    Some((
-        PositionedNode {
-            origin: positioned.origin.checked_add(*left_offset)?,
-            auxiliary_shift: positioned
-                .auxiliary_shift
-                .checked_add(*left_auxiliary_shift)?,
-            revision: positioned.revision.or(*left_revision),
-            node: left.clone(),
-        },
-        PositionedNode {
-            origin: positioned.origin.checked_add(*right_offset)?,
-            auxiliary_shift: positioned
-                .auxiliary_shift
-                .checked_add(*right_auxiliary_shift)?,
-            revision: positioned.revision.or(*right_revision),
-            node: right.clone(),
-        },
-    ))
-}
-
-fn copied_branch<T: Clone + RangedItem>(
-    left: PositionedNode<T>,
-    right: PositionedNode<T>,
-    stats: &mut RangeSpliceStats,
-) -> PositionedNode<T> {
-    stats.nodes_copied = stats.nodes_copied.saturating_add(1);
-    RangeNode::branch(left, right)
-}
-
-fn append_items<T: Clone + RangedItem>(
-    node: &RangeNode<T>,
-    origin: usize,
-    auxiliary_shift: i128,
-    revision: Option<u64>,
-    output: &mut Vec<T>,
-) {
-    match &node.kind {
-        RangeNodeKind::Leaf(items) => output.extend(items.iter().map(|item| {
-            let range = item.range();
-            item.with_transform(
-                origin
-                    .checked_add(range.start)
-                    .expect("range-index start is representable")
-                    ..origin
-                        .checked_add(range.end)
-                        .expect("range-index end is representable"),
-                auxiliary_shift,
-                revision,
-            )
-            .expect("validated lazy range-index transformation is representable")
-        })),
-        RangeNodeKind::Branch {
-            left,
-            left_offset,
-            left_auxiliary_shift,
-            left_revision,
-            right,
-            right_offset,
-            right_auxiliary_shift,
-            right_revision,
-        } => {
-            append_items(
-                left,
-                origin
-                    .checked_add(*left_offset)
-                    .expect("range-index left origin is representable"),
-                auxiliary_shift
-                    .checked_add(*left_auxiliary_shift)
-                    .expect("range-index auxiliary shift is representable"),
-                revision.or(*left_revision),
-                output,
-            );
-            append_items(
-                right,
-                origin
-                    .checked_add(*right_offset)
-                    .expect("range-index right origin is representable"),
-                auxiliary_shift
-                    .checked_add(*right_auxiliary_shift)
-                    .expect("range-index auxiliary shift is representable"),
-                revision.or(*right_revision),
-                output,
-            );
-        }
-    }
-}
-
-fn get_item<T: Clone + RangedItem>(
-    node: &RangeNode<T>,
-    origin: usize,
-    auxiliary_shift: i128,
-    revision: Option<u64>,
-    index: usize,
-    mut stats: Option<&mut QueryStats>,
-) -> T {
-    if let Some(stats) = stats.as_deref_mut() {
-        stats.nodes_visited += 1;
-    }
-    match &node.kind {
-        RangeNodeKind::Leaf(items) => {
-            if let Some(stats) = stats.as_deref_mut() {
-                stats.items_examined += 1;
-            }
-            let item = &items[index];
-            let relative = item.range();
-            item.with_transform(
-                origin
-                    .checked_add(relative.start)
-                    .expect("range-index item start is representable")
-                    ..origin
-                        .checked_add(relative.end)
-                        .expect("range-index item end is representable"),
-                auxiliary_shift,
-                revision,
-            )
-            .expect("validated lazy range-index transformation is representable")
-        }
-        RangeNodeKind::Branch {
-            left,
-            left_offset,
-            left_auxiliary_shift,
-            left_revision,
-            right,
-            right_offset,
-            right_auxiliary_shift,
-            right_revision,
-        } => {
-            if index < left.item_count {
-                get_item(
-                    left,
-                    origin
-                        .checked_add(*left_offset)
-                        .expect("range-index left lookup origin is representable"),
-                    auxiliary_shift
-                        .checked_add(*left_auxiliary_shift)
-                        .expect("range-index auxiliary shift is representable"),
-                    revision.or(*left_revision),
-                    index,
-                    stats,
-                )
-            } else {
-                get_item(
-                    right,
-                    origin
-                        .checked_add(*right_offset)
-                        .expect("range-index right lookup origin is representable"),
-                    auxiliary_shift
-                        .checked_add(*right_auxiliary_shift)
-                        .expect("range-index auxiliary shift is representable"),
-                    revision.or(*right_revision),
-                    index - left.item_count,
-                    stats,
-                )
-            }
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
 fn append_item_range<T: Clone + RangedItem>(
     node: &RangeNode<T>,
-    origin: usize,
-    auxiliary_shift: i128,
-    revision: Option<u64>,
+    place: Place,
     base_index: usize,
     indices: &Range<usize>,
     output: &mut Vec<T>,
@@ -1644,81 +1181,27 @@ fn append_item_range<T: Clone + RangedItem>(
     if let Some(stats) = stats.as_deref_mut() {
         stats.nodes_visited += 1;
     }
-    let node_end = base_index
-        .checked_add(node.item_count)
-        .expect("range-index ordinal aggregate is representable");
-    if node_end <= indices.start || base_index >= indices.end {
+    if base_index + node.summary().items <= indices.start || base_index >= indices.end {
         return;
     }
-    match &node.kind {
-        RangeNodeKind::Leaf(items) => {
-            let local_start = indices.start.saturating_sub(base_index).min(items.len());
-            let local_end = indices.end.saturating_sub(base_index).min(items.len());
-            for item in &items[local_start..local_end] {
-                if let Some(stats) = stats.as_deref_mut() {
-                    stats.items_examined += 1;
-                }
-                let relative = item.range();
-                output.push(
-                    item.with_transform(
-                        origin
-                            .checked_add(relative.start)
-                            .expect("range-index item start is representable")
-                            ..origin
-                                .checked_add(relative.end)
-                                .expect("range-index item end is representable"),
-                        auxiliary_shift,
-                        revision,
-                    )
-                    .expect("validated lazy range-index transformation is representable"),
-                );
+    match node.view() {
+        View::Leaf(chunk) => {
+            let local_start = indices.start.saturating_sub(base_index).min(chunk.items.len());
+            let local_end = indices.end.saturating_sub(base_index).min(chunk.items.len());
+            if let Some(stats) = stats.as_deref_mut() {
+                stats.items_examined += local_end - local_start;
             }
+            output.extend((local_start..local_end).map(|index| chunk.item(index, place)));
         }
-        RangeNodeKind::Branch {
-            left,
-            left_offset,
-            left_auxiliary_shift,
-            left_revision,
-            right,
-            right_offset,
-            right_auxiliary_shift,
-            right_revision,
-        } => {
-            append_item_range(
-                left,
-                origin
-                    .checked_add(*left_offset)
-                    .expect("range-index left ordinal origin is representable"),
-                auxiliary_shift
-                    .checked_add(*left_auxiliary_shift)
-                    .expect("range-index auxiliary shift is representable"),
-                revision.or(*left_revision),
-                base_index,
-                indices,
-                output,
-                stats.as_deref_mut(),
-            );
-            append_item_range(
-                right,
-                origin
-                    .checked_add(*right_offset)
-                    .expect("range-index right ordinal origin is representable"),
-                auxiliary_shift
-                    .checked_add(*right_auxiliary_shift)
-                    .expect("range-index auxiliary shift is representable"),
-                revision.or(*right_revision),
-                base_index
-                    .checked_add(left.item_count)
-                    .expect("range-index right ordinal base is representable"),
-                indices,
-                output,
-                stats,
-            );
+        View::Branch(left, right) => {
+            let places = place.children(node, left);
+            append_item_range(left, places.0, base_index, indices, output, stats.as_deref_mut());
+            append_item_range(right, places.1, base_index + left.summary().items, indices, output, stats);
         }
     }
 }
 
-fn find_touching_index<T: RangedItem>(
+fn find_touching_index<T: Clone + RangedItem>(
     node: &RangeNode<T>,
     origin: usize,
     offset: usize,
@@ -1726,55 +1209,22 @@ fn find_touching_index<T: RangedItem>(
     stats: &mut QueryStats,
 ) -> Option<usize> {
     stats.nodes_visited += 1;
-    let maximum_end = origin.checked_add(node.max_end)?;
-    if origin > offset || maximum_end < offset {
+    if origin > offset || origin + node.summary().max_end < offset {
         return None;
     }
-    match &node.kind {
-        RangeNodeKind::Leaf(items) => {
-            let relative_offset = offset.checked_sub(origin)?;
-            let after = items.partition_point(|item| item.range().start <= relative_offset);
+    match node.view() {
+        View::Leaf(chunk) => {
+            let relative_offset = offset - origin;
+            let after = chunk.items.partition_point(|item| item.range().start <= relative_offset);
             let local = after.checked_sub(1)?;
-            if relative_offset <= items[local].range().end {
-                base_index.checked_add(local)
-            } else {
-                None
-            }
+            (relative_offset <= chunk.items[local].range().end).then_some(base_index + local)
         }
-        RangeNodeKind::Branch {
-            left,
-            left_offset,
-            right,
-            right_offset,
-            ..
-        } => {
-            let right_origin = origin.checked_add(*right_offset)?;
-            if right_origin <= offset {
-                find_touching_index(
-                    right,
-                    right_origin,
-                    offset,
-                    base_index.checked_add(left.item_count)?,
-                    stats,
-                )
-                .or_else(|| {
-                    find_touching_index(
-                        left,
-                        origin.checked_add(*left_offset)?,
-                        offset,
-                        base_index,
-                        stats,
-                    )
-                })
-            } else {
-                find_touching_index(
-                    left,
-                    origin.checked_add(*left_offset)?,
-                    offset,
-                    base_index,
-                    stats,
-                )
-            }
+        View::Branch(left, right) => {
+            let right_origin = origin + left.summary().span;
+            let in_right = (right_origin <= offset)
+                .then(|| find_touching_index(right, right_origin, offset, base_index + left.summary().items, stats))
+                .flatten();
+            in_right.or_else(|| find_touching_index(left, origin, offset, base_index, stats))
         }
     }
 }
@@ -1786,15 +1236,8 @@ enum Intersection {
 }
 
 impl Intersection {
-    fn subtree_misses(
-        self,
-        node: &RangeNode<impl RangedItem>,
-        origin: usize,
-        query: &Range<usize>,
-    ) -> bool {
-        let max_end = origin
-            .checked_add(node.max_end)
-            .expect("range-index aggregate is representable");
+    fn subtree_misses(self, extent: &Extent, origin: usize, query: &Range<usize>) -> bool {
+        let max_end = origin + extent.max_end;
         match self {
             Self::Touching => max_end < query.start || origin > query.end,
             Self::Overlapping => max_end <= query.start || origin >= query.end,
@@ -1809,12 +1252,9 @@ impl Intersection {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn query_node<T: Clone + RangedItem>(
     node: &RangeNode<T>,
-    origin: usize,
-    auxiliary_shift: i128,
-    revision: Option<u64>,
+    place: Place,
     query: &Range<usize>,
     intersection: Intersection,
     matches: &mut Vec<T>,
@@ -1823,255 +1263,28 @@ fn query_node<T: Clone + RangedItem>(
     if let Some(stats) = stats.as_deref_mut() {
         stats.nodes_visited += 1;
     }
-    if intersection.subtree_misses(node, origin, query) {
+    if intersection.subtree_misses(node.summary(), place.origin, query) {
         return;
     }
-    match &node.kind {
-        RangeNodeKind::Leaf(items) => {
-            for item in items {
+    match node.view() {
+        View::Leaf(chunk) => {
+            for (index, item) in chunk.items.iter().enumerate() {
                 if let Some(stats) = stats.as_deref_mut() {
                     stats.items_examined += 1;
                 }
-                let relative = item.range();
-                let range = origin
-                    .checked_add(relative.start)
-                    .expect("range-index item start is representable")
-                    ..origin
-                        .checked_add(relative.end)
-                        .expect("range-index item end is representable");
+                let range = place.origin + item.range().start..place.origin + item.range().end;
                 if range.start > query.end {
                     break;
                 }
                 if intersection.includes(&range, query) {
-                    matches.push(
-                        item.with_transform(range, auxiliary_shift, revision)
-                            .expect("validated lazy range-index transformation is representable"),
-                    );
+                    matches.push(chunk.item(index, place));
                 }
             }
         }
-        RangeNodeKind::Branch {
-            left,
-            left_offset,
-            left_auxiliary_shift,
-            left_revision,
-            right,
-            right_offset,
-            right_auxiliary_shift,
-            right_revision,
-        } => {
-            query_node(
-                left,
-                origin
-                    .checked_add(*left_offset)
-                    .expect("range-index left query origin is representable"),
-                auxiliary_shift
-                    .checked_add(*left_auxiliary_shift)
-                    .expect("range-index auxiliary shift is representable"),
-                revision.or(*left_revision),
-                query,
-                intersection,
-                matches,
-                stats.as_deref_mut(),
-            );
-            query_node(
-                right,
-                origin
-                    .checked_add(*right_offset)
-                    .expect("range-index right query origin is representable"),
-                auxiliary_shift
-                    .checked_add(*right_auxiliary_shift)
-                    .expect("range-index auxiliary shift is representable"),
-                revision.or(*right_revision),
-                query,
-                intersection,
-                matches,
-                stats,
-            );
-        }
-    }
-}
-
-fn reuse_node<T: Clone + RangedItem + PartialEq>(
-    candidate: Arc<RangeNode<T>>,
-    previous: &Arc<RangeNode<T>>,
-) -> Arc<RangeNode<T>> {
-    match (&candidate.kind, &previous.kind) {
-        (RangeNodeKind::Leaf(candidate_items), RangeNodeKind::Leaf(previous_items)) => {
-            if candidate_items == previous_items {
-                previous.clone()
-            } else {
-                candidate
-            }
-        }
-        (
-            RangeNodeKind::Branch {
-                left: candidate_left,
-                left_offset: candidate_left_offset,
-                left_auxiliary_shift: candidate_left_auxiliary_shift,
-                left_revision: candidate_left_revision,
-                right: candidate_right,
-                right_offset: candidate_right_offset,
-                right_auxiliary_shift: candidate_right_auxiliary_shift,
-                right_revision: candidate_right_revision,
-            },
-            RangeNodeKind::Branch {
-                left: previous_left,
-                left_offset: previous_left_offset,
-                left_auxiliary_shift: previous_left_auxiliary_shift,
-                left_revision: previous_left_revision,
-                right: previous_right,
-                right_offset: previous_right_offset,
-                right_auxiliary_shift: previous_right_auxiliary_shift,
-                right_revision: previous_right_revision,
-            },
-        ) if candidate_left.item_count == previous_left.item_count
-            && candidate_right.item_count == previous_right.item_count =>
-        {
-            let left = reuse_node(candidate_left.clone(), previous_left);
-            let right = reuse_node(candidate_right.clone(), previous_right);
-            if Arc::ptr_eq(&left, previous_left)
-                && Arc::ptr_eq(&right, previous_right)
-                && candidate_left_offset == previous_left_offset
-                && candidate_right_offset == previous_right_offset
-                && candidate_left_auxiliary_shift == previous_left_auxiliary_shift
-                && candidate_right_auxiliary_shift == previous_right_auxiliary_shift
-                && candidate_left_revision == previous_left_revision
-                && candidate_right_revision == previous_right_revision
-            {
-                previous.clone()
-            } else if Arc::ptr_eq(&left, candidate_left) && Arc::ptr_eq(&right, candidate_right) {
-                candidate
-            } else {
-                RangeNode::branch_with_offsets(
-                    left,
-                    *candidate_left_offset,
-                    *candidate_left_auxiliary_shift,
-                    *candidate_left_revision,
-                    right,
-                    *candidate_right_offset,
-                    *candidate_right_auxiliary_shift,
-                    *candidate_right_revision,
-                )
-            }
-        }
-        _ => candidate,
-    }
-}
-
-fn node_items_equal<T: PartialEq>(left: &RangeNode<T>, right: &RangeNode<T>) -> bool {
-    if std::ptr::eq(left, right) {
-        return true;
-    }
-    match (&left.kind, &right.kind) {
-        (RangeNodeKind::Leaf(left), RangeNodeKind::Leaf(right)) => left == right,
-        (
-            RangeNodeKind::Branch {
-                left: left_left,
-                left_offset: left_left_offset,
-                left_auxiliary_shift: left_left_auxiliary_shift,
-                left_revision: left_left_revision,
-                right: left_right,
-                right_offset: left_right_offset,
-                right_auxiliary_shift: left_right_auxiliary_shift,
-                right_revision: left_right_revision,
-            },
-            RangeNodeKind::Branch {
-                left: right_left,
-                left_offset: right_left_offset,
-                left_auxiliary_shift: right_left_auxiliary_shift,
-                left_revision: right_left_revision,
-                right: right_right,
-                right_offset: right_right_offset,
-                right_auxiliary_shift: right_right_auxiliary_shift,
-                right_revision: right_right_revision,
-            },
-        ) => {
-            left_left_offset == right_left_offset
-                && left_right_offset == right_right_offset
-                && left_left_auxiliary_shift == right_left_auxiliary_shift
-                && left_right_auxiliary_shift == right_right_auxiliary_shift
-                && left_left_revision == right_left_revision
-                && left_right_revision == right_right_revision
-                && node_items_equal(left_left, right_left)
-                && node_items_equal(left_right, right_right)
-        }
-        _ => false,
-    }
-}
-
-#[cfg(test)]
-fn shared_leaf_count<T>(left: &Arc<RangeNode<T>>, right: &Arc<RangeNode<T>>) -> usize {
-    fn collect<T>(
-        node: &Arc<RangeNode<T>>,
-        output: &mut std::collections::HashSet<*const RangeNode<T>>,
-    ) {
-        match &node.kind {
-            RangeNodeKind::Leaf(_) => {
-                output.insert(Arc::as_ptr(node));
-            }
-            RangeNodeKind::Branch { left, right, .. } => {
-                collect(left, output);
-                collect(right, output);
-            }
-        }
-    }
-    fn count<T>(
-        node: &Arc<RangeNode<T>>,
-        candidates: &std::collections::HashSet<*const RangeNode<T>>,
-    ) -> usize {
-        match &node.kind {
-            RangeNodeKind::Leaf(_) => usize::from(candidates.contains(&Arc::as_ptr(node))),
-            RangeNodeKind::Branch { left, right, .. } => {
-                count(left, candidates) + count(right, candidates)
-            }
-        }
-    }
-    let mut left_leaves = std::collections::HashSet::new();
-    collect(left, &mut left_leaves);
-    count(right, &left_leaves)
-}
-
-#[cfg(test)]
-fn validate_node<T: RangedItem>(node: &RangeNode<T>) -> Option<(usize, usize, usize, usize)> {
-    match &node.kind {
-        RangeNodeKind::Leaf(items) => {
-            if items.is_empty() || items.len() > RANGE_INDEX_LEAF_ITEMS {
-                return None;
-            }
-            let starts_ordered = items
-                .windows(2)
-                .all(|pair| pair[0].range().start <= pair[1].range().start);
-            let max_end = items.iter().map(|item| item.range().end).max()?;
-            (starts_ordered
-                && items.first()?.range().start == 0
-                && node.navigation == items.iter().fold(NavigationSummary::default(), |value, item| value.union(item.navigation_summary()))
-                && node.max_end == max_end
-                && node.item_count == items.len()
-                && node.leaf_count == 1
-                && node.height == 1)
-                .then_some((max_end, items.len(), 1, 1))
-        }
-        RangeNodeKind::Branch {
-            left,
-            left_offset,
-            right,
-            right_offset,
-            ..
-        } => {
-            let (left_max, left_items, left_leaves, left_height) = validate_node(left)?;
-            let (right_max, right_items, right_leaves, right_height) = validate_node(right)?;
-            let aggregate_max = left_offset
-                .checked_add(left_max)?
-                .max(right_offset.checked_add(right_max)?);
-            (*left_offset == 0
-                && left_height.abs_diff(right_height) <= 1
-                && node.navigation == left.navigation.union(right.navigation)
-                && node.max_end == aggregate_max
-                && node.item_count == left_items + right_items
-                && node.leaf_count == left_leaves + right_leaves
-                && node.height == left_height.max(right_height) + 1)
-                .then_some((node.max_end, node.item_count, node.leaf_count, node.height))
+        View::Branch(left, right) => {
+            let places = place.children(node, left);
+            query_node(left, places.0, query, intersection, matches, stats.as_deref_mut());
+            query_node(right, places.1, query, intersection, matches, stats);
         }
     }
 }
@@ -2270,7 +1483,8 @@ mod tests {
             changed.get(target + 1).unwrap().0,
             target * 2 + 5..target * 2 + 6
         );
-        assert!(stats.nodes_visited <= 48, "{stats:?}");
+        // Two splits of a 15-level tree, each descending and rejoining one path.
+        assert!(stats.nodes_visited <= 80, "{stats:?}");
         assert!(
             stats.items_copied <= RANGE_INDEX_LEAF_ITEMS * 4,
             "{stats:?}"

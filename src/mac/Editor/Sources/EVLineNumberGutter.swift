@@ -22,17 +22,16 @@ extension EVCoreViewSession {
     func setNumber(_ enabled: Bool) throws {
         try lineNumberCheck(viem_core_view_set_number(document.core, viewID, enabled ? 1 : 0))
     }
-    func lineNumberInfo() throws -> ViemLineNumberSnapshotInfoV1 {
-        var info = ViemLineNumberSnapshotInfoV1()
-        info.struct_size = UInt32(MemoryLayout<ViemLineNumberSnapshotInfoV1>.size)
+    func lineNumberInfo() throws -> ViemLineNumberSnapshotInfo {
+        var info = ViemLineNumberSnapshotInfo()
         try lineNumberCheck(viem_core_view_line_number_snapshot_info(document.core, viewID, &info))
         return info
     }
-    func lineNumberBands(_ info: ViemLineNumberSnapshotInfoV1) throws -> [EVLineNumberBand] {
+    func lineNumberBands(_ info: ViemLineNumberSnapshotInfo) throws -> [EVLineNumberBand] {
         guard let count = Int(exactly: info.region_count), count <= 1_000_000 else {
             throw EVCoreFrontendError.core(operation: "Read line numbers", status: UInt32(VIEM_STATUS_INVALID_ARGUMENT))
         }
-        var rows = Array(repeating: ViemLineNumberRegionV1(), count: count)
+        var rows = Array(repeating: ViemLineNumberRegion(), count: count)
         var identity = info.identity, viewport = info.viewport, copied: UInt64 = 0
         let status = rows.withUnsafeMutableBufferPointer { buffer in
             viem_core_view_copy_line_number_regions(document.core, viewID, &identity, &viewport,

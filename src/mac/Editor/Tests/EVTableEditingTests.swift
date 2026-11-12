@@ -401,7 +401,7 @@ final class EVTableEditingTests: XCTestCase {
         let second = try XCTUnwrap(snapshot.tableCells.first { $0.row == 0 && $0.column == 1 })
         XCTAssertEqual(first.rect.y, second.rect.y, accuracy: 0.01)
         XCTAssertGreaterThan(second.rect.x, first.rect.x)
-        var selection = ViemTableSelectionV1(); selection.struct_size = UInt32(MemoryLayout<ViemTableSelectionV1>.size)
+        var selection = ViemTableSelection()
         selection.active = 1; selection.document_id = snapshot.info.identity.document_id; selection.document_revision = snapshot.info.identity.document_revision
         selection.table_id = first.table_id; selection.anchor_row = 0; selection.anchor_column = 0; selection.active_row = 1; selection.active_column = 1
         _ = try session.selectTableCells(selection)
@@ -462,7 +462,7 @@ final class EVTableEditingTests: XCTestCase {
             let before = try backend.formattedText()
             let snapshot = try session.layoutExport()
             let cell = try XCTUnwrap(snapshot.tableCells.first { $0.row == 1 && $0.column == 1 })
-            var selected = ViemTableSelectionV1(); selected.struct_size = UInt32(MemoryLayout<ViemTableSelectionV1>.size)
+            var selected = ViemTableSelection()
             selected.active = 1; selected.document_id = snapshot.info.identity.document_id; selected.document_revision = snapshot.info.identity.document_revision
             selected.table_id = cell.table_id; selected.anchor_row = 1; selected.anchor_column = 1; selected.active_row = 3; selected.active_column = 2
             _ = try session.selectTableCells(selected); surface.refreshPresentation()

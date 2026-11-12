@@ -24,8 +24,8 @@ struct EVWhitespaceMarkerExport: Codable, Equatable {
 }
 
 struct EVWhitespaceExportCache {
-    var identity: ViemLayoutSnapshotIdentityV1
-    var viewport: ViemLayoutRectV1
+    var identity: ViemLayoutSnapshotIdentity
+    var viewport: ViemLayoutRect
     var exported: EVWhitespaceMarkerExport
 }
 
@@ -54,17 +54,16 @@ extension EVCoreViewSession {
         try document.configureWhitespace(indentation: indentation, presentation: presentation)
     }
 
-    func whitespaceMarkersExport(identity: ViemLayoutSnapshotIdentityV1, expectedViewport: ViemLayoutRectV1? = nil) throws -> EVWhitespaceMarkerExport {
+    func whitespaceMarkersExport(identity: ViemLayoutSnapshotIdentity, expectedViewport: ViemLayoutRect? = nil) throws -> EVWhitespaceMarkerExport {
         var expected = identity
         let state = try viewportState()
         let info = try layoutSnapshotInfo()
-        let currentViewport = ViemLayoutRectV1(x: state.left, y: state.top,
+        let currentViewport = ViemLayoutRect(x: state.left, y: state.top,
                                                width: info.viewport_width, height: info.viewport_height)
         var viewport = expectedViewport ?? currentViewport
         // Let the ABI diagnose stale/invalid explicit requests; cache hits must
         // satisfy the same identity and viewport checks as an actual copy.
         if let cached = cachedWhitespaceExport,
-           identity.struct_size >= UInt32(MemoryLayout<ViemLayoutSnapshotIdentityV1>.size),
            info.identity.isSameLayout(as: identity),
            cached.identity.isSameLayout(as: identity),
            viewport.x == currentViewport.x, viewport.y == currentViewport.y,

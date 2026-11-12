@@ -193,13 +193,12 @@ fn formatting_actions_ffi_reports_the_core_decision() {
         ("```\ncode\n```", false, false),
     ] {
         let fixture = super::ffi_core_surface::table_ffi_fixture(source.as_bytes(), VIEM_FORMAT_MARKDOWN);
-        let mut info = ViemFormattingActionsV1::default();
+        let mut info = ViemFormattingActions::default();
         let bit = 1u64 << VIEM_FORMATTING_TASK_LIST;
         let other_lists = (1u64 << VIEM_FORMATTING_BULLETED_LIST) | (1u64 << VIEM_FORMATTING_NUMBERED_LIST);
         unsafe {
             assert_eq!(viem_core_view_formatting_actions(fixture.handle, fixture.view, bit | other_lists, &mut info), ViemStatus::Ok);
         }
-        assert_eq!(info.struct_size, VIEM_FORMATTING_ACTIONS_V1_SIZE);
         assert_eq!(info.on & bit != 0, task, "{source}");
         assert_eq!(info.enabled & bit != 0, available, "{source}");
         // A task item is exclusively a task, never also bulleted or numbered.

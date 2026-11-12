@@ -7,7 +7,7 @@ namespace Viem.Windows.Core;
 
 internal readonly record struct StyleKey(uint Namespace, string Id);
 
-internal sealed record StyleDefinition(ViemStyleDefinitionV1 Native, string Id, string Name, string Parent, string Next, Dictionary<uint, ViemStylePropertyV1> Properties)
+internal sealed record StyleDefinition(ViemStyleDefinition Native, string Id, string Name, string Parent, string Next, Dictionary<uint, ViemStyleProperty> Properties)
 {
     public override string ToString() => Name;
     public uint Namespace => Native.namespace_id;
@@ -15,7 +15,7 @@ internal sealed record StyleDefinition(ViemStyleDefinitionV1 Native, string Id, 
     public StyleKey Key => new(Namespace, Id);
     public bool Has(uint capability) => (Native.capabilities & capability) != 0;
     public bool Declares(uint property) => Properties.TryGetValue(property, out var p) && (p.flags & VIEM_STYLE_PROPERTY_DECLARED) != 0;
-    public ViemStyleValueV1 Value(uint property) => Properties.TryGetValue(property, out var p) ? p.effective : default;
+    public ViemStyleValue Value(uint property) => Properties.TryGetValue(property, out var p) ? p.effective : default;
     public static bool IsBorderColor(uint property) => property is VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_COLOR
         or VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_COLOR or VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_COLOR or VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_COLOR;
     public bool UsesTextColor(uint property) => IsBorderColor(property) && (!Properties.TryGetValue(property, out var value)
@@ -24,11 +24,11 @@ internal sealed record StyleDefinition(ViemStyleDefinitionV1 Native, string Id, 
         || (!Declares(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND) && property.contributor_style_id.length == 0
             && property.contributor_kind == VIEM_STYLE_CONTRIBUTOR_ENGINE_EMERGENCY);
 }
-internal sealed record StyleSheet(ViemStyleSheetIdentityV1 Identity, StyleDefinition[] Styles, byte[] Strings, ViemStyleValueItemV1[] Items)
+internal sealed record StyleSheet(ViemStyleSheetIdentity Identity, StyleDefinition[] Styles, byte[] Strings, ViemStyleValueItem[] Items)
 {
-    public string[] StringList(ViemStyleValueV1 value) => value.kind == VIEM_STYLE_VALUE_STRING_LIST
+    public string[] StringList(ViemStyleValue value) => value.kind == VIEM_STYLE_VALUE_STRING_LIST
         ? Items.Skip(checked((int)value.first_item)).Take(checked((int)value.item_count)).Select(i => Text(Strings, i.@string)).ToArray() : [];
-    public string String(ViemStyleValueV1 value) => value.kind == VIEM_STYLE_VALUE_STRING_LIST && value.item_count > 0
+    public string String(ViemStyleValue value) => value.kind == VIEM_STYLE_VALUE_STRING_LIST && value.item_count > 0
         ? Text(Strings, Items[checked((int)value.first_item)].@string) : Text(Strings, value.@string);
 }
 
@@ -55,7 +55,7 @@ internal sealed unsafe partial class CoreView
     public StyleKey? CurrentStyleEditorKey(StyleSheet sheet)
     {
         var state = Document.State;
-        var info = New<ViemSelectedStylesInfoV1>();
+        var info = new ViemSelectedStylesInfo();
         uint status = viem_core_view_selected_styles_export(Document.Handle, Id, state.document_revision, &info, null, 0);
         if (status != VIEM_STATUS_BUFFER_TOO_SMALL) Check(status, "Read selected styles");
         var bytes = new byte[checked((int)(info.paragraph_id_bytes + info.character_id_bytes))];
@@ -73,20 +73,20 @@ internal sealed unsafe partial class CoreView
         return null;
     }
     public bool UsesGlobalStyles => Document.State.format == VIEM_FORMAT_CODE;
-    public ViemLogicalSelectionIdentityV1 LogicalSelection()
-    { var value = New<ViemLogicalSelectionIdentityV1>(); Check(viem_core_view_list_selection(Document.Handle, Id, &value), "Read formatting selection"); return value; }
-    public ViemSemanticStylePresentationV1 SemanticStyle(uint style)
-    { var value = New<ViemSemanticStylePresentationV1>(); Check(viem_core_view_semantic_style_presentation(Document.Handle, Id, style, &value), "Read formatting"); return value; }
+    public ViemLogicalSelectionIdentity LogicalSelection()
+    { var value = new ViemLogicalSelectionIdentity(); Check(viem_core_view_list_selection(Document.Handle, Id, &value), "Read formatting selection"); return value; }
+    public ViemSemanticStylePresentation SemanticStyle(uint style)
+    { var value = new ViemSemanticStylePresentation(); Check(viem_core_view_semantic_style_presentation(Document.Handle, Id, style, &value), "Read formatting"); return value; }
     public void ToggleSemantic(uint style)
     {
         var presentation = SemanticStyle(style);
-        Apply(o => { var request = New<ViemSetSemanticStyleV1>(); request.style = style; request.enabled = presentation.state == VIEM_SEMANTIC_STYLE_STATE_ON ? 0u : 1u; request.expected_selection = presentation.selection;
+        Apply(o => { var request = new ViemSetSemanticStyle(); request.style = style; request.enabled = presentation.state == VIEM_SEMANTIC_STYLE_STATE_ON ? 0u : 1u; request.expected_selection = presentation.selection;
             return viem_core_view_set_semantic_style(Document.Handle, Id, &request, o); });
         FormattingContextChanged?.Invoke();
     }
     /// <summary>Only requested actions (bits <c>1 &lt;&lt; action</c>) are evaluated.</summary>
     public FormattingActions Formatting(ulong requested = ulong.MaxValue)
-    { var value = New<ViemFormattingActionsV1>(); Check(viem_core_view_formatting_actions(Document.Handle, Id, requested, &value), "Read formatting actions"); return new(value); }
+    { var value = new ViemFormattingActions(); Check(viem_core_view_formatting_actions(Document.Handle, Id, requested, &value), "Read formatting actions"); return new(value); }
     public uint InlinePropertyState(uint property)
     { uint state = 0; Check(viem_core_view_inline_property_state(Document.Handle, Id, property, &state), "Read character formatting"); return state; }
     public uint UnderlineState() => InlinePropertyState(VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE);
@@ -111,14 +111,14 @@ internal sealed unsafe partial class CoreView
         Apply(o => { var expected = selection; return viem_core_view_set_strikethrough(Document.Handle, Id, &expected, enabled, o); });
         FormattingContextChanged?.Invoke();
     }
-    public static ViemStyleEditValueV1 Number(float number) { var v = New<ViemStyleEditValueV1>(); v.kind = VIEM_STYLE_VALUE_FLOAT; v.number = number; return v; }
-    public static ViemStyleEditValueV1 Enum(uint kind, uint value) { var v = New<ViemStyleEditValueV1>(); v.kind = kind; v.enum_value = value; return v; }
-    public void SetParagraph(uint level) => Apply(o => { var r = New<ViemSetParagraphStyleV1>(); r.level = level; r.expected_selection = LogicalSelection(); return viem_core_view_set_paragraph_style(Document.Handle, Id, &r, o); });
-    public void SetBlockQuote(bool enabled) => Apply(o => { var r = New<ViemSetBlockQuoteV1>(); r.enabled = enabled ? 1u : 0u; r.expected_selection = LogicalSelection(); return viem_core_view_set_block_quote(Document.Handle, Id, &r, o); });
+    public static ViemStyleEditValue Number(float number) { var v = new ViemStyleEditValue(); v.kind = VIEM_STYLE_VALUE_FLOAT; v.number = number; return v; }
+    public static ViemStyleEditValue Enum(uint kind, uint value) { var v = new ViemStyleEditValue(); v.kind = kind; v.enum_value = value; return v; }
+    public void SetParagraph(uint level) => Apply(o => { var r = new ViemSetParagraphStyle(); r.level = level; r.expected_selection = LogicalSelection(); return viem_core_view_set_paragraph_style(Document.Handle, Id, &r, o); });
+    public void SetBlockQuote(bool enabled) => Apply(o => { var r = new ViemSetBlockQuote(); r.enabled = enabled ? 1u : 0u; r.expected_selection = LogicalSelection(); return viem_core_view_set_block_quote(Document.Handle, Id, &r, o); });
     /// <summary>A VIEM_ALERT_* kind; VIEM_ALERT_NONE turns selected alerts back into plain quotes.</summary>
-    public void SetAlert(uint kind) => Apply(o => { var r = New<ViemSetAlertV1>(); r.kind = kind; r.expected_selection = LogicalSelection(); return viem_core_view_set_alert(Document.Handle, Id, &r, o); });
-    public void SetList(uint style) => Apply(o => { var r = New<ViemSetListStyleV1>(); r.style = style; r.expected_selection = LogicalSelection(); return viem_core_view_set_list_style(Document.Handle, Id, &r, o); });
-    public void IndentList(bool unindent) => Apply(o => { var r = New<ViemListIndentV1>(); r.unindent = unindent ? 1u : 0u; r.expected_selection = LogicalSelection(); return viem_core_view_indent_list(Document.Handle, Id, &r, o); });
+    public void SetAlert(uint kind) => Apply(o => { var r = new ViemSetAlert(); r.kind = kind; r.expected_selection = LogicalSelection(); return viem_core_view_set_alert(Document.Handle, Id, &r, o); });
+    public void SetList(uint style) => Apply(o => { var r = new ViemSetListStyle(); r.style = style; r.expected_selection = LogicalSelection(); return viem_core_view_set_list_style(Document.Handle, Id, &r, o); });
+    public void IndentList(bool unindent) => Apply(o => { var r = new ViemListIndent(); r.unindent = unindent ? 1u : 0u; r.expected_selection = LogicalSelection(); return viem_core_view_indent_list(Document.Handle, Id, &r, o); });
     public void InsertListParagraph()
     {
         // Native actions accept the preview before capturing a revision-bound target.
@@ -128,18 +128,18 @@ internal sealed unsafe partial class CoreView
         Apply(o => { var selection = LogicalSelection(); return viem_core_view_insert_list_paragraph(Document.Handle, Id, &selection, o); });
     }
     public uint ListCapabilities() { var selection = LogicalSelection(); uint caps = 0; Check(viem_core_view_list_indent_capabilities(Document.Handle, Id, &selection, &caps), "Read list actions"); return caps; }
-    public void SetEncoding(uint encoding) => Send((c, o, e) => { var state = Document.State; var r = New<ViemSetEncodingV1>(); r.document_id = state.document_id; r.document_revision = state.document_revision; r.encoding = encoding; return viem_core_view_set_encoding_with_effects(Document.Handle, Id, &r, o, e); });
-    public void FileFormat(uint format) => Apply(o => { var state = Document.State; var r = New<ViemSetFileFormatV1>(); r.document_id = state.document_id; r.document_revision = state.document_revision; r.file_format = format; return viem_core_view_set_file_format(Document.Handle, Id, &r, o); });
-    public ViemStyleSheetIdentityV1 StyleIdentity()
+    public void SetEncoding(uint encoding) => Send((c, o, e) => { var state = Document.State; var r = new ViemSetEncoding(); r.document_id = state.document_id; r.document_revision = state.document_revision; r.encoding = encoding; return viem_core_view_set_encoding_with_effects(Document.Handle, Id, &r, o, e); });
+    public void FileFormat(uint format) => Apply(o => { var state = Document.State; var r = new ViemSetFileFormat(); r.document_id = state.document_id; r.document_revision = state.document_revision; r.file_format = format; return viem_core_view_set_file_format(Document.Handle, Id, &r, o); });
+    public ViemStyleSheetIdentity StyleIdentity()
     {
-        var identity = New<ViemStyleSheetIdentityV1>();
+        var identity = new ViemStyleSheetIdentity();
         Check(viem_core_style_sheet_identity(UsesGlobalStyles ? 0 : Document.Handle, &identity), "Read style identity");
         return identity;
     }
 #if DEBUG
     internal int StyleExports { get; private set; }
 #endif
-    public StyleSheet Styles(ViemStyleSheetIdentityV1? expected = null, uint gutterUnderlay = 0)
+    public StyleSheet Styles(ViemStyleSheetIdentity? expected = null, uint gutterUnderlay = 0)
     {
         ref var cache = ref (gutterUnderlay == 0 ? ref cachedStyles : ref cachedGutterStyles);
         if (gutterUnderlay != 0 && cachedGutterLayer != gutterUnderlay) {
@@ -155,35 +155,35 @@ internal sealed unsafe partial class CoreView
         StyleExports++;
 #endif
         ulong handle = UsesGlobalStyles ? 0 : Document.Handle;
-        var info = New<ViemStyleSheetInfoV1>(); Check(viem_core_style_sheet_info(handle, gutterUnderlay, &info), "Read styles");
-        var definitions = new ViemStyleDefinitionV1[checked((int)info.definition_count)];
-        var properties = new ViemStylePropertyV1[checked((int)info.property_count)];
-        var items = new ViemStyleValueItemV1[checked((int)info.value_item_count)];
-        var dependencies = new ViemStyleDependencyV1[checked((int)info.dependency_count)];
+        var info = new ViemStyleSheetInfo(); Check(viem_core_style_sheet_info(handle, gutterUnderlay, &info), "Read styles");
+        var definitions = new ViemStyleDefinition[checked((int)info.definition_count)];
+        var properties = new ViemStyleProperty[checked((int)info.property_count)];
+        var items = new ViemStyleValueItem[checked((int)info.value_item_count)];
+        var dependencies = new ViemStyleDependency[checked((int)info.dependency_count)];
         var strings = new byte[checked((int)info.string_bytes)]; var identity = info.identity;
-        fixed (ViemStyleDefinitionV1* d = definitions) fixed (ViemStylePropertyV1* p = properties) fixed (ViemStyleValueItemV1* v = items) fixed (ViemStyleDependencyV1* r = dependencies) fixed (byte* s = strings)
+        fixed (ViemStyleDefinition* d = definitions) fixed (ViemStyleProperty* p = properties) fixed (ViemStyleValueItem* v = items) fixed (ViemStyleDependency* r = dependencies) fixed (byte* s = strings)
             Check(viem_core_copy_style_sheet(handle, gutterUnderlay, &identity, d, (ulong)definitions.Length, p, (ulong)properties.Length, v, (ulong)items.Length, r, (ulong)dependencies.Length, s, (ulong)strings.Length, &info), "Copy styles");
         return cache = new(identity, definitions.Select(d => new StyleDefinition(d, Abi.Text(strings, d.stable_id), Abi.Text(strings, d.display_name), Abi.Text(strings, d.parent_id), Abi.Text(strings, d.next_style_id),
             properties.Skip(checked((int)d.first_property)).Take(checked((int)d.property_count)).ToDictionary(p => p.property))).ToArray(), strings, items);
     }
-    public void EditStyle(StyleDefinition style, uint operation, uint property, ViemStyleEditValueV1 value, ViemStyleEditGroupV1? group = null)
+    public void EditStyle(StyleDefinition style, uint operation, uint property, ViemStyleEditValue value, ViemStyleEditGroup? group = null)
     {
         // Clear operations still require a sized, empty ABI value, including
         // relationship clears whose UI previously supplied a string value.
-        if (operation is VIEM_STYLE_EDIT_CLEAR_DECLARATION or VIEM_STYLE_EDIT_CLEAR_PARENT or VIEM_STYLE_EDIT_CLEAR_NEXT_STYLE) value = New<ViemStyleEditValueV1>();
-        using var arena = new NativeArena(); var request = New<ViemStyleEditV1>(); request.identity = StyleIdentity();
+        if (operation is VIEM_STYLE_EDIT_CLEAR_DECLARATION or VIEM_STYLE_EDIT_CLEAR_PARENT or VIEM_STYLE_EDIT_CLEAR_NEXT_STYLE) value = new ViemStyleEditValue();
+        using var arena = new NativeArena(); var request = new ViemStyleEdit(); request.identity = StyleIdentity();
         request.namespace_id = style.Namespace; request.style_id = arena.Utf8(style.Id); request.operation = operation; request.property = property; request.value = value;
-        if (UsesGlobalStyles) { var info = New<ViemStyleSheetInfoV1>(); Check(viem_code_edit_style(&request, &info), "Edit Code style"); Document.NotifyChanged(); Refresh(); }
+        if (UsesGlobalStyles) { var info = new ViemStyleSheetInfo(); Check(viem_code_edit_style(&request, &info), "Edit Code style"); Document.NotifyChanged(); Refresh(); }
         else { var copy = request; Apply(o => { var r = copy; if (group is { } token) return viem_core_view_edit_style_in_group(Document.Handle, Id, &token, &r, o); return viem_core_view_edit_style(Document.Handle, Id, &r, o); }); }
     }
-    public ViemStyleEditGroupV1? BeginStyleEditGroup()
+    public ViemStyleEditGroup? BeginStyleEditGroup()
     {
         if (UsesGlobalStyles) return null;
-        var identity = StyleIdentity(); var token = New<ViemStyleEditGroupV1>();
+        var identity = StyleIdentity(); var token = new ViemStyleEditGroup();
         Check(viem_core_view_begin_style_edit_group(Document.Handle, Id, &identity, &token), "Begin style change");
         return token;
     }
-    public void EndStyleEditGroup(ViemStyleEditGroupV1? group)
+    public void EndStyleEditGroup(ViemStyleEditGroup? group)
     {
         if (Id == 0 || group is not { } token) return;
         uint status = viem_core_view_end_style_edit_group(Document.Handle, Id, &token);
@@ -198,15 +198,15 @@ internal sealed unsafe partial class CoreView
         if (axes.Count > 64 || axes.Any(v => v.Key.Length != 4 || v.Key.Any(c => c < 32 || c > 126) || !float.IsFinite(v.Value)))
             throw new ArgumentException("Font axis tags must be four ASCII characters with finite coordinates.", nameof(axes));
         using var arena = new NativeArena();
-        var items = families.Select(f => { var item = New<ViemStyleEditValueItemV1>(); item.kind = VIEM_STYLE_VALUE_ITEM_STRING; item.text = arena.Utf8(f); return item; }).ToArray();
-        var value = New<ViemStyleEditValueV1>(); value.kind = VIEM_STYLE_VALUE_STRING_LIST; value.items = arena.Copy<ViemStyleEditValueItemV1>(items); value.item_count = (ulong)items.Length;
-        ViemStyleEditGroupV1? group = null;
-        if (!UsesGlobalStyles) { var identity = StyleIdentity(); var token = New<ViemStyleEditGroupV1>(); Check(viem_core_view_begin_style_edit_group(Document.Handle, Id, &identity, &token), "Begin font change"); group = token; }
+        var items = families.Select(f => { var item = new ViemStyleEditValueItem(); item.kind = VIEM_STYLE_VALUE_ITEM_STRING; item.text = arena.Utf8(f); return item; }).ToArray();
+        var value = new ViemStyleEditValue(); value.kind = VIEM_STYLE_VALUE_STRING_LIST; value.items = arena.Copy<ViemStyleEditValueItem>(items); value.item_count = (ulong)items.Length;
+        ViemStyleEditGroup? group = null;
+        if (!UsesGlobalStyles) { var identity = StyleIdentity(); var token = new ViemStyleEditGroup(); Check(viem_core_view_begin_style_edit_group(Document.Handle, Id, &identity, &token), "Begin font change"); group = token; }
         try {
             EditStyle(style, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES, value, group);
-            var faceValue = New<ViemStyleEditValueV1>(); faceValue.kind = VIEM_STYLE_VALUE_STRING; faceValue.text = arena.Utf8(selectedFace);
+            var faceValue = new ViemStyleEditValue(); faceValue.kind = VIEM_STYLE_VALUE_STRING; faceValue.text = arena.Utf8(selectedFace);
             EditStyle(style, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE, faceValue, group);
-            var axisValue = New<ViemStyleEditValueV1>(); axisValue.kind = VIEM_STYLE_VALUE_STRING; axisValue.text = arena.Utf8(FontVariations.Encode(axes));
+            var axisValue = new ViemStyleEditValue(); axisValue.kind = VIEM_STYLE_VALUE_STRING; axisValue.text = arena.Utf8(FontVariations.Encode(axes));
             EditStyle(style, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES, axisValue, group);
             uint weight = (uint)Math.Clamp(Math.Round(axes.GetValueOrDefault("wght", face?.Weight ?? 400)), 1, 1000);
             EditStyle(style, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT, Enum(VIEM_STYLE_VALUE_UNSIGNED, weight), group);
@@ -217,31 +217,31 @@ internal sealed unsafe partial class CoreView
         VIEM_STYLE_EDIT_SET_PARENT_VARIANT, 0, variant == VIEM_FORMAT_PLAIN_TEXT ? "text" : variant == VIEM_FORMAT_CODE ? "code" : "markdown");
     public void EditStyleString(StyleDefinition style, uint operation, uint property, string text, bool list = false)
     {
-        using var arena = new NativeArena(); var value = New<ViemStyleEditValueV1>(); value.kind = list ? VIEM_STYLE_VALUE_STRING_LIST : VIEM_STYLE_VALUE_STRING; value.text = arena.Utf8(text);
-        var item = New<ViemStyleEditValueItemV1>(); item.kind = VIEM_STYLE_VALUE_ITEM_STRING; item.text = value.text;
+        using var arena = new NativeArena(); var value = new ViemStyleEditValue(); value.kind = list ? VIEM_STYLE_VALUE_STRING_LIST : VIEM_STYLE_VALUE_STRING; value.text = arena.Utf8(text);
+        var item = new ViemStyleEditValueItem(); item.kind = VIEM_STYLE_VALUE_ITEM_STRING; item.text = value.text;
         if (list) { value.items = &item; value.item_count = 1; value.text = default; }
         EditStyle(style, operation, property, value);
     }
-    public void AssignStyle(uint space, string id, ViemStyleSheetIdentityV1? expected = null)
+    public void AssignStyle(uint space, string id, ViemStyleSheetIdentity? expected = null)
     {
         using var arena = new NativeArena(); var slice = arena.Utf8(id); var identity = expected ?? StyleIdentity();
-        Apply(o => { var r = New<ViemAssignStyleV1>(); r.@namespace = space; r.identity = identity; r.style_id = slice; r.expected_selection = LogicalSelection(); return viem_core_view_assign_style(Document.Handle, Id, &r, o); });
+        Apply(o => { var r = new ViemAssignStyle(); r.@namespace = space; r.identity = identity; r.style_id = slice; r.expected_selection = LogicalSelection(); return viem_core_view_assign_style(Document.Handle, Id, &r, o); });
         FormattingContextChanged?.Invoke();
     }
     public string CreateCodeStyle(string name)
     {
         if (!UsesGlobalStyles) throw new InvalidOperationException("Only Code styles support new definitions.");
-        using var arena = new NativeArena(); var r = New<ViemCreateStyleV1>(); r.@namespace = VIEM_STYLE_NAMESPACE_CHARACTER; r.identity = Styles().Identity;
+        using var arena = new NativeArena(); var r = new ViemCreateStyle(); r.@namespace = VIEM_STYLE_NAMESPACE_CHARACTER; r.identity = Styles().Identity;
         string id = "Style" + Guid.NewGuid().ToString("N");
         r.style_id = arena.Utf8(id); r.display_name = arena.Utf8(name);
-        var info = New<ViemStyleSheetInfoV1>(); Check(viem_code_create_style(&r, &info), "Create style"); Document.NotifyChanged(); Refresh();
+        var info = new ViemStyleSheetInfo(); Check(viem_code_create_style(&r, &info), "Create style"); Document.NotifyChanged(); Refresh();
         return id;
     }
     public void MaterializeCodeStyle(string name)
     {
         if (!UsesGlobalStyles) throw new InvalidOperationException("Only Code styles support syntax definitions.");
         byte[] bytes = System.Text.Encoding.UTF8.GetBytes(name);
-        var info = New<ViemStyleSheetInfoV1>();
+        var info = new ViemStyleSheetInfo();
         fixed (byte* value = bytes)
             Check(viem_code_materialize_style(value, (ulong)bytes.Length, &info), "Open syntax style");
         // This creates only a disposable implicit definition, with no theme
@@ -250,9 +250,9 @@ internal sealed unsafe partial class CoreView
     }
     public void DeleteStyle(StyleDefinition style)
     {
-        using var arena = new NativeArena(); var r = New<ViemDeleteStyleV1>(); r.@namespace = style.Namespace; r.style_id = arena.Utf8(style.Id); r.identity = Styles().Identity;
+        using var arena = new NativeArena(); var r = new ViemDeleteStyle(); r.@namespace = style.Namespace; r.style_id = arena.Utf8(style.Id); r.identity = Styles().Identity;
         if (!UsesGlobalStyles) throw new InvalidOperationException("Only Code styles support removing definitions.");
-        var info = New<ViemStyleSheetInfoV1>(); Check(viem_code_delete_style(&r, &info), "Delete style"); Document.NotifyChanged(); Refresh();
+        var info = new ViemStyleSheetInfo(); Check(viem_code_delete_style(&r, &info), "Delete style"); Document.NotifyChanged(); Refresh();
     }
     public byte[] ExportStyleDefaults() { ulong revision = Document.State.document_revision; return UsesGlobalStyles ? Copy(viem_code_export_style_json) : Copy((p, n, r) => viem_core_export_style_defaults(Document.Handle, revision, p, n, r)); }
     public void ReplaceCodeStyles(byte[] json)
@@ -265,7 +265,7 @@ internal sealed unsafe partial class CoreView
     {
         var effective = style.Value(property);
         if (property == VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES) { EditStyleFont(style, sheet.StringList(effective), null); return; }
-        var value = New<ViemStyleEditValueV1>(); value.kind = effective.kind; value.number = effective.number; value.enum_value = effective.enum_value; value.color = effective.color;
+        var value = new ViemStyleEditValue(); value.kind = effective.kind; value.number = effective.number; value.enum_value = effective.enum_value; value.color = effective.color;
         // An absent background is a transparent declaration when overridden.
         if (property is VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND or VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND && effective.kind == VIEM_STYLE_VALUE_NONE) value.kind = VIEM_STYLE_VALUE_COLOR;
         EditStyle(style, VIEM_STYLE_EDIT_SET_DECLARATION, property, value);

@@ -278,7 +278,7 @@ internal sealed partial class EditorWindow
             {
                 var item = new ToggleMenuFlyoutItem { Tag = choice.Key };
                 item.Click += (_, _) => Safe(() => {
-                    if (item.CommandParameter is Viem.Windows.Interop.ViemStyleSheetIdentityV1 identity)
+                    if (item.CommandParameter is Viem.Windows.Interop.ViemStyleSheetIdentity identity)
                         View?.ChooseStyle((StyleKey)item.Tag, identity);
                     RestoreEditorFocusAfterControl(); return Task.CompletedTask;
                 });

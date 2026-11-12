@@ -15,7 +15,7 @@ internal sealed unsafe partial class CoreView : IDisposable
     public DirectWriteProvider Provider { get; }
     public BackgroundLayout BackgroundLayout { get; }
     public BackgroundLayout TableWidthRefinement { get; }
-    public ViemCoreOutcomeV1 Outcome { get; private set; }
+    public ViemCoreOutcome Outcome { get; private set; }
     public event Action<HostEffects>? Effects;
     public event Action? Changed;
     public event Action? FormattingContextChanged;
@@ -25,7 +25,7 @@ internal sealed unsafe partial class CoreView : IDisposable
     public string ClipboardText { get; set; } = "";
     public string ClipboardFragment { get; set; } = "";
     public ulong ClipboardGeneration { get; set; } = 1;
-    public CoreView(CoreDocument document, CanvasDevice device, DispatcherQueue dispatcher, float width, float height, ViemLayoutInsetsV1 padding = default)
+    public CoreView(CoreDocument document, CanvasDevice device, DispatcherQueue dispatcher, float width, float height, ViemLayoutInsets padding = default)
     {
         Document = document;
         using (Diagnostics.StartupPerformance.Measure("view.provider")) Provider = new(device, dispatcher);
@@ -33,10 +33,10 @@ internal sealed unsafe partial class CoreView : IDisposable
         Provider.SetImageDocumentPath(document.FilePath);
         document.ImagePreviews.Seed(Provider, device, document.FilePath);
         var table = Provider.Table;
-        var options = New<ViemViewOptionsV1>(); options.execution_context = VIEM_LAYOUT_EXECUTION_FRONTEND_MAIN; options.width = Math.Max(1, width); options.height = Math.Max(1, height);
+        var options = new ViemViewOptions(); options.execution_context = VIEM_LAYOUT_EXECUTION_FRONTEND_MAIN; options.width = Math.Max(1, width); options.height = Math.Max(1, height);
         options.padding_top = padding.top; options.padding_left = padding.left;
         options.padding_bottom = padding.bottom; options.padding_right = padding.right;
-        var outcome = New<ViemCoreOutcomeV1>(); ulong id = 0;
+        var outcome = new ViemCoreOutcome(); ulong id = 0;
         uint status;
         using (Diagnostics.StartupPerformance.Measure("view.initialLayout")) status = viem_core_view_add(document.Handle, &options, &table, &id, &outcome);
         if (status != 0) { string detail = Provider.LastError ?? ""; Provider.Dispose(); throw new InvalidOperationException($"Create editor view failed ({status}). {detail}"); }
@@ -49,10 +49,10 @@ internal sealed unsafe partial class CoreView : IDisposable
             BackgroundLayout.Update();
         }
     }
-    public ViemViewPresentationV1 Presentation { get { var p = New<ViemViewPresentationV1>(); Check(viem_core_view_presentation(Document.Handle, Id, &p), "Read presentation"); return p; } }
-    public ViemViewportStateV1 Viewport { get { var p = New<ViemViewportStateV1>(); Check(viem_core_view_viewport_state(Document.Handle, Id, &p), "Read viewport"); return p; } }
-    public ViemViewLineLocationV1 Location { get { var p = New<ViemViewLineLocationV1>(); Check(viem_core_view_line_location(Document.Handle, Id, &p), "Read location"); return p; } }
-    public static string PendingCommand(ViemViewPresentationV1 value) =>
+    public ViemViewPresentation Presentation { get { var p = new ViemViewPresentation(); Check(viem_core_view_presentation(Document.Handle, Id, &p), "Read presentation"); return p; } }
+    public ViemViewportState Viewport { get { var p = new ViemViewportState(); Check(viem_core_view_viewport_state(Document.Handle, Id, &p), "Read viewport"); return p; } }
+    public ViemViewLineLocation Location { get { var p = new ViemViewLineLocation(); Check(viem_core_view_line_location(Document.Handle, Id, &p), "Read location"); return p; } }
+    public static string PendingCommand(ViemViewPresentation value) =>
         Encoding.UTF8.GetString(value.pending_command, checked((int)value.pending_command_length));
     public bool IsVisual => Presentation.mode is VIEM_MODE_VISUAL_CHARACTER or VIEM_MODE_VISUAL_LINE or VIEM_MODE_VISUAL_BLOCK;
     public static bool IsTextSelectionMode(uint mode) => mode is VIEM_MODE_SELECT_CHARACTER or VIEM_MODE_SELECT_LINE or VIEM_MODE_SELECT_BLOCK
@@ -62,22 +62,22 @@ internal sealed unsafe partial class CoreView : IDisposable
         or VIEM_MODE_SELECT_CHARACTER or VIEM_MODE_SELECT_LINE or VIEM_MODE_SELECT_BLOCK
         or VIEM_MODE_SELECTION_CHARACTER or VIEM_MODE_SELECTION_LINE or VIEM_MODE_SELECTION_BLOCK;
     public bool HasPendingMapping { get { byte value = 0; Check(viem_core_view_has_pending_mapping(Document.Handle, Id, &value), "Read mapping"); return value != 0; } }
-    private delegate uint Turn(ViemCommandTurnContextV2* context, ViemCoreOutcomeV1* outcome, ulong* effects);
+    private delegate uint Turn(ViemCommandTurnContext* context, ViemCoreOutcome* outcome, ulong* effects);
     private HostEffects? Send(Turn turn, bool publish = true)
     {
         using var arena = new NativeArena();
-        var entry = New<ViemClipboardTurnEntryV2>();
+        var entry = new ViemClipboardTurnEntry();
         entry.flags = VIEM_CLIPBOARD_TURN_WRITABLE | VIEM_CLIPBOARD_TURN_HAS_READ; entry.generation = ClipboardGeneration;
         entry.plain_text = arena.Utf8(ClipboardText); entry.fragment_json = arena.Utf8(ClipboardFragment);
         // Windows has one system clipboard rather than a separate X11-style
         // primary selection. Expose that same snapshot under both Vim names so
         // both the + and * registers remain usable without conflating their
         // identities inside the core.
-        ViemClipboardTurnEntryV2* entries = stackalloc ViemClipboardTurnEntryV2[2];
+        ViemClipboardTurnEntry* entries = stackalloc ViemClipboardTurnEntry[2];
         entries[0] = entry; entries[0].target = VIEM_CLIPBOARD_TARGET_CLIPBOARD;
         entries[1] = entry; entries[1].target = VIEM_CLIPBOARD_TARGET_PRIMARY;
-        var context = New<ViemCommandTurnContextV2>(); context.clipboards = entries; context.clipboard_count = 2;
-        var outcome = New<ViemCoreOutcomeV1>(); ulong batch = 0;
+        var context = new ViemCommandTurnContext(); context.clipboards = entries; context.clipboard_count = 2;
+        var outcome = new ViemCoreOutcome(); ulong batch = 0;
         uint status;
         using (Diagnostics.InputPerformance.Measure("core.turn")) status = turn(&context, &outcome, &batch);
         HostEffects? effects = null;
@@ -91,13 +91,13 @@ internal sealed unsafe partial class CoreView : IDisposable
     }
     public void Key(uint kind, uint codepoint = 0, uint modifiers = 0) => Send((context, outcome, effects) =>
     {
-        var input = New<ViemKeyInputV1>(); input.kind = kind; input.codepoint = codepoint; input.modifiers = modifiers;
-        return viem_core_view_send_key_with_host_context_v2(Document.Handle, Id, &input, context, outcome, effects);
+        var input = new ViemKeyInput(); input.kind = kind; input.codepoint = codepoint; input.modifiers = modifiers;
+        return viem_core_view_send_key_with_host_context(Document.Handle, Id, &input, context, outcome, effects);
     });
     public void Text(string text) => Send((context, outcome, effects) =>
     {
         byte[] bytes = Encoding.UTF8.GetBytes(text);
-        fixed (byte* p = bytes) return viem_core_view_send_text_with_host_context_v2(Document.Handle, Id, p, (ulong)bytes.Length, context, outcome, effects);
+        fixed (byte* p = bytes) return viem_core_view_send_text_with_host_context(Document.Handle, Id, p, (ulong)bytes.Length, context, outcome, effects);
     });
     private static bool enteredGui;
     public void ResumeScript(ulong token, bool success)
@@ -119,7 +119,7 @@ internal sealed unsafe partial class CoreView : IDisposable
             if (FireAutocmd("GUIEnter") is { } gui) Effects?.Invoke(gui);
         }
     }
-    public void FlushMapping() => Send((c, o, e) => viem_core_view_flush_mapping_with_host_context_v2(Document.Handle, Id, c, o, e));
+    public void FlushMapping() => Send((c, o, e) => viem_core_view_flush_mapping_with_host_context(Document.Handle, Id, c, o, e));
     public void Command(string keys) { foreach (var rune in keys.EnumerateRunes()) Key(VIEM_KEY_CHARACTER, (uint)rune.Value); }
     public void Ex(string command) { Key(VIEM_KEY_ESCAPE); Command(":"); Text(command); Key(VIEM_KEY_ENTER); }
     public void CopyOrCut(bool cut)
@@ -162,10 +162,10 @@ internal sealed unsafe partial class CoreView : IDisposable
         }
         finally { ClipboardFragment = rich; }
     }
-    internal delegate uint Operation(ViemCoreOutcomeV1* outcome);
+    internal delegate uint Operation(ViemCoreOutcome* outcome);
     internal void Apply(Operation operation)
-    { var outcome = New<ViemCoreOutcomeV1>(); uint status; using (Diagnostics.InputPerformance.Measure("core.operation")) status = operation(&outcome); Finish(status, outcome); }
-    private void Finish(uint status, ViemCoreOutcomeV1 outcome, string? diagnostic = null)
+    { var outcome = new ViemCoreOutcome(); uint status; using (Diagnostics.InputPerformance.Measure("core.operation")) status = operation(&outcome); Finish(status, outcome); }
+    private void Finish(uint status, ViemCoreOutcome outcome, string? diagnostic = null)
     {
         Check(status, Provider.LastError ?? "Editor operation"); Outcome = outcome;
         if ((outcome.flags & VIEM_OUTCOME_DOCUMENT_CHANGED) != 0) Document.NotifySourceChanged();
@@ -180,7 +180,7 @@ internal sealed unsafe partial class CoreView : IDisposable
     internal void SpeculativeLayoutFinished() => Changed?.Invoke();
     public void RestorePosition(CoreView previous)
     {
-        var state = New<ViemViewRestorationV1>();
+        var state = new ViemViewRestoration();
         Check(viem_core_view_capture_restoration(previous.Document.Handle, previous.Id, &state), "Capture document position");
         var target = Document.State;
         var captured = state;
@@ -203,11 +203,11 @@ internal sealed unsafe partial class CoreView : IDisposable
     public void SelectAll() => Apply(o => { var s = Document.State; return viem_core_view_select_all(Document.Handle, Id, s.document_id, s.document_revision, o); });
     public void UseSelectionForFind()
     {
-        var info = New<ViemVisualSelectionInfoV1>();
+        var info = new ViemVisualSelectionInfo();
         Check(viem_core_view_visual_selection_info(Document.Handle, Id, &info), "Read find selection");
         UseSelectionForFind(info.identity);
     }
-    internal void UseSelectionForFind(ViemVisualSelectionIdentityV1 selection) => Apply(o => {
+    internal void UseSelectionForFind(ViemVisualSelectionIdentity selection) => Apply(o => {
         var expected = selection;
         return viem_core_view_use_selection_for_find(Document.Handle, Id, &expected, o);
     });
@@ -244,7 +244,7 @@ internal sealed unsafe partial class CoreView : IDisposable
     {
         var state = Viewport;
         Apply(o => {
-            var request = New<ViemViewportOriginV1>(); request.flags = VIEM_VIEWPORT_ORIGIN_HAS_TOP;
+            var request = new ViemViewportOrigin(); request.flags = VIEM_VIEWPORT_ORIGIN_HAS_TOP;
             request.left = Math.Max(0, left); request.top = Math.Max(0, top);
             request.expected_document_id = state.document_id; request.expected_document_revision = state.document_revision;
             request.expected_layout_revision = state.layout_revision; request.expected_configuration_generation = state.configuration_generation;
@@ -258,7 +258,7 @@ internal sealed unsafe partial class CoreView : IDisposable
         if ((completion.Info.flags & VIEM_COMPLETION_ACTIVE) != 0) AcceptCompletion(completion, (int)completion.Info.selected_index);
         if (Composing) CancelComposition();
     }
-    public bool RowSelectionHitTest(ViemLayoutSnapshotIdentityV1 identity, float x, float y)
+    public bool RowSelectionHitTest(ViemLayoutSnapshotIdentity identity, float x, float y)
     {
         var viewport = Viewport; uint hit = 0;
         Check(viem_core_view_row_selection_hit_test(Document.Handle, Id, &identity, x + viewport.left, y + viewport.top, &hit), "Read row selection margin");
@@ -273,20 +273,20 @@ internal sealed unsafe partial class CoreView : IDisposable
     public void Place(float x, float y, bool extend = false, bool wholeWords = false)
     {
         var info = LayoutInfo(); var viewport = Viewport;
-        var request = New<ViemLayoutHitTestRequestV1>(); request.identity = info.identity; request.flags = extend ? 0 : VIEM_LAYOUT_HIT_TEST_POINTER_DOWN; request.x = x + viewport.left; request.y = y + viewport.top;
-        var point = New<ViemLayoutCaretPointV1>(); Check(viem_core_view_layout_hit_test(Document.Handle, Id, &request, &point), "Place cursor");
+        var request = new ViemLayoutHitTestRequest(); request.identity = info.identity; request.flags = extend ? 0 : VIEM_LAYOUT_HIT_TEST_POINTER_DOWN; request.x = x + viewport.left; request.y = y + viewport.top;
+        var point = new ViemLayoutCaretPoint(); Check(viem_core_view_layout_hit_test(Document.Handle, Id, &request, &point), "Place cursor");
         Place(point.text_offset, point.affinity, point.document_revision, extend, wholeWords, beginPointerGesture: !extend && !wholeWords);
     }
     public void Place(ulong offset, uint affinity, ulong revision, bool extend = false, bool wholeWords = false, bool beginPointerGesture = false) => Apply(o =>
     {
-        var request = New<ViemPlaceCursorV1>(); request.text_offset = offset; request.affinity = affinity; request.document_revision = revision; request.flags = (extend ? VIEM_PLACE_CURSOR_EXTEND_SELECTION : 0) | (wholeWords ? VIEM_PLACE_CURSOR_WORD_SELECTION : 0) | (beginPointerGesture ? VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE : 0);
+        var request = new ViemPlaceCursor(); request.text_offset = offset; request.affinity = affinity; request.document_revision = revision; request.flags = (extend ? VIEM_PLACE_CURSOR_EXTEND_SELECTION : 0) | (wholeWords ? VIEM_PLACE_CURSOR_WORD_SELECTION : 0) | (beginPointerGesture ? VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE : 0);
         return viem_core_view_place_cursor(Document.Handle, Id, &request, o);
     });
     public string CommandLine()
     {
-        var info = New<ViemCommandLineInfoV1>(); Check(viem_core_view_command_line_info(Document.Handle, Id, &info), "Read prompt");
+        var info = new ViemCommandLineInfo(); Check(viem_core_view_command_line_info(Document.Handle, Id, &info), "Read prompt");
         var identity = info.identity;
-        var bytes = Copy((p, n, r) => { var expected = identity; var result = New<ViemCommandLineInfoV1>(); uint s = viem_core_view_copy_command_line(Document.Handle, Id, &expected, p, n, &result); *r = result.utf8_length; return s; });
+        var bytes = Copy((p, n, r) => { var expected = identity; var result = new ViemCommandLineInfo(); uint s = viem_core_view_copy_command_line(Document.Handle, Id, &expected, p, n, &result); *r = result.utf8_length; return s; });
         return (identity.kind switch { 1 => ":", 2 => "/", 3 => "?", 4 => "=", _ => "" }) + Encoding.UTF8.GetString(bytes);
     }
     public string SubstitutePrompt() => Encoding.UTF8.GetString(Copy((p, n, r) => viem_core_view_copy_substitute_confirmation(Document.Handle, Id, p, n, r)));
@@ -296,7 +296,7 @@ internal sealed unsafe partial class CoreView : IDisposable
         Check(viem_core_view_search_work_pending(Document.Handle, Id, &pending), "Read search progress");
         byte changed = 0;
         if (pending != 0) { Check(viem_core_view_poll_search(Document.Handle, Id, &changed), "Update search"); if (changed != 0) Changed?.Invoke(); }
-        var completion = New<ViemCompletionInfoV1>();
+        var completion = new ViemCompletionInfo();
         Check(viem_core_view_completion_info(Document.Handle, Id, &completion), "Read completion");
         if ((completion.flags & VIEM_COMPLETION_SEARCHING) != 0) { Check(viem_core_view_poll_completion(Document.Handle, Id, &changed), "Update completion"); if (changed != 0) Changed?.Invoke(); }
     }

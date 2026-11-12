@@ -40,14 +40,11 @@ pub const VIEM_FORMATTING_CHARACTER_STYLES: u32 = 34;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct ViemFormattingActionsV1 {
-    pub struct_size: u32,
-    pub reserved: u32,
+pub struct ViemFormattingActions {
     pub enabled: u64,
     pub on: u64,
     pub mixed: u64,
 }
-pub const VIEM_FORMATTING_ACTIONS_V1_SIZE: u32 = size_of::<ViemFormattingActionsV1>() as u32;
 
 /// # Safety
 /// `out_actions` is aligned writable storage for one value.
@@ -56,18 +53,16 @@ pub unsafe extern "C" fn viem_core_view_formatting_actions(
     handle: ViemCoreHandle,
     view: ViemViewId,
     requested: u64,
-    out_actions: *mut ViemFormattingActionsV1,
+    out_actions: *mut ViemFormattingActions,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_actions, 1)?;
-        unsafe { out_actions.write(ViemFormattingActionsV1::default()) };
+        unsafe { out_actions.write(ViemFormattingActions::default()) };
         let actions = with_core(handle, |core| {
             core.formatting_actions(ViewId(view), FormattingActionSet::from_bits(requested)).map_err(core_status)
         })?;
         unsafe {
-            out_actions.write(ViemFormattingActionsV1 {
-                struct_size: VIEM_FORMATTING_ACTIONS_V1_SIZE,
-                reserved: 0,
+            out_actions.write(ViemFormattingActions {
                 enabled: actions.enabled().bits(),
                 on: actions.on().bits(),
                 mixed: actions.mixed().bits(),

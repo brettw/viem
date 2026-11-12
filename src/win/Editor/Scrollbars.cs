@@ -80,9 +80,9 @@ internal sealed partial class EditorPane
         }
     }
 
-    private ViemLayoutSnapshotIdentityV1? diffMarkLayout;
+    private ViemLayoutSnapshotIdentity? diffMarkLayout;
     private float diffMarkMaximum;
-    private (ViemDiffScrollbarMarkV1[] Marks, float Extent, ViemRgbaV1 Added, ViemRgbaV1 Removed) diffMarks;
+    private (ViemDiffScrollbarMark[] Marks, float Extent, ViemRgba Added, ViemRgba Removed) diffMarks;
 
     internal void RefreshDiffBaseAfterEdit(DiffComparison comparison, bool aligned)
     {

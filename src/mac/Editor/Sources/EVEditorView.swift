@@ -40,8 +40,8 @@ struct EVTextDecoration {
 
 private struct EVAccessibilityLayoutContext {
     let snapshot: EVLayoutExport
-    let viewport: ViemViewportStateV1
-    let presentation: ViemViewPresentationV1
+    let viewport: ViemViewportState
+    let presentation: ViemViewPresentation
 }
 
 private struct EVDocumentMarkedTarget {
@@ -197,7 +197,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private weak var pointerCursorWindow: NSWindow?
     private(set) var caretHoverRect: NSRect?
     private(set) var caretHoverMode: UInt32 = UInt32(VIEM_MODE_NORMAL)
-    private var caretHoverIdentity: ViemLayoutSnapshotIdentityV1?
+    private var caretHoverIdentity: ViemLayoutSnapshotIdentity?
 
     private weak var configuredEditingSession: EVCoreViewSession?
     private var configuredMarkdownAutodetect: Bool?
@@ -359,7 +359,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             lineNumberGutter.present(bands: [], viewportTop: 0)
             return
         }
-        let exported = session.optionalPresentation("line numbers", fallback: nil as (ViemLineNumberSnapshotInfoV1, [EVLineNumberBand])?) {
+        let exported = session.optionalPresentation("line numbers", fallback: nil as (ViemLineNumberSnapshotInfo, [EVLineNumberBand])?) {
             let info = try session.lineNumberInfo()
             return (info, try session.lineNumberBands(info))
         }
@@ -1234,7 +1234,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                 affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM),
                 in: context.snapshot.info
             ).point
-            let end: ViemLayoutCaretPointV1?
+            let end: ViemLayoutCaretPoint?
             if range.isEmpty {
                 end = nil
             } else {
@@ -1405,12 +1405,12 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
-    private func composedUTF8Range(for point: ViemLayoutCaretPointV1) -> Range<Int>? {
+    private func composedUTF8Range(for point: ViemLayoutCaretPoint) -> Range<Int>? {
         guard let surface else { return nil }
         guard let offset = Int(exactly: point.text_offset),
               let snapshot = surface.layoutSnapshot
         else { return nil }
-        let cluster: ViemPositionedClusterV1?
+        let cluster: ViemPositionedCluster?
         if point.affinity == UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM) {
             cluster = snapshot.clusters.last {
                 $0.text_start < point.text_offset && point.text_offset <= $0.text_end
@@ -1480,8 +1480,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func accessibilityViewRect(
-        _ rect: ViemLayoutRectV1,
-        viewport: ViemViewportStateV1
+        _ rect: ViemLayoutRect,
+        viewport: ViemViewportState
     ) -> NSRect {
         NSRect(
             x: CGFloat(rect.x) + Self.canvasInsets.left + lineNumberGutterWidth - CGFloat(viewport.left),
@@ -1493,7 +1493,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     private func layoutPoint(
         fromViewPoint point: CGPoint,
-        viewport: ViemViewportStateV1
+        viewport: ViemViewportState
     ) -> CGPoint {
         CGPoint(
             x: point.x - Self.canvasInsets.left - lineNumberGutterWidth + CGFloat(viewport.left),
@@ -2244,7 +2244,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
-    func codeBlockLanguageOpacity(for item: ViemLayoutDecorationV1, in snapshot: EVLayoutExport) -> CGFloat {
+    func codeBlockLanguageOpacity(for item: ViemLayoutDecoration, in snapshot: EVLayoutExport) -> CGFloat {
         guard item.flags & UInt32(VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED) == 0 else { return 0.25 }
         let hovered = codeBlockLanguageHoverRect == viewRect(item.typographic_bounds)
         let menuOpen = codeBlockLanguageMenuTarget.map { target in
@@ -2377,7 +2377,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
-    private func checkbox(at point: NSPoint, in snapshot: EVLayoutExport) -> ViemLayoutDecorationV1? {
+    private func checkbox(at point: NSPoint, in snapshot: EVLayoutExport) -> ViemLayoutDecoration? {
         snapshot.decorations.first(where: {
             $0.flags & UInt32(VIEM_LAYOUT_DECORATION_CHECKBOX) != 0
                 && viewRect($0.typographic_bounds).contains(point)
@@ -3200,7 +3200,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             && target.coreText == commandLine.text
     }
 
-    private func commandLineStateIdentityBytes(_ identity: ViemCommandLineIdentityV1) -> [UInt8] {
+    private func commandLineStateIdentityBytes(_ identity: ViemCommandLineIdentity) -> [UInt8] {
         withUnsafeBytes(of: identity.state_identity) { Array($0) }
     }
 
@@ -3229,7 +3229,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     private func commandInputTarget(
         _ target: EVCommandInputMarkedTarget,
-        matches presentation: ViemViewPresentationV1,
+        matches presentation: ViemViewPresentation,
         viewID: UInt64
     ) -> Bool {
         return target.viewID == viewID
@@ -3599,7 +3599,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     /// Long-line layout slices deliberately include offscreen shaping context.
     /// Only ink, backgrounds, and decorations intersecting this paint damage
     /// reach AppKit/Core Text; geometry and editing coverage remain intact.
-    func drawingClusters(in dirtyRect: NSRect, snapshot: EVLayoutExport) -> [ViemPositionedClusterV1] {
+    func drawingClusters(in dirtyRect: NSRect, snapshot: EVLayoutExport) -> [ViemPositionedCluster] {
         let origin = viewPoint(fromLayoutPoint: .zero)
         let fringe = 1 / max(window?.backingScaleFactor ?? 1, 1)
         let damage = dirtyRect.intersection(bounds)
@@ -3621,7 +3621,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     private func drawText(
         _ snapshot: EVLayoutExport,
-        clusters: [ViemPositionedClusterV1],
+        clusters: [ViemPositionedCluster],
         paint: EVLayoutPaintExport?,
         in context: CGContext
     ) {
@@ -3760,14 +3760,14 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
-    func listMarkersForDrawing(in snapshot: EVLayoutExport, dirtyRect: NSRect) -> [ViemLayoutDecorationV1] {
+    func listMarkersForDrawing(in snapshot: EVLayoutExport, dirtyRect: NSRect) -> [ViemLayoutDecoration] {
         snapshot.decorations.filter { item in
             row(for: item.row_index, in: snapshot.rows) != nil
                 && viewRect(item.ink_bounds).union(viewRect(item.typographic_bounds)).intersects(dirtyRect)
         }
     }
 
-    private func drawPaintBackgrounds(_ clusters: [ViemPositionedClusterV1], paint: EVLayoutPaintExport) {
+    private func drawPaintBackgrounds(_ clusters: [ViemPositionedCluster], paint: EVLayoutPaintExport) {
         for cluster in clusters {
             guard let background = resolvedTextPaint(for: cluster, paint: paint).background else {
                 continue
@@ -3777,7 +3777,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
-    private func drawTextDecorations(_ snapshot: EVLayoutExport, clusters: [ViemPositionedClusterV1], paint: EVLayoutPaintExport) {
+    private func drawTextDecorations(_ snapshot: EVLayoutExport, clusters: [ViemPositionedCluster], paint: EVLayoutPaintExport) {
         for decoration in textDecorationsForDrawing(in: snapshot, paint: paint, clusters: clusters) {
             decoration.color.setFill()
             decoration.rect.fill()
@@ -3787,7 +3787,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     func textDecorationsForDrawing(
         in snapshot: EVLayoutExport,
         paint: EVLayoutPaintExport? = nil,
-        clusters: [ViemPositionedClusterV1]? = nil
+        clusters: [ViemPositionedCluster]? = nil
     ) -> [EVTextDecoration] {
         guard let paint = paint ?? exactLayoutPaint(for: snapshot), let scale = exactLayoutScale(for: snapshot) else { return [] }
         var result: [EVTextDecoration] = []
@@ -3841,7 +3841,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     func resolvedTextPaint(
-        for cluster: ViemPositionedClusterV1,
+        for cluster: ViemPositionedCluster,
         paint: EVLayoutPaintExport
     ) -> EVResolvedTextPaint {
         let value = paintRun(containing: cluster.text_start, in: paint)?.paint
@@ -3861,7 +3861,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private func paintRun(
         containing offset: UInt64,
         in paint: EVLayoutPaintExport
-    ) -> ViemPaintStyleRunV1? {
+    ) -> ViemPaintStyleRun? {
         var lower = 0
         var upper = paint.runs.count
         while lower < upper {
@@ -3885,17 +3885,17 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         return paint
     }
 
-    private func nativeForeground(_ paint: ViemTextPaintV1) -> NSColor {
+    private func nativeForeground(_ paint: ViemTextPaint) -> NSColor {
         paint.flags & UInt32(VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0
             ? EVThemeStore.shared.theme.foreground.color : nativeColor(paint.foreground)
     }
 
-    private func nativeCanvas(_ paint: ViemLayoutPaintInfoV1) -> NSColor {
+    private func nativeCanvas(_ paint: ViemLayoutPaintInfo) -> NSColor {
         paint.flags & UInt32(VIEM_LAYOUT_PAINT_DEFAULT_CANVAS) != 0
             ? EVThemeStore.shared.theme.background.color : nativeColor(paint.canvas_background)
     }
 
-    private func nativeColor(_ color: ViemRgbaV1) -> NSColor {
+    private func nativeColor(_ color: ViemRgba) -> NSColor {
         NSColor(
             srgbRed: CGFloat(color.red),
             green: CGFloat(color.green),
@@ -3922,8 +3922,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func sameLayoutIdentity(
-        _ left: ViemLayoutSnapshotIdentityV1,
-        _ right: ViemLayoutSnapshotIdentityV1
+        _ left: ViemLayoutSnapshotIdentity,
+        _ right: ViemLayoutSnapshotIdentity
     ) -> Bool {
         left.view_id == right.view_id
             && left.document_id == right.document_id
@@ -3934,7 +3934,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             && left.metrics_generation == right.metrics_generation
     }
 
-    private func drawMarkedText(_ snapshot: EVLayoutExport, clusters: [ViemPositionedClusterV1], in _: CGContext) {
+    private func drawMarkedText(_ snapshot: EVLayoutExport, clusters: [ViemPositionedCluster], in _: CGContext) {
         guard let surface else { return }
         guard case .document? = markedTextTarget,
               let overlay = surface.compositionOverlay,
@@ -3980,13 +3980,13 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         return rect
     }
 
-    func isImageCluster(_ cluster: ViemPositionedClusterV1) -> Bool {
+    func isImageCluster(_ cluster: ViemPositionedCluster) -> Bool {
         cluster.flags & UInt32(VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0
             && surface?.session?.provider.renderRegistry.isInlineImage(identifier: cluster.render_run.identifier,
                 metricsGeneration: cluster.render_run.metrics_generation) == true
     }
 
-    func selectedImageCluster(in snapshot: EVLayoutExport) -> ViemPositionedClusterV1? {
+    func selectedImageCluster(in snapshot: EVLayoutExport) -> ViemPositionedCluster? {
         guard !compositionActive, let surface,
               surface.viewPresentation.mode != UInt32(VIEM_MODE_COMMAND_LINE) else { return nil }
         let presentation = surface.viewPresentation
@@ -4091,7 +4091,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
-    func caretRedrawClusters(in rect: NSRect, snapshot: EVLayoutExport) -> [ViemPositionedClusterV1] {
+    func caretRedrawClusters(in rect: NSRect, snapshot: EVLayoutExport) -> [ViemPositionedCluster] {
         let fringe = 1 / max(window?.backingScaleFactor ?? 1, 1)
         return snapshot.clusters.filter {
             $0.flags & UInt32(VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0
@@ -4106,7 +4106,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     /// boundary, where affinity picks the row. This deliberately does not look
     /// at the mode or re-derive the choice: `EVCaretTarget` already carries it.
     func caretItemGeometry(_ snapshot: EVLayoutExport, target: EVCaretTarget? = nil) -> (
-        rect: NSRect?, cluster: ViemPositionedClusterV1?
+        rect: NSRect?, cluster: ViemPositionedCluster?
     ) {
         let caret = target ?? presentationCaretTarget
         if case let .cell(range) = caret {
@@ -4271,7 +4271,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
 
 
-    private func clusterRect(_ cluster: ViemPositionedClusterV1) -> NSRect {
+    private func clusterRect(_ cluster: ViemPositionedCluster) -> NSRect {
         let bounds = cluster.typographic_bounds
         return viewRect(
             x: CGFloat(bounds.x),
@@ -4300,7 +4300,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         )
     }
 
-    func viewRect(_ rect: ViemLayoutRectV1) -> NSRect {
+    func viewRect(_ rect: ViemLayoutRect) -> NSRect {
         viewRect(
             x: CGFloat(rect.x),
             y: CGFloat(rect.y),
@@ -4319,12 +4319,12 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         )
     }
 
-    private func row(for index: UInt64, in rows: [ViemVisualRowV1]) -> ViemVisualRowV1? {
+    private func row(for index: UInt64, in rows: [ViemVisualRow]) -> ViemVisualRow? {
         guard index < UInt64(rows.count) else { return nil }
         return rows[Int(index)]
     }
 
-    private func drawFallback(_ cluster: ViemPositionedClusterV1, row: ViemVisualRowV1, color: NSColor) {
+    private func drawFallback(_ cluster: ViemPositionedCluster, row: ViemVisualRow, color: NSColor) {
         guard let surface else { return }
         guard let start = Int(exactly: cluster.text_start),
               let end = Int(exactly: cluster.text_end),
@@ -4347,7 +4347,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
 
     private func minimumCaretWidth(
-        near associatedCluster: ViemPositionedClusterV1?,
+        near associatedCluster: ViemPositionedCluster?,
         in snapshot: EVLayoutExport, target: EVCaretTarget? = nil, fontEnWidth: CGFloat? = nil
     ) -> CGFloat {
         guard let surface else {

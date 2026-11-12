@@ -5,7 +5,7 @@ use super::*;
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_style_parent_candidates(
     handle: ViemCoreHandle,
-    expected: *const ViemStyleSheetIdentityV1,
+    expected: *const ViemStyleSheetIdentity,
     namespace: u32,
     child: ViemUtf8Slice,
     output: *mut u8,

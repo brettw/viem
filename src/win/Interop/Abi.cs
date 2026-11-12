@@ -6,13 +6,6 @@ namespace Viem.Windows.Interop;
 
 internal static unsafe class Abi
 {
-    public static T New<T>() where T : unmanaged
-    {
-        T result = default;
-        *(uint*)&result = (uint)sizeof(T);
-        return result;
-    }
-
     public static void Check(uint status, string operation)
     {
         if (status == VIEM_STATUS_OK) return;
@@ -43,8 +36,8 @@ internal static unsafe class Abi
     }
     public static string Text(ViemUtf8Slice value) => value.length == 0 ? "" : Encoding.UTF8.GetString(value.data, checked((int)value.length));
     public static string Text(byte[] bytes, ulong offset, ulong length) => Encoding.UTF8.GetString(bytes, checked((int)offset), checked((int)length));
-    public static string Text(byte[] bytes, ViemStyleStringRefV1 value) => Text(bytes, value.offset, value.length);
-    public static string Text(byte[] bytes, ViemEffectBytesRefV1 value) => Text(bytes, value.offset, value.length);
+    public static string Text(byte[] bytes, ViemStyleStringRef value) => Text(bytes, value.offset, value.length);
+    public static string Text(byte[] bytes, ViemEffectBytesRef value) => Text(bytes, value.offset, value.length);
 }
 
 internal sealed class CoreException(uint status, string message) : Exception(message)

@@ -211,8 +211,8 @@ fn native_abi_checks_regions_and_exact_caret_before_editing() {
     use viem_core::ffi::*;
     let fixture = super::ffi_core_surface::table_ffi_fixture(b"- first", VIEM_FORMAT_MARKDOWN);
     let (core, view) = (fixture.handle, fixture.view);
-    let mut expected = ViemLogicalSelectionIdentityV1::default();
-    let mut outcome = ViemCoreOutcomeV1::default();
+    let mut expected = ViemLogicalSelectionIdentity::default();
+    let mut outcome = ViemCoreOutcome::default();
     let mut flags = 0;
     assert_eq!(unsafe { viem_core_view_list_selection(core, view, &mut expected) }, ViemStatus::Ok);
     assert_eq!(unsafe { viem_core_view_list_indent_capabilities(core, view, &expected, &mut flags) }, ViemStatus::Ok);
@@ -223,9 +223,7 @@ fn native_abi_checks_regions_and_exact_caret_before_editing() {
     assert_eq!(unsafe { viem_core_view_insert_list_paragraph(core, view,
         overlapping.as_ptr().cast(), overlapping.as_mut_ptr().cast()) }, ViemStatus::InvalidArgument);
     let mut invalid = expected;
-    invalid.struct_size = 0;
-    assert_eq!(unsafe { viem_core_view_insert_list_paragraph(core, view, &invalid, &mut outcome) }, ViemStatus::InvalidArgument);
-    invalid = expected; invalid.text_start += 1;
+    invalid.text_start += 1;
     assert_eq!(unsafe { viem_core_view_insert_list_paragraph(core, view, &invalid, &mut outcome) }, ViemStatus::StaleRevision);
     assert_eq!(unsafe { viem_core_view_insert_list_paragraph(core, view, &expected, &mut outcome) }, ViemStatus::Ok);
     assert_eq!(unsafe { viem_core_view_insert_list_paragraph(core, view, &expected, &mut outcome) }, ViemStatus::StaleRevision);

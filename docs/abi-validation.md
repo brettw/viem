@@ -88,13 +88,13 @@ pending-command text and active count.
 
 ## Native text decoration geometry
 
-`ViemTextMetricsV1.cap_height` carries the native font's scaled cap height.
+`ViemTextMetrics.cap_height` carries the native font's scaled cap height.
 Task-list checkbox decorations use a square with its bottom at the first row's
 baseline and its height equal to that metric. `paragraph_id` identifies the
 owning paragraph only within the supplied snapshot; checkbox toggles reject
 stale document, view, layout, configuration and provider identities.
 
-`ViemLayoutDecorationV1.baseline` (formerly a reserved float) is a text
+`ViemLayoutDecoration.baseline` (formerly a reserved float) is a text
 decoration's layout baseline. List labels sit on their row's baseline; GitHub
 alert titles are shaped as a Heading 4 inside the alert and sit on their own
 baseline in the title band above the first body row. Frontends draw an alert

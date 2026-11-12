@@ -106,8 +106,8 @@ pub unsafe extern "C" fn viem_core_set_whitespace_presentation_defaults(
 pub unsafe extern "C" fn viem_core_view_copy_whitespace_markers(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemLayoutSnapshotIdentityV1,
-    expected_viewport: *const ViemLayoutRectV1,
+    expected: *const ViemLayoutSnapshotIdentity,
+    expected_viewport: *const ViemLayoutRect,
     output: *mut u8,
     capacity: u64,
     out_length: *mut u64,
@@ -131,7 +131,7 @@ pub unsafe extern "C" fn viem_core_view_copy_whitespace_markers(
                 .ok_or(ViemStatus::InvalidView)?;
             validate_whitespace_viewport(
                 expected_viewport,
-                ViemLayoutRectV1 {
+                ViemLayoutRect {
                     x: layout.viewport_left(),
                     y: layout.viewport_top(),
                     width: layout.width(),
@@ -177,8 +177,8 @@ pub unsafe extern "C" fn viem_core_view_copy_whitespace_markers(
 }
 
 fn validate_whitespace_viewport(
-    expected: ViemLayoutRectV1,
-    current: ViemLayoutRectV1,
+    expected: ViemLayoutRect,
+    current: ViemLayoutRect,
 ) -> Result<(), ViemStatus> {
     if !expected.x.is_finite()
         || expected.x < 0.0
@@ -203,27 +203,27 @@ mod tests {
 
     #[test]
     fn marker_viewport_requires_exact_finite_nonnegative_geometry() {
-        let current = ViemLayoutRectV1 {
+        let current = ViemLayoutRect {
             x: 10.0,
             y: 20.0,
             width: 400.0,
             height: 300.0,
         };
         assert_eq!(validate_whitespace_viewport(current, current), Ok(()));
-        let collapsed = ViemLayoutRectV1 {
+        let collapsed = ViemLayoutRect {
             width: 0.0,
             height: 0.0,
             ..current
         };
         assert_eq!(validate_whitespace_viewport(collapsed, collapsed), Ok(()));
         for expected in [
-            ViemLayoutRectV1 { x: 11.0, ..current },
-            ViemLayoutRectV1 { y: 21.0, ..current },
-            ViemLayoutRectV1 {
+            ViemLayoutRect { x: 11.0, ..current },
+            ViemLayoutRect { y: 21.0, ..current },
+            ViemLayoutRect {
                 width: 401.0,
                 ..current
             },
-            ViemLayoutRectV1 {
+            ViemLayoutRect {
                 height: 301.0,
                 ..current
             },
@@ -234,20 +234,20 @@ mod tests {
             );
         }
         for expected in [
-            ViemLayoutRectV1 {
+            ViemLayoutRect {
                 x: f32::NAN,
                 ..current
             },
-            ViemLayoutRectV1 {
+            ViemLayoutRect {
                 y: f32::INFINITY,
                 ..current
             },
-            ViemLayoutRectV1 { x: -1.0, ..current },
-            ViemLayoutRectV1 {
+            ViemLayoutRect { x: -1.0, ..current },
+            ViemLayoutRect {
                 width: -1.0,
                 ..current
             },
-            ViemLayoutRectV1 {
+            ViemLayoutRect {
                 height: -1.0,
                 ..current
             },

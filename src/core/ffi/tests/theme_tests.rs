@@ -93,7 +93,7 @@ fn live_defaults_ffi_requires_current_revision_and_keeps_edited_source() {
     assert!(after.style_sheet_revision > original.style_sheet_revision);
     assert_eq!(
         after,
-        ViemDocumentStateV1 {
+        ViemDocumentState {
             style_sheet_revision: after.style_sheet_revision,
             ..original
         }

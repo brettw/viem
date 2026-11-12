@@ -43,9 +43,9 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private let errorLabel = NSTextField(wrappingLabelWithString: "")
     private var context: EVInlineContentContext?
-    private var expected: ViemLogicalSelectionIdentityV1?
-    private var suppressed: ViemLogicalSelectionIdentityV1?
-    private var cachedSelection: ViemLogicalSelectionIdentityV1?
+    private var expected: ViemLogicalSelectionIdentity?
+    private var suppressed: ViemLogicalSelectionIdentity?
+    private var cachedSelection: ViemLogicalSelectionIdentity?
     private var cachedContext: EVInlineContentContext?
     private var cachedReadOnly: Bool?
     private weak var originWindow: NSWindow?
@@ -255,7 +255,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         return image
     }
 
-    private func readContext(session: EVCoreViewSession, selection: ViemLogicalSelectionIdentityV1) throws -> EVInlineContentContext {
+    private func readContext(session: EVCoreViewSession, selection: ViemLogicalSelectionIdentity) throws -> EVInlineContentContext {
         // Pending link choices change without a source or selection revision.
         // Image context has no typing override and can reuse this identity.
         let readOnly = kind == .image

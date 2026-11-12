@@ -34,7 +34,7 @@ internal sealed partial class EditorPane
     internal List<DrawnLineNumber> DrawnLineNumbers { get; } = [];
     internal void DrawLineNumbersForTesting(CanvasDrawingSession drawing) => DrawLineNumbers(drawing);
     internal static void DrawLineNumberBoxesForTesting(CanvasDrawingSession drawing, double width, double height,
-        float viewportTop, Viem.Windows.Interop.ViemLineNumberRegionV1[] regions, ChromeStyle normal, ChromeStyle current)
+        float viewportTop, Viem.Windows.Interop.ViemLineNumberRegion[] regions, ChromeStyle normal, ChromeStyle current)
     {
         drawing.Clear(Microsoft.UI.Colors.Transparent);
         PaintNumberBoxes(drawing, width, height, viewportTop, regions, normal, current);
@@ -234,7 +234,7 @@ internal sealed partial class EditorPane
     }
 
     private static void PaintNumberBoxes(CanvasDrawingSession drawing, double width, double height, float viewportTop,
-        IReadOnlyList<Viem.Windows.Interop.ViemLineNumberRegionV1> regions, ChromeStyle normal, ChromeStyle current,
+        IReadOnlyList<Viem.Windows.Interop.ViemLineNumberRegion> regions, ChromeStyle normal, ChromeStyle current,
         ChromeStyle? diffNormal = null, ChromeStyle? diffCurrent = null)
     {
         // Fill the ordinary column through the gaps, then each line box once.
@@ -278,17 +278,17 @@ internal sealed partial class EditorPane
         } finally { drawing.Antialiasing = antialiasing; }
     }
 
-    private static Rect NumberBox(Viem.Windows.Interop.ViemLineNumberRegionV1 region, ChromeStyle style, double width, float viewportTop)
+    private static Rect NumberBox(Viem.Windows.Interop.ViemLineNumberRegion region, ChromeStyle style, double width, float viewportTop)
     {
         double top = (double)region.top - viewportTop + style.Margin.Top;
         double bottom = (double)region.bottom - viewportTop - style.Margin.Bottom;
         return new(style.Margin.Left, top, Math.Max(0, width - style.Margin.Horizontal), Math.Max(0, bottom - top));
     }
 
-    private static bool IsCurrentNumber(Viem.Windows.Interop.ViemLineNumberRegionV1 region)
+    private static bool IsCurrentNumber(Viem.Windows.Interop.ViemLineNumberRegion region)
         => (region.flags & Viem.Windows.Interop.Native.VIEM_LINE_NUMBER_REGION_CURRENT) != 0;
 
-    private static ChromeStyle NumberStyle(Interop.ViemLineNumberRegionV1 region, ChromeStyle normal, ChromeStyle current,
+    private static ChromeStyle NumberStyle(Interop.ViemLineNumberRegion region, ChromeStyle normal, ChromeStyle current,
         ChromeStyle? diffNormal, ChromeStyle? diffCurrent) => (region.flags & DiffMask) == 0
         ? (IsCurrentNumber(region) ? current : normal)
         : (IsCurrentNumber(region) ? diffCurrent ?? current : diffNormal ?? normal);

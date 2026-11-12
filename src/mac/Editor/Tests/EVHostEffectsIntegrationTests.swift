@@ -245,8 +245,7 @@ final class EVHostEffectsIntegrationTests: XCTestCase {
         XCTAssertEqual(counters.copyCalls, 1)
         XCTAssertEqual(counters.releaseCalls, 1)
         XCTAssertNotEqual(counters.lastReleasedHandle, 0)
-        var info = ViemEffectBatchInfoV1()
-        info.struct_size = UInt32(MemoryLayout<ViemEffectBatchInfoV1>.size)
+        var info = ViemEffectBatchInfo()
         XCTAssertEqual(
             viem_effect_batch_info(counters.lastReleasedHandle, &info),
             UInt32(VIEM_STATUS_INVALID_HANDLE)

@@ -17,16 +17,16 @@ fn discard_test_effects(status: ViemStatus, effects: ViemEffectBatchHandle) -> V
 unsafe fn test_send_key(
     core: ViemCoreHandle,
     view: ViemViewId,
-    input: *const ViemKeyInputV1,
-    outcome: *mut ViemCoreOutcomeV1,
+    input: *const ViemKeyInput,
+    outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     let mut effects = 0;
     let status = unsafe {
-        viem_core_view_send_key_with_host_context_v2(
+        viem_core_view_send_key_with_host_context(
             core,
             view,
             input,
-            &ViemCommandTurnContextV2::default(),
+            &ViemCommandTurnContext::default(),
             outcome,
             &mut effects,
         )
@@ -39,16 +39,16 @@ unsafe fn test_send_text(
     view: ViemViewId,
     text: *const u8,
     length: u64,
-    outcome: *mut ViemCoreOutcomeV1,
+    outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     let mut effects = 0;
     let status = unsafe {
-        viem_core_view_send_text_with_host_context_v2(
+        viem_core_view_send_text_with_host_context(
             core,
             view,
             text,
             length,
-            &ViemCommandTurnContextV2::default(),
+            &ViemCommandTurnContext::default(),
             outcome,
             &mut effects,
         )
@@ -59,8 +59,8 @@ unsafe fn test_send_text(
 unsafe fn test_set_encoding(
     core: ViemCoreHandle,
     view: ViemViewId,
-    request: *const ViemSetEncodingV1,
-    outcome: *mut ViemCoreOutcomeV1,
+    request: *const ViemSetEncoding,
+    outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     let mut effects = 0;
     let status = unsafe {
@@ -72,8 +72,8 @@ unsafe fn test_set_encoding(
 const FAKE_FONT: &[u8] = b"FFI Fake Sans";
 
 struct FakeResponseStorage {
-    _carets: Vec<Vec<ViemClusterCaretStopV1>>,
-    clusters: Vec<ViemShapedClusterV1>,
+    _carets: Vec<Vec<ViemClusterCaretStop>>,
+    clusters: Vec<ViemShapedCluster>,
     visual_order: Vec<u64>,
 }
 
@@ -178,7 +178,7 @@ unsafe extern "C" fn blocking_metrics_generation(context: *mut c_void) -> u64 {
     }
 }
 
-fn response_storage(request: &ViemShapeRequestV1) -> Option<FakeResponseStorage> {
+fn response_storage(request: &ViemShapeRequest) -> Option<FakeResponseStorage> {
     fn owned_utf8(value: ViemUtf8Slice) -> Option<String> {
         if value.length > usize::MAX as u64 || (value.length != 0 && value.data.is_null()) {
             return None;
@@ -208,7 +208,7 @@ fn response_storage(request: &ViemShapeRequestV1) -> Option<FakeResponseStorage>
     shaping_text.push_str(&text);
     shaping_text.push_str(&context_after);
     let graphemes: Vec<_> = shaping_text.grapheme_indices(true).collect();
-    let metrics = ViemTextMetricsV1 {
+    let metrics = ViemTextMetrics {
         cap_height: 0.0,
         ascent: 10.0,
         descent: 3.0,
@@ -246,12 +246,12 @@ fn response_storage(request: &ViemShapeRequestV1) -> Option<FakeResponseStorage>
         if request.text_start <= text_start && text_start < request.text_end {
             let advance = 8.0 * grapheme_count as f32;
             carets.push(vec![
-                ViemClusterCaretStopV1 {
+                ViemClusterCaretStop {
                     text_offset: text_start,
                     inline_offset: 0.0,
                     affinity: VIEM_BOUNDARY_AFFINITY_DOWNSTREAM,
                 },
-                ViemClusterCaretStopV1 {
+                ViemClusterCaretStop {
                     text_offset: text_end,
                     inline_offset: advance,
                     affinity: VIEM_BOUNDARY_AFFINITY_UPSTREAM,
@@ -266,20 +266,18 @@ fn response_storage(request: &ViemShapeRequestV1) -> Option<FakeResponseStorage>
         .zip(&carets)
         .enumerate()
         .map(
-            |(index, ((text_start, text_end, advance), carets))| ViemShapedClusterV1 {
-                struct_size: VIEM_SHAPED_CLUSTER_V1_SIZE,
-                reserved: 0,
+            |(index, ((text_start, text_end, advance), carets))| ViemShapedCluster {
                 text_start: *text_start,
                 text_end: *text_end,
                 advance: *advance,
                 metrics,
-                typographic_bounds: ViemShapedBoundsV1 {
+                typographic_bounds: ViemShapedBounds {
                     x: 0.0,
                     y: -10.0,
                     width: *advance,
                     height: 13.0,
                 },
-                ink_bounds: ViemShapedBoundsV1 {
+                ink_bounds: ViemShapedBounds {
                     x: 0.0,
                     y: -10.0,
                     width: *advance,
@@ -293,12 +291,11 @@ fn response_storage(request: &ViemShapeRequestV1) -> Option<FakeResponseStorage>
                 },
                 caret_stops: carets.as_ptr(),
                 caret_stop_count: carets.len() as u64,
-                render_run: ViemRenderRunHandleV1 {
+                render_run: ViemRenderRunHandle {
                     owner: request.render_run_owner,
                     identifier: *text_start + index as u64 + 1,
                     metrics_generation: request.metrics_generation,
                     threading: request.render_run_threading,
-                    reserved: 0,
                 },
             },
         )
@@ -313,9 +310,9 @@ fn response_storage(request: &ViemShapeRequestV1) -> Option<FakeResponseStorage>
 
 unsafe extern "C" fn fake_shape_batch(
     context: *mut c_void,
-    requests: *const ViemShapeRequestV1,
+    requests: *const ViemShapeRequest,
     request_count: u64,
-    responses: *mut ViemShapeResponseV1,
+    responses: *mut ViemShapeResponse,
     response_capacity: u64,
 ) -> u32 {
     if context.is_null()
@@ -357,13 +354,10 @@ unsafe extern "C" fn fake_shape_batch(
             .saturating_add(request.context_after.length as usize);
         context.minimum_request_start = context.minimum_request_start.min(request.text_start);
         context.maximum_request_end = context.maximum_request_end.max(request.text_end);
-        let style_is_complete = request.default_style.struct_size
-            >= VIEM_RESOLVED_TEXT_STYLE_V1_SIZE
-            && request.default_style.font_family_count > 0
+        let style_is_complete = request.default_style.font_family_count > 0
             && !request.default_style.font_families.is_null()
             && request.default_style.size > 0.0;
-        context.saw_complete_request |= request.struct_size >= VIEM_SHAPE_REQUEST_V1_SIZE
-            && request.measurement_environment_id == context.expected_environment
+        context.saw_complete_request |= request.measurement_environment_id == context.expected_environment
             && request.metrics_generation == context.metrics_generation
             && request.purpose == VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA
             && request.has_render_run_policy == 1
@@ -385,8 +379,7 @@ unsafe extern "C" fn fake_shape_batch(
         .zip(&context.responses)
         .zip(responses.iter_mut())
     {
-        *output = ViemShapeResponseV1 {
-            struct_size: VIEM_SHAPE_RESPONSE_V1_SIZE,
+        *output = ViemShapeResponse {
             default_font_is_monospaced: 0,
             document_id: request.document_id,
             document_revision: request.document_revision,
@@ -406,7 +399,7 @@ unsafe extern "C" fn fake_shape_batch(
                 storage.visual_order.as_ptr()
             },
             visual_order_count: storage.visual_order.len() as u64,
-            default_metrics: ViemTextMetricsV1 {
+            default_metrics: ViemTextMetrics {
                 cap_height: 0.0,
                 ascent: 10.0,
                 descent: 3.0,
@@ -421,9 +414,9 @@ unsafe extern "C" fn fake_shape_batch(
 
 unsafe extern "C" fn blocking_shape_batch(
     context: *mut c_void,
-    requests: *const ViemShapeRequestV1,
+    requests: *const ViemShapeRequest,
     request_count: u64,
-    responses: *mut ViemShapeResponseV1,
+    responses: *mut ViemShapeResponse,
     response_capacity: u64,
 ) -> u32 {
     if context.is_null() {
@@ -449,9 +442,9 @@ unsafe extern "C" fn blocking_shape_batch(
 
 unsafe extern "C" fn malformed_shape_batch(
     _context: *mut c_void,
-    requests: *const ViemShapeRequestV1,
+    requests: *const ViemShapeRequest,
     request_count: u64,
-    responses: *mut ViemShapeResponseV1,
+    responses: *mut ViemShapeResponse,
     response_capacity: u64,
 ) -> u32 {
     if request_count != response_capacity
@@ -471,8 +464,7 @@ unsafe extern "C" fn malformed_shape_batch(
         unsafe { std::slice::from_raw_parts_mut(responses, response_capacity as usize) }
     };
     for (request, response) in requests.iter().zip(responses) {
-        *response = ViemShapeResponseV1 {
-            struct_size: VIEM_SHAPE_RESPONSE_V1_SIZE,
+        *response = ViemShapeResponse {
             document_id: request.document_id,
             document_revision: request.document_revision,
             measurement_environment_id: request.measurement_environment_id,
@@ -481,13 +473,13 @@ unsafe extern "C" fn malformed_shape_batch(
             text_end: request.text_end,
             clusters: ptr::null(),
             cluster_count: 1,
-            default_metrics: ViemTextMetricsV1 {
+            default_metrics: ViemTextMetrics {
                 cap_height: 0.0,
                 ascent: 10.0,
                 descent: 3.0,
                 leading: 1.0,
             },
-            ..ViemShapeResponseV1::default()
+            ..ViemShapeResponse::default()
         };
     }
     ViemStatus::Ok as u32
@@ -495,25 +487,24 @@ unsafe extern "C" fn malformed_shape_batch(
 
 unsafe extern "C" fn unstable_context_shape_batch(
     _context: *mut c_void,
-    _requests: *const ViemShapeRequestV1,
+    _requests: *const ViemShapeRequest,
     _request_count: u64,
-    _responses: *mut ViemShapeResponseV1,
+    _responses: *mut ViemShapeResponse,
     _response_capacity: u64,
 ) -> u32 {
     ViemStatus::UnstableShapingContext as u32
 }
 
 unsafe extern "C" fn fake_retain_render_runs(
-    _context: *mut c_void, _handles: *const ViemRenderRunHandleV1, _count: u64,
+    _context: *mut c_void, _handles: *const ViemRenderRunHandle, _count: u64,
 ) -> *mut c_void { ptr::NonNull::<u8>::dangling().as_ptr().cast() }
 unsafe extern "C" fn fake_release_render_runs(_lease: *mut c_void) {}
 
 fn provider(
     context: *mut c_void,
     shape_batch: ViemShapeBatchCallback,
-) -> ViemTextMeasurementProviderV1 {
-    ViemTextMeasurementProviderV1 {
-        struct_size: VIEM_TEXT_MEASUREMENT_PROVIDER_V1_SIZE,
+) -> ViemTextMeasurementProvider {
+    ViemTextMeasurementProvider {
         abi_version: VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION,
         context,
         measurement_environment_id: 0xa11c_e001,
@@ -521,7 +512,6 @@ fn provider(
         has_render_run_policy: 1,
         render_run_owner: 0xf00d,
         render_run_threading: VIEM_RENDER_THREADING_ANY,
-        reserved: 0,
         metrics_generation: Some(fake_metrics_generation),
         shape_batch: Some(shape_batch),
         retain_render_runs: Some(fake_retain_render_runs),
@@ -563,8 +553,8 @@ fn create_core(source: &[u8], options: ViemDocumentOptions) -> TestCore {
 fn stylesheet_identity_matches_export_without_changing_document() {
     let core = create_core(b"# Heading\nbody", ViemDocumentOptions { format: VIEM_FORMAT_MARKDOWN, ..Default::default() });
     let before = document_state(&core);
-    let mut identity = ViemStyleSheetIdentityV1::default();
-    let mut info = ViemStyleSheetInfoV1::default();
+    let mut identity = ViemStyleSheetIdentity::default();
+    let mut info = ViemStyleSheetInfo::default();
     assert_eq!(unsafe { viem_core_style_sheet_identity(core.handle, &mut identity) }, ViemStatus::Ok);
     assert_eq!(unsafe { viem_core_style_sheet_info(core.handle, 0, &mut info) }, ViemStatus::Ok);
     assert_eq!(identity.document_id, info.identity.document_id);
@@ -580,8 +570,8 @@ fn stylesheet_identity_matches_export_without_changing_document() {
     assert_ne!(identity.style_sheet_revision, 0);
 }
 
-fn document_state(core: &TestCore) -> ViemDocumentStateV1 {
-    let mut state = ViemDocumentStateV1::default();
+fn document_state(core: &TestCore) -> ViemDocumentState {
+    let mut state = ViemDocumentState::default();
     assert_eq!(
         unsafe { viem_core_document_state(core.handle, &mut state) },
         ViemStatus::Ok
@@ -623,9 +613,8 @@ fn copy_core_bytes(function: CoreCopy, core: &TestCore, revision: u64) -> Vec<u8
     bytes
 }
 
-fn key(kind: u32, codepoint: u32) -> ViemKeyInputV1 {
-    ViemKeyInputV1 {
-        struct_size: VIEM_KEY_INPUT_V1_SIZE,
+fn key(kind: u32, codepoint: u32) -> ViemKeyInput {
+    ViemKeyInput {
         kind,
         codepoint,
         modifiers: 0,
@@ -646,15 +635,15 @@ fn utf8_slice(bytes: &[u8]) -> ViemUtf8Slice {
 fn add_test_view(
     core: &TestCore,
     context: *mut FakeProviderContext,
-) -> (ViemViewId, ViemCoreOutcomeV1) {
+) -> (ViemViewId, ViemCoreOutcome) {
     let provider = provider(context.cast(), fake_shape_batch);
     let mut view = 0;
-    let mut outcome = ViemCoreOutcomeV1::default();
+    let mut outcome = ViemCoreOutcome::default();
     assert_eq!(
         unsafe {
             viem_core_view_add(
                 core.handle,
-                &ViemViewOptionsV1::default(),
+                &ViemViewOptions::default(),
                 &provider,
                 &mut view,
                 &mut outcome,
@@ -689,7 +678,7 @@ fn recovered_layout_warnings_are_exact_bounded_and_do_not_replay_source_edits() 
     let mut context = Box::new(FakeProviderContext::new(core.handle));
     context.fail_next = Some(ViemStatus::ProviderFailure);
     let (view, mut outcome) = add_test_view(&core, &mut *context);
-    let mut info = ViemLayoutSnapshotInfoV1::default();
+    let mut info = ViemLayoutSnapshotInfo::default();
     assert_eq!(unsafe { viem_core_view_layout_snapshot_info(core.handle, view, &mut info) }, ViemStatus::Ok);
     let calls = context.shape_calls;
     let mut required = 0;
@@ -722,21 +711,21 @@ fn recovered_layout_warnings_are_exact_bounded_and_do_not_replay_source_edits() 
 
 #[allow(dead_code)]
 struct CopiedEffectBatch {
-    info: ViemEffectBatchInfoV1,
-    clipboard_writes: Vec<ViemClipboardWriteV1>,
-    ex_requests: Vec<ViemExFrontendRequestV1>,
-    ex_options: Vec<ViemExOptionDisplayV1>,
-    ex_marks: Vec<ViemExMarkV1>,
-    ex_registers: Vec<ViemExRegisterV1>,
-    ex_jumps: Vec<ViemExJumpV1>,
-    ex_text_lines: Vec<ViemExTextLineV1>,
+    info: ViemEffectBatchInfo,
+    clipboard_writes: Vec<ViemClipboardWrite>,
+    ex_requests: Vec<ViemExFrontendRequest>,
+    ex_options: Vec<ViemExOptionDisplay>,
+    ex_marks: Vec<ViemExMark>,
+    ex_registers: Vec<ViemExRegister>,
+    ex_jumps: Vec<ViemExJump>,
+    ex_text_lines: Vec<ViemExTextLine>,
     file_formats: Vec<u32>,
     hard_breaks: Vec<u64>,
     strings: Vec<u8>,
 }
 
 impl CopiedEffectBatch {
-    fn text(&self, reference: ViemEffectBytesRefV1) -> &str {
+    fn text(&self, reference: ViemEffectBytesRef) -> &str {
         let start = usize::try_from(reference.offset).unwrap();
         let length = usize::try_from(reference.length).unwrap();
         std::str::from_utf8(&self.strings[start..start + length]).unwrap()
@@ -744,12 +733,12 @@ impl CopiedEffectBatch {
 }
 
 fn copy_effect_batch(handle: ViemEffectBatchHandle) -> CopiedEffectBatch {
-    let mut info = ViemEffectBatchInfoV1::default();
+    let mut info = ViemEffectBatchInfo::default();
     assert_eq!(
         unsafe { viem_effect_batch_info(handle, &mut info) },
         ViemStatus::Ok
     );
-    let mut borrowed = ViemEffectBatchViewV1::default();
+    let mut borrowed = ViemEffectBatchView::default();
     assert_eq!(unsafe { viem_effect_batch_read(handle, &mut borrowed) }, ViemStatus::Ok);
     assert_eq!(borrowed.info, info);
     let clipboard_writes = unsafe { std::slice::from_raw_parts(borrowed.clipboard_writes, info.clipboard_write_count as usize) }.to_vec();
@@ -780,22 +769,22 @@ fn copy_effect_batch(handle: ViemEffectBatchHandle) -> CopiedEffectBatch {
 fn host_key(
     core: &TestCore,
     view: ViemViewId,
-    input: ViemKeyInputV1,
-    entries: &[ViemClipboardTurnEntryV2],
-) -> (ViemStatus, ViemCoreOutcomeV1, ViemEffectBatchHandle) {
-    let context = ViemCommandTurnContextV2 {
+    input: ViemKeyInput,
+    entries: &[ViemClipboardTurnEntry],
+) -> (ViemStatus, ViemCoreOutcome, ViemEffectBatchHandle) {
+    let context = ViemCommandTurnContext {
         clipboards: if entries.is_empty() {
             ptr::null()
         } else {
             entries.as_ptr()
         },
         clipboard_count: entries.len() as u64,
-        ..ViemCommandTurnContextV2::default()
+        ..ViemCommandTurnContext::default()
     };
-    let mut outcome = ViemCoreOutcomeV1::default();
+    let mut outcome = ViemCoreOutcome::default();
     let mut effects = 0;
     let status = unsafe {
-        viem_core_view_send_key_with_host_context_v2(
+        viem_core_view_send_key_with_host_context(
             core.handle,
             view,
             &input,
@@ -811,12 +800,12 @@ fn host_text(
     core: &TestCore,
     view: ViemViewId,
     text: &str,
-) -> (ViemStatus, ViemCoreOutcomeV1, ViemEffectBatchHandle) {
-    let context = ViemCommandTurnContextV2::default();
-    let mut outcome = ViemCoreOutcomeV1::default();
+) -> (ViemStatus, ViemCoreOutcome, ViemEffectBatchHandle) {
+    let context = ViemCommandTurnContext::default();
+    let mut outcome = ViemCoreOutcome::default();
     let mut effects = 0;
     let status = unsafe {
-        viem_core_view_send_text_with_host_context_v2(
+        viem_core_view_send_text_with_host_context(
             core.handle,
             view,
             text.as_ptr(),
@@ -866,26 +855,26 @@ fn host_context_turns_exchange_clipboards_and_own_raw_ex_effects() {
     let (view, _) = add_test_view(&core, &mut *provider_context);
 
     let invalid = [0xff_u8];
-    let bad_entry = ViemClipboardTurnEntryV2 {
+    let bad_entry = ViemClipboardTurnEntry {
         flags: VIEM_CLIPBOARD_TURN_HAS_READ,
         target: VIEM_CLIPBOARD_TARGET_CLIPBOARD,
         generation: 4,
         plain_text: utf8_slice(&invalid),
-        ..ViemClipboardTurnEntryV2::default()
+        ..ViemClipboardTurnEntry::default()
     };
-    let mut rejected_outcome = ViemCoreOutcomeV1 {
+    let mut rejected_outcome = ViemCoreOutcome {
         flags: u32::MAX,
-        ..ViemCoreOutcomeV1::default()
+        ..ViemCoreOutcome::default()
     };
     let mut rejected_effect = u64::MAX;
-    let bad_context = ViemCommandTurnContextV2 {
+    let bad_context = ViemCommandTurnContext {
         clipboards: &bad_entry,
         clipboard_count: 1,
-        ..ViemCommandTurnContextV2::default()
+        ..ViemCommandTurnContext::default()
     };
     assert_eq!(
         unsafe {
-            viem_core_view_send_key_with_host_context_v2(
+            viem_core_view_send_key_with_host_context(
                 core.handle,
                 view,
                 &key(VIEM_KEY_CHARACTER, u32::from('x')),
@@ -896,18 +885,18 @@ fn host_context_turns_exchange_clipboards_and_own_raw_ex_effects() {
         },
         ViemStatus::InvalidUtf8
     );
-    assert_eq!(rejected_outcome, ViemCoreOutcomeV1::default());
+    assert_eq!(rejected_outcome, ViemCoreOutcome::default());
     assert_eq!(rejected_effect, 0);
     assert_eq!(document_state(&core).document_revision, 0);
 
     host_chars(&core, view, "\"+");
     let pasted = "世界👋";
-    let read_entry = ViemClipboardTurnEntryV2 {
+    let read_entry = ViemClipboardTurnEntry {
         flags: VIEM_CLIPBOARD_TURN_HAS_READ,
         target: VIEM_CLIPBOARD_TARGET_CLIPBOARD,
         generation: 77,
         plain_text: utf8_slice(pasted.as_bytes()),
-        ..ViemClipboardTurnEntryV2::default()
+        ..ViemClipboardTurnEntry::default()
     };
     let (status, paste_outcome, paste_effects) = host_key(
         &core,
@@ -925,10 +914,10 @@ fn host_context_turns_exchange_clipboards_and_own_raw_ex_effects() {
     );
 
     host_chars(&core, view, "\"+y");
-    let writable = ViemClipboardTurnEntryV2 {
+    let writable = ViemClipboardTurnEntry {
         flags: VIEM_CLIPBOARD_TURN_WRITABLE,
         target: VIEM_CLIPBOARD_TARGET_CLIPBOARD,
-        ..ViemClipboardTurnEntryV2::default()
+        ..ViemClipboardTurnEntry::default()
     };
     let (status, yank_outcome, yank_effects) = host_key(
         &core,
@@ -975,15 +964,15 @@ fn host_context_turns_exchange_clipboards_and_own_raw_ex_effects() {
         viem_effect_batch_release(write_effects),
         ViemStatus::InvalidHandle
     );
-    let mut stale_info = ViemEffectBatchInfoV1 {
+    let mut stale_info = ViemEffectBatchInfo {
         batch_handle: u64::MAX,
-        ..ViemEffectBatchInfoV1::default()
+        ..ViemEffectBatchInfo::default()
     };
     assert_eq!(
         unsafe { viem_effect_batch_info(write_effects, &mut stale_info) },
         ViemStatus::InvalidHandle
     );
-    assert_eq!(stale_info, ViemEffectBatchInfoV1::default());
+    assert_eq!(stale_info, ViemEffectBatchInfo::default());
 }
 
 #[test]
@@ -1059,13 +1048,13 @@ fn view_creation_applies_initial_padding_and_rejects_invalid_values() {
     let mut core = create_core(b"first\nsecond", ViemDocumentOptions::default());
     let mut context = Box::new(FakeProviderContext::new(core.handle));
     let provider = provider((&mut *context as *mut FakeProviderContext).cast(), fake_shape_batch);
-    let mut options = ViemViewOptionsV1 { padding_top: 10.0, padding_left: 17.0, padding_bottom: 12.0, padding_right: 23.0, ..Default::default() };
+    let mut options = ViemViewOptions { padding_top: 10.0, padding_left: 17.0, padding_bottom: 12.0, padding_right: 23.0, ..Default::default() };
     let mut view = 0;
-    let mut outcome = ViemCoreOutcomeV1::default();
+    let mut outcome = ViemCoreOutcome::default();
     assert_eq!(unsafe { viem_core_view_add(core.handle, &options, &provider, &mut view, &mut outcome) }, ViemStatus::Ok);
-    let mut info = ViemLayoutSnapshotInfoV1::default();
+    let mut info = ViemLayoutSnapshotInfo::default();
     assert_eq!(unsafe { viem_core_view_layout_snapshot_info(core.handle, view, &mut info) }, ViemStatus::Ok);
-    assert_eq!(info.content_insets, ViemLayoutInsetsV1 { top: 10.0, left: 17.0, bottom: 12.0, right: 23.0 });
+    assert_eq!(info.content_insets, ViemLayoutInsets { top: 10.0, left: 17.0, bottom: 12.0, right: 23.0 });
     let initial = info.identity;
     assert_eq!(viem_core_view_set_padding(core.handle, view, 10.0, 17.0, 12.0, 23.0), ViemStatus::Ok);
     assert_eq!(unsafe { viem_core_view_layout_snapshot_info(core.handle, view, &mut info) }, ViemStatus::Ok);
@@ -1086,12 +1075,12 @@ fn completion_anchor_exports_exact_layout_and_rejects_geometry_from_before_resiz
     let mut context = Box::new(FakeProviderContext::new(core.handle));
     let provider = provider((&mut *context as *mut FakeProviderContext).cast(), fake_shape_batch);
     let mut view = 0;
-    let mut outcome = ViemCoreOutcomeV1::default();
-    let options = ViemViewOptionsV1 { width: 400.0, height: 200.0, ..ViemViewOptionsV1::default() };
+    let mut outcome = ViemCoreOutcome::default();
+    let options = ViemViewOptions { width: 400.0, height: 200.0, ..ViemViewOptions::default() };
     assert_eq!(unsafe { viem_core_view_add(core.handle, &options, &provider, &mut view, &mut outcome) }, ViemStatus::Ok);
     host_chars(&core, view, "GA");
     assert_eq!(unsafe { test_send_key(core.handle, view, &key(VIEM_KEY_CONTROL_CHARACTER, 'p' as u32), &mut outcome) }, ViemStatus::Ok);
-    let mut first = ViemCompletionInfoV1::default();
+    let mut first = ViemCompletionInfo::default();
     assert_eq!(unsafe { viem_core_view_completion_info(core.handle, view, &mut first) }, ViemStatus::Ok);
     assert_ne!(first.flags & VIEM_COMPLETION_HAS_ANCHOR, 0);
     assert_eq!(first.flags & VIEM_COMPLETION_RIGHT_TO_LEFT, 0);
@@ -1100,12 +1089,12 @@ fn completion_anchor_exports_exact_layout_and_rejects_geometry_from_before_resiz
     assert!(first.anchor_rect.height > 0.0);
     assert_eq!(first.anchor_rect.width, 0.0);
     assert_eq!(unsafe { test_send_key(core.handle, view, &key(VIEM_KEY_CONTROL_CHARACTER, 'p' as u32), &mut outcome) }, ViemStatus::Ok);
-    let mut second = ViemCompletionInfoV1::default();
+    let mut second = ViemCompletionInfo::default();
     assert_eq!(unsafe { viem_core_view_completion_info(core.handle, view, &mut second) }, ViemStatus::Ok);
     assert_eq!(first.anchor_rect, second.anchor_rect);
     assert_ne!(first.anchor_layout.layout_revision, second.anchor_layout.layout_revision);
     assert_eq!(unsafe { viem_core_view_resize(core.handle, view, 320.0, 180.0, &mut outcome) }, ViemStatus::Ok);
-    let mut resized = ViemCompletionInfoV1::default();
+    let mut resized = ViemCompletionInfo::default();
     assert_eq!(unsafe { viem_core_view_completion_info(core.handle, view, &mut resized) }, ViemStatus::Ok);
     assert_eq!(second.generation, resized.generation, "resize retains the candidate selection");
     assert_ne!(second.anchor_layout, resized.anchor_layout);
@@ -1142,13 +1131,13 @@ fn callback_backed_core_round_trips_controller_view_and_exact_source() {
         (&mut *context as *mut FakeProviderContext).cast(),
         fake_shape_batch,
     );
-    let options = ViemViewOptionsV1 {
+    let options = ViemViewOptions {
         width: 240.0,
         height: 100.0,
-        ..ViemViewOptionsV1::default()
+        ..ViemViewOptions::default()
     };
     let mut view = 0;
-    let mut outcome = ViemCoreOutcomeV1::default();
+    let mut outcome = ViemCoreOutcome::default();
     assert_eq!(
         unsafe { viem_core_view_add(core.handle, &options, &provider, &mut view, &mut outcome,) },
         ViemStatus::Ok
@@ -1385,14 +1374,13 @@ fn native_paragraph_style_request_is_revision_and_selection_checked() {
     );
     let mut provider = Box::new(FakeProviderContext::new(core.handle));
     let (view, _) = add_test_view(&core, provider.as_mut());
-    let mut selection = ViemLogicalSelectionIdentityV1::default();
+    let mut selection = ViemLogicalSelectionIdentity::default();
     assert_eq!(
         unsafe { viem_core_view_list_selection(core.handle, view, &mut selection) },
         ViemStatus::Ok
     );
-    let mut outcome = ViemCoreOutcomeV1::default();
-    let request = ViemSetParagraphStyleV1 {
-        struct_size: VIEM_SET_PARAGRAPH_STYLE_V1_SIZE,
+    let mut outcome = ViemCoreOutcome::default();
+    let request = ViemSetParagraphStyle {
         level: 2,
         expected_selection: selection,
     };
@@ -1413,7 +1401,7 @@ fn native_paragraph_style_request_is_revision_and_selection_checked() {
         unsafe { viem_core_view_set_paragraph_style(core.handle, view, &request, &mut outcome) },
         ViemStatus::StaleRevision
     );
-    let invalid = ViemSetParagraphStyleV1 {
+    let invalid = ViemSetParagraphStyle {
         level: 7,
         ..request
     };
@@ -1433,11 +1421,11 @@ fn strikethrough_ffi_preserves_source_undo_and_checked_selection() {
             assert_eq!(unsafe { test_send_key(core.handle, view,
                 &key(VIEM_KEY_CHARACTER, character as u32), &mut outcome) }, ViemStatus::Ok);
         }
-        let mut selection = ViemLogicalSelectionIdentityV1::default();
+        let mut selection = ViemLogicalSelectionIdentity::default();
         assert_eq!(unsafe { viem_core_view_list_selection(core.handle, view, &mut selection) }, ViemStatus::Ok);
         assert_eq!(unsafe { viem_core_view_set_strikethrough(core.handle, view, &selection, 2, &mut outcome) }, ViemStatus::InvalidArgument);
         assert_eq!(unsafe { viem_core_view_set_strikethrough(core.handle, view, ptr::null(), 1, &mut outcome) }, ViemStatus::NullPointer);
-        let overlapping = (&mut outcome as *mut ViemCoreOutcomeV1).cast::<ViemLogicalSelectionIdentityV1>();
+        let overlapping = (&mut outcome as *mut ViemCoreOutcome).cast::<ViemLogicalSelectionIdentity>();
         assert_eq!(unsafe { viem_core_view_set_strikethrough(core.handle, view, overlapping, 1, &mut outcome) }, ViemStatus::InvalidArgument);
         let state = document_state(&core);
         assert_eq!(copy_core_bytes(viem_core_copy_source_bytes, &core, state.document_revision), b"word");
@@ -1460,14 +1448,13 @@ fn native_format_encoding_and_list_requests_validate_exact_identity() {
     let mut provider = Box::new(FakeProviderContext::new(core.handle));
     let (view, _) = add_test_view(&core, provider.as_mut());
     let state = document_state(&core);
-    let mut outcome = ViemCoreOutcomeV1::default();
-    let mode = ViemSetDocumentModeV1 {
-        struct_size: VIEM_SET_DOCUMENT_MODE_V1_SIZE,
+    let mut outcome = ViemCoreOutcome::default();
+    let mode = ViemSetDocumentMode {
         mode: VIEM_DOCUMENT_MODE_MARKDOWN,
         document_id: state.document_id,
         document_revision: state.document_revision,
     };
-    let set_mode = |outcome: &mut ViemCoreOutcomeV1| {
+    let set_mode = |outcome: &mut ViemCoreOutcome| {
         let mut effects = 0;
         let status = unsafe { viem_core_view_set_document_mode_with_effects(core.handle, view, &mode,
             ptr::null(), 0, outcome, &mut effects) };
@@ -1493,8 +1480,7 @@ fn native_format_encoding_and_list_requests_validate_exact_identity() {
         b"alpha\nbeta"
     );
     assert_eq!(set_mode(&mut outcome), ViemStatus::StaleRevision);
-    let encoding = ViemSetEncodingV1 {
-        struct_size: VIEM_SET_ENCODING_V1_SIZE,
+    let encoding = ViemSetEncoding {
         encoding: VIEM_ENCODING_UTF16_LE,
         document_id: changed.document_id,
         document_revision: changed.document_revision,
@@ -1505,14 +1491,13 @@ fn native_format_encoding_and_list_requests_validate_exact_identity() {
     );
     let changed = document_state(&core);
     assert_eq!(changed.encoding, VIEM_ENCODING_UTF16_LE);
-    let mut selection = ViemLogicalSelectionIdentityV1::default();
+    let mut selection = ViemLogicalSelectionIdentity::default();
     assert_eq!(
         unsafe { viem_core_view_list_selection(core.handle, view, &mut selection) },
         ViemStatus::Ok
     );
     assert_eq!(selection.kind, VIEM_LOGICAL_SELECTION_KIND_NONE);
-    let list = ViemSetListStyleV1 {
-        struct_size: VIEM_SET_LIST_STYLE_V1_SIZE,
+    let list = ViemSetListStyle {
         style: VIEM_LIST_STYLE_BULLET,
         expected_selection: selection,
     };
@@ -1543,13 +1528,12 @@ fn document_state_flags_markdown_preview_and_literal_markdown_sources() {
     let markdown = |core: &TestCore| document_state(core).flags & VIEM_DOCUMENT_STATE_MARKDOWN_SOURCE != 0;
     let set_mode = |mode: u32, language: &str| {
         let state = document_state(&core);
-        let request = ViemSetDocumentModeV1 {
-            struct_size: VIEM_SET_DOCUMENT_MODE_V1_SIZE,
+        let request = ViemSetDocumentMode {
             mode,
             document_id: state.document_id,
             document_revision: state.document_revision,
         };
-        let (mut outcome, mut effects) = (ViemCoreOutcomeV1::default(), 0);
+        let (mut outcome, mut effects) = (ViemCoreOutcome::default(), 0);
         let status = unsafe { viem_core_view_set_document_mode_with_effects(core.handle, view, &request,
             language.as_ptr(), language.len() as u64, &mut outcome, &mut effects) };
         assert_eq!(discard_test_effects(status, effects), ViemStatus::Ok);
@@ -1581,7 +1565,6 @@ fn document_state_tracks_pipeline_history_file_format_and_native_save_point() {
         },
     );
     let initial = document_state(&core);
-    assert_eq!(initial.struct_size, VIEM_DOCUMENT_STATE_V1_SIZE);
     assert_ne!(initial.document_id, 0);
     assert_eq!(initial.document_revision, 0);
     assert_eq!(initial.source_byte_count, source.len() as u64);
@@ -1605,7 +1588,6 @@ fn document_state_tracks_pipeline_history_file_format_and_native_save_point() {
         initial.redo_action_category,
         VIEM_HISTORY_ACTION_CATEGORY_NONE
     );
-    assert_eq!(initial.reserved, [0; 2]);
 
     let mut context = Box::new(FakeProviderContext::new(core.handle));
     let (view, mut outcome) = add_test_view(&core, &mut *context);
@@ -1643,23 +1625,23 @@ fn document_state_tracks_pipeline_history_file_format_and_native_save_point() {
         edited.undo_action_category,
         VIEM_HISTORY_ACTION_CATEGORY_TEXT
     );
-    let mut viewport_before_save = ViemViewportStateV1::default();
+    let mut viewport_before_save = ViemViewportState::default();
     assert_eq!(
         unsafe { viem_core_view_viewport_state(core.handle, view, &mut viewport_before_save) },
         ViemStatus::Ok
     );
 
-    let saved = ViemMarkSavedV1 {
+    let saved = ViemMarkSaved {
         document_id: edited.document_id,
         document_revision: edited.document_revision,
-        ..ViemMarkSavedV1::default()
+        ..ViemMarkSaved::default()
     };
     assert_eq!(
         unsafe { viem_core_mark_saved(core.handle, &saved) },
         ViemStatus::Ok
     );
     let clean = document_state(&core);
-    let mut viewport_after_save = ViemViewportStateV1::default();
+    let mut viewport_after_save = ViemViewportState::default();
     assert_eq!(
         unsafe { viem_core_view_viewport_state(core.handle, view, &mut viewport_after_save) },
         ViemStatus::Ok
@@ -1669,11 +1651,11 @@ fn document_state_tracks_pipeline_history_file_format_and_native_save_point() {
     assert_eq!(clean.flags & VIEM_DOCUMENT_STATE_IS_DIRTY, 0);
     assert_ne!(clean.flags & VIEM_DOCUMENT_STATE_CAN_UNDO, 0);
 
-    let format_request = ViemSetFileFormatV1 {
+    let format_request = ViemSetFileFormat {
         file_format: VIEM_FILE_FORMAT_UNIX,
         document_id: clean.document_id,
         document_revision: clean.document_revision,
-        ..ViemSetFileFormatV1::default()
+        ..ViemSetFileFormat::default()
     };
     assert_eq!(
         unsafe { viem_core_view_set_file_format(core.handle, view, &format_request, &mut outcome) },
@@ -1711,10 +1693,10 @@ fn document_state_tracks_pipeline_history_file_format_and_native_save_point() {
         ViemStatus::Ok
     );
 
-    let stale_save = ViemMarkSavedV1 {
+    let stale_save = ViemMarkSaved {
         document_id: converted.document_id,
         document_revision: converted.document_revision,
-        ..ViemMarkSavedV1::default()
+        ..ViemMarkSaved::default()
     };
     assert_eq!(
         unsafe {
@@ -1760,10 +1742,10 @@ fn document_state_tracks_pipeline_history_file_format_and_native_save_point() {
         ViemStatus::Ok
     );
     let current = document_state(&core);
-    let exact_save = ViemMarkSavedV1 {
+    let exact_save = ViemMarkSaved {
         document_id: current.document_id,
         document_revision: current.document_revision,
-        ..ViemMarkSavedV1::default()
+        ..ViemMarkSaved::default()
     };
     assert_eq!(
         unsafe { viem_core_mark_saved(core.handle, &exact_save) },
@@ -1843,8 +1825,8 @@ fn typed_view_options_are_local_or_shared_and_fail_atomically() {
         ViemStatus::Ok
     );
 
-    let mut first_state = ViemViewportStateV1::default();
-    let mut second_state = ViemViewportStateV1::default();
+    let mut first_state = ViemViewportState::default();
+    let mut second_state = ViemViewportState::default();
     assert_eq!(
         unsafe { viem_core_view_viewport_state(core.handle, first, &mut first_state) },
         ViemStatus::Ok
@@ -1888,15 +1870,15 @@ fn typed_view_options_are_local_or_shared_and_fail_atomically() {
 
     let scaled_state = first_state;
     for invalid in [0.0, -1.0, 0.249, 5.001, f32::NAN, f32::INFINITY] {
-        outcome = ViemCoreOutcomeV1 {
+        outcome = ViemCoreOutcome {
             flags: u32::MAX,
-            ..ViemCoreOutcomeV1::default()
+            ..ViemCoreOutcome::default()
         };
         assert_eq!(
             unsafe { viem_core_view_set_scale(core.handle, first, invalid, &mut outcome) },
             ViemStatus::InvalidArgument
         );
-        assert_eq!(outcome, ViemCoreOutcomeV1::default());
+        assert_eq!(outcome, ViemCoreOutcome::default());
         assert_eq!(
             unsafe { viem_core_view_viewport_state(core.handle, first, &mut first_state) },
             ViemStatus::Ok
@@ -1912,31 +1894,31 @@ fn typed_view_options_are_local_or_shared_and_fail_atomically() {
     assert_ne!(second_state.flags & VIEM_VIEWPORT_STATE_LINEBREAK, 0);
 
     let before = document_state(&core);
-    let invalid = ViemSetFileFormatV1 {
+    let invalid = ViemSetFileFormat {
         file_format: VIEM_FILE_FORMAT_DETECT,
         document_id: before.document_id,
         document_revision: before.document_revision,
-        ..ViemSetFileFormatV1::default()
+        ..ViemSetFileFormat::default()
     };
     assert_eq!(
         unsafe { viem_core_view_set_file_format(core.handle, first, &invalid, &mut outcome) },
         ViemStatus::InvalidFileFormat
     );
-    let stale = ViemSetFileFormatV1 {
+    let stale = ViemSetFileFormat {
         file_format: VIEM_FILE_FORMAT_DOS,
         document_id: before.document_id,
         document_revision: before.document_revision.saturating_add(1),
-        ..ViemSetFileFormatV1::default()
+        ..ViemSetFileFormat::default()
     };
     assert_eq!(
         unsafe { viem_core_view_set_file_format(core.handle, first, &stale, &mut outcome) },
         ViemStatus::StaleRevision
     );
-    let wrong_document = ViemSetFileFormatV1 {
+    let wrong_document = ViemSetFileFormat {
         file_format: VIEM_FILE_FORMAT_DOS,
         document_id: before.document_id.saturating_add(1),
         document_revision: before.document_revision,
-        ..ViemSetFileFormatV1::default()
+        ..ViemSetFileFormat::default()
     };
     assert_eq!(
         unsafe {
@@ -1944,11 +1926,11 @@ fn typed_view_options_are_local_or_shared_and_fail_atomically() {
         },
         ViemStatus::InvalidArgument
     );
-    let rejected = ViemSetFileFormatV1 {
+    let rejected = ViemSetFileFormat {
         file_format: VIEM_FILE_FORMAT_MAC,
         document_id: before.document_id,
         document_revision: before.document_revision,
-        ..ViemSetFileFormatV1::default()
+        ..ViemSetFileFormat::default()
     };
     assert_eq!(
         unsafe { viem_core_view_set_file_format(core.handle, second, &rejected, &mut outcome) },
@@ -1956,11 +1938,11 @@ fn typed_view_options_are_local_or_shared_and_fail_atomically() {
     );
     assert_eq!(document_state(&core), before);
 
-    let valid = ViemSetFileFormatV1 {
+    let valid = ViemSetFileFormat {
         file_format: VIEM_FILE_FORMAT_DOS,
         document_id: before.document_id,
         document_revision: before.document_revision,
-        ..ViemSetFileFormatV1::default()
+        ..ViemSetFileFormat::default()
     };
     assert_eq!(
         unsafe { viem_core_view_set_file_format(core.handle, second, &valid, &mut outcome) },
@@ -1996,7 +1978,7 @@ fn zoom_reflows_only_a_bounded_viewport_of_a_large_document() {
     let core = create_core(source.as_bytes(), ViemDocumentOptions::default());
     let mut context = Box::new(FakeProviderContext::new(core.handle));
     let (view, mut outcome) = add_test_view(&core, &mut *context);
-    let mut before = ViemViewportStateV1::default();
+    let mut before = ViemViewportState::default();
     assert_eq!(
         unsafe { viem_core_view_viewport_state(core.handle, view, &mut before) },
         ViemStatus::Ok
@@ -2010,7 +1992,7 @@ fn zoom_reflows_only_a_bounded_viewport_of_a_large_document() {
         ViemStatus::Ok
     );
 
-    let mut after = ViemViewportStateV1::default();
+    let mut after = ViemViewportState::default();
     assert_eq!(
         unsafe { viem_core_view_viewport_state(core.handle, view, &mut after) },
         ViemStatus::Ok
@@ -2030,15 +2012,10 @@ fn layout_snapshot_export_geometry_hit_testing_and_pointer_placement_are_revisio
     let mut context = Box::new(FakeProviderContext::new(core.handle));
     let (view, mut outcome) = add_test_view(&core, &mut *context);
 
-    let mut info = ViemLayoutSnapshotInfoV1::default();
+    let mut info = ViemLayoutSnapshotInfo::default();
     assert_eq!(
         unsafe { viem_core_view_layout_snapshot_info(core.handle, view, &mut info) },
         ViemStatus::Ok
-    );
-    assert_eq!(info.struct_size, VIEM_LAYOUT_SNAPSHOT_INFO_V1_SIZE);
-    assert_eq!(
-        info.identity.struct_size,
-        VIEM_LAYOUT_SNAPSHOT_IDENTITY_V1_SIZE
     );
     assert_eq!(info.identity.view_id, view);
     assert_eq!(info.identity.document_revision, 0);
@@ -2049,7 +2026,7 @@ fn layout_snapshot_export_geometry_hit_testing_and_pointer_placement_are_revisio
     assert!(info.total_height > 0.0);
     assert!(info.coverage_y_end > info.coverage_y_start);
 
-    let mut queried = ViemLayoutSnapshotInfoV1::default();
+    let mut queried = ViemLayoutSnapshotInfo::default();
     assert_eq!(
         unsafe {
             viem_core_view_copy_layout_snapshot(
@@ -2089,10 +2066,10 @@ fn layout_snapshot_export_geometry_hit_testing_and_pointer_placement_are_revisio
         ViemStatus::StaleRevision
     );
 
-    let mut rows = vec![ViemVisualRowV1::default(); info.row_count as usize];
-    let mut clusters = vec![ViemPositionedClusterV1::default(); info.cluster_count as usize];
-    let mut carets = vec![ViemPositionedCaretV1::default(); info.caret_count as usize];
-    let mut copied = ViemLayoutSnapshotInfoV1::default();
+    let mut rows = vec![ViemVisualRow::default(); info.row_count as usize];
+    let mut clusters = vec![ViemPositionedCluster::default(); info.cluster_count as usize];
+    let mut carets = vec![ViemPositionedCaret::default(); info.caret_count as usize];
+    let mut copied = ViemLayoutSnapshotInfo::default();
     rows[0].row_index = u64::MAX;
     clusters[0].text_start = u64::MAX;
     carets[0].text_offset = u64::MAX;
@@ -2101,8 +2078,7 @@ fn layout_snapshot_export_geometry_hit_testing_and_pointer_placement_are_revisio
             viem_core_view_copy_layout_snapshot(
                 core.handle,
                 view,
-                &ViemLayoutSnapshotIdentityV1 {
-                    struct_size: VIEM_LAYOUT_SNAPSHOT_IDENTITY_V1_SIZE + 8,
+                &ViemLayoutSnapshotIdentity {
                     ..info.identity
                 },
                 rows.as_mut_ptr(),
@@ -2147,7 +2123,6 @@ fn layout_snapshot_export_geometry_hit_testing_and_pointer_placement_are_revisio
     );
     assert_eq!(copied, info);
     for (row_index, row) in rows.iter().enumerate() {
-        assert_eq!(row.struct_size, VIEM_VISUAL_ROW_V1_SIZE);
         assert_eq!(row.row_index, row_index as u64);
         assert!(row.text_start <= row.text_end);
         assert!(row.hard_line_start <= row.text_start);
@@ -2158,7 +2133,6 @@ fn layout_snapshot_export_geometry_hit_testing_and_pointer_placement_are_revisio
         assert!((row.first_caret + row.caret_count) <= info.caret_count);
     }
     for cluster in &clusters {
-        assert_eq!(cluster.struct_size, VIEM_POSITIONED_CLUSTER_V1_SIZE);
         assert!(cluster.text_start < cluster.text_end);
         assert!(cluster.advance > 0.0);
         assert_ne!(cluster.flags & VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN, 0);
@@ -2175,91 +2149,84 @@ fn layout_snapshot_export_geometry_hit_testing_and_pointer_placement_are_revisio
         .find(|caret| caret.text_offset == 1 && caret.affinity == VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)
         .copied()
         .unwrap();
-    let caret_request = ViemLayoutCaretRequestV1 {
-        struct_size: VIEM_LAYOUT_CARET_REQUEST_V1_SIZE,
+    let caret_request = ViemLayoutCaretRequest {
         affinity: logical.affinity,
         identity: info.identity,
         text_offset: logical.text_offset,
     };
-    let mut geometry = ViemLayoutCaretGeometryV1::default();
+    let mut geometry = ViemLayoutCaretGeometry::default();
     assert_eq!(
         unsafe { viem_core_view_caret_geometry(core.handle, view, &caret_request, &mut geometry) },
         ViemStatus::Ok
     );
-    assert_eq!(geometry.struct_size, VIEM_LAYOUT_CARET_GEOMETRY_V1_SIZE);
     assert_eq!(geometry.point.text_offset, logical.text_offset);
     assert_eq!(geometry.point.affinity, logical.affinity);
     assert_eq!(geometry.rect.x, logical.x);
     assert_eq!(geometry.rect.y, row.y);
     assert_eq!(geometry.rect.height, row.ascent + row.descent);
 
-    let hit_request = ViemLayoutHitTestRequestV1 {
-        struct_size: VIEM_LAYOUT_HIT_TEST_REQUEST_V1_SIZE,
+    let hit_request = ViemLayoutHitTestRequest {
         flags: 0,
         identity: info.identity,
         x: logical.x,
         y: row.y + 1.0,
     };
-    let mut hit = ViemLayoutCaretPointV1::default();
+    let mut hit = ViemLayoutCaretPoint::default();
     assert_eq!(
         unsafe { viem_core_view_layout_hit_test(core.handle, view, &hit_request, &mut hit) },
         ViemStatus::Ok
     );
-    assert_eq!(hit.struct_size, VIEM_LAYOUT_CARET_POINT_V1_SIZE);
     assert_eq!(hit.document_id, info.identity.document_id);
     assert_eq!(hit.document_revision, info.identity.document_revision);
     assert_eq!(hit.layout_revision, info.identity.layout_revision);
 
     let first = &clusters[0];
     for (flags, expected) in [(0, first.text_end), (VIEM_LAYOUT_HIT_TEST_POINTER_DOWN, first.text_start)] {
-        let request = ViemLayoutHitTestRequestV1 { flags, x: first.x + first.advance * 0.9, ..hit_request };
-        let mut result = ViemLayoutCaretPointV1::default();
+        let request = ViemLayoutHitTestRequest { flags, x: first.x + first.advance * 0.9, ..hit_request };
+        let mut result = ViemLayoutCaretPoint::default();
         assert_eq!(unsafe { viem_core_view_layout_hit_test(core.handle, view, &request, &mut result) }, ViemStatus::Ok);
         assert_eq!(result.text_offset, expected);
     }
-    let mut preview = ViemPointerCaretV1::default();
-    let mut before_preview = ViemViewPresentationV1::default();
+    let mut preview = ViemPointerCaret::default();
+    let mut before_preview = ViemViewPresentation::default();
     assert_eq!(unsafe { viem_core_view_presentation(core.handle, view, &mut before_preview) }, ViemStatus::Ok);
-    let preview_request = ViemLayoutHitTestRequestV1 { x: clusters[1].x + clusters[1].advance * 0.9, flags: 0, ..hit_request };
+    let preview_request = ViemLayoutHitTestRequest { x: clusters[1].x + clusters[1].advance * 0.9, flags: 0, ..hit_request };
     assert_eq!(unsafe { viem_core_view_pointer_caret(core.handle, view, &preview_request, &mut preview) }, ViemStatus::Ok);
     assert_eq!(preview.caret_shape, VIEM_CARET_SHAPE_CELL);
     assert_eq!(preview.text_start, clusters[1].text_start);
     assert_eq!(preview.text_end, clusters[1].text_end);
     assert_eq!(preview.flags, 0);
-    let mut after_preview = ViemViewPresentationV1::default();
+    let mut after_preview = ViemViewPresentation::default();
     assert_eq!(unsafe { viem_core_view_presentation(core.handle, view, &mut after_preview) }, ViemStatus::Ok);
     assert_eq!(before_preview, after_preview, "preview is observational");
-    let current = ViemLayoutHitTestRequestV1 { x: clusters[0].x + clusters[0].advance * 0.9, ..preview_request };
+    let current = ViemLayoutHitTestRequest { x: clusters[0].x + clusters[0].advance * 0.9, ..preview_request };
     assert_eq!(unsafe { viem_core_view_pointer_caret(core.handle, view, &current, &mut preview) }, ViemStatus::Ok);
     assert_eq!(preview.flags, VIEM_POINTER_CARET_CURRENT);
     let mut stale = preview_request; stale.identity.document_revision += 1;
     assert_eq!(unsafe { viem_core_view_pointer_caret(core.handle, view, &stale, &mut preview) }, ViemStatus::StaleRevision);
-    assert_eq!(preview, ViemPointerCaretV1::default());
-    let malformed = ViemLayoutHitTestRequestV1 { flags: 1, ..preview_request };
+    assert_eq!(preview, ViemPointerCaret::default());
+    let malformed = ViemLayoutHitTestRequest { flags: 1, ..preview_request };
     assert_eq!(unsafe { viem_core_view_pointer_caret(core.handle, view, &malformed, &mut preview) }, ViemStatus::InvalidArgument);
     assert_eq!(unsafe { viem_core_view_pointer_caret(core.handle, view, &preview_request, ptr::null_mut()) }, ViemStatus::NullPointer);
 
-    let invalid_hit = ViemLayoutHitTestRequestV1 { flags: 1 << 31, ..hit_request };
+    let invalid_hit = ViemLayoutHitTestRequest { flags: 1 << 31, ..hit_request };
     assert_eq!(unsafe { viem_core_view_layout_hit_test(core.handle, view, &invalid_hit, &mut hit) }, ViemStatus::InvalidArgument);
-    let invalid_gesture = ViemPlaceCursorV1 { struct_size: VIEM_PLACE_CURSOR_V1_SIZE,
-        flags: VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE | VIEM_PLACE_CURSOR_EXTEND_SELECTION,
+    let invalid_gesture = ViemPlaceCursor { flags: VIEM_PLACE_CURSOR_BEGIN_POINTER_GESTURE | VIEM_PLACE_CURSOR_EXTEND_SELECTION,
         document_revision: info.identity.document_revision, ..Default::default() };
     assert_eq!(unsafe { viem_core_view_place_cursor(core.handle, view, &invalid_gesture, &mut outcome) }, ViemStatus::InvalidArgument);
 
-    let place = ViemPlaceCursorV1 {
-        struct_size: VIEM_PLACE_CURSOR_V1_SIZE,
+    let place = ViemPlaceCursor {
         flags: 0,
         document_revision: hit.document_revision,
         text_offset: hit.text_offset,
         affinity: hit.affinity,
-        reserved: 0,
     };
     assert_eq!(
         unsafe { viem_core_view_place_cursor(core.handle, view, &place, &mut outcome) },
         ViemStatus::Ok
     );
     assert_eq!(outcome.cursor_utf8_offset, hit.text_offset);
-    let mut presentation = ViemViewPresentationV1::default();
+    let mut presentation = ViemViewPresentation::default();
     assert_eq!(
         unsafe { viem_core_view_presentation(core.handle, view, &mut presentation) },
         ViemStatus::Ok
@@ -2278,7 +2245,7 @@ fn layout_snapshot_export_geometry_hit_testing_and_pointer_placement_are_revisio
         },
         ViemStatus::Ok
     );
-    let extend = ViemPlaceCursorV1 {
+    let extend = ViemPlaceCursor {
         flags: VIEM_PLACE_CURSOR_EXTEND_SELECTION,
         text_offset: 2,
         affinity: VIEM_BOUNDARY_AFFINITY_DOWNSTREAM,
@@ -2338,27 +2305,21 @@ fn layout_paint_export_is_exact_revision_bound_and_uses_explicit_rgba_flags() {
     let mut context = Box::new(FakeProviderContext::new(core.handle));
     let (view, mut outcome) = add_test_view(&core, &mut *context);
 
-    let mut paint = ViemLayoutPaintInfoV1::default();
+    let mut paint = ViemLayoutPaintInfo::default();
     assert_eq!(
         unsafe { viem_core_view_layout_paint_info(core.handle, view, &mut paint) },
         ViemStatus::Ok
     );
-    assert_eq!(paint.struct_size, VIEM_LAYOUT_PAINT_INFO_V1_SIZE);
-    assert_eq!(
-        paint.identity.struct_size,
-        VIEM_LAYOUT_SNAPSHOT_IDENTITY_V1_SIZE
-    );
     assert_eq!(paint.identity.view_id, view);
     assert_eq!(
         paint.canvas_background,
-        ViemRgbaV1 {
+        ViemRgba {
             red: 1.0,
             green: 1.0,
             blue: 1.0,
             alpha: 1.0,
         }
     );
-    assert_eq!(paint.default_paint.struct_size, VIEM_TEXT_PAINT_V1_SIZE);
     assert_eq!(
         paint.default_paint.flags,
         VIEM_TEXT_PAINT_DEFAULT_FOREGROUND
@@ -2366,17 +2327,17 @@ fn layout_paint_export_is_exact_revision_bound_and_uses_explicit_rgba_flags() {
     assert_eq!(paint.flags, VIEM_LAYOUT_PAINT_DEFAULT_CANVAS);
     assert_eq!(
         paint.default_paint.foreground,
-        ViemRgbaV1 {
+        ViemRgba {
             red: 0.0,
             green: 0.0,
             blue: 0.0,
             alpha: 1.0,
         }
     );
-    assert_eq!(paint.default_paint.background, ViemRgbaV1::default());
+    assert_eq!(paint.default_paint.background, ViemRgba::default());
     assert_eq!(paint.paint_run_count, 0);
 
-    let mut copied = ViemLayoutPaintInfoV1::default();
+    let mut copied = ViemLayoutPaintInfo::default();
     assert_eq!(
         unsafe {
             viem_core_view_copy_layout_paint(
@@ -2407,7 +2368,7 @@ fn layout_paint_export_is_exact_revision_bound_and_uses_explicit_rgba_flags() {
         },
         ViemStatus::StaleRevision
     );
-    assert_eq!(copied, ViemLayoutPaintInfoV1::default());
+    assert_eq!(copied, ViemLayoutPaintInfo::default());
 
     let stale = paint.identity;
     assert_eq!(
@@ -2433,7 +2394,7 @@ fn layout_paint_export_is_exact_revision_bound_and_uses_explicit_rgba_flags() {
         unsafe { viem_core_view_layout_paint_info(core.handle, view, &mut paint) },
         ViemStatus::LayoutUnavailable
     );
-    assert_eq!(paint, ViemLayoutPaintInfoV1::default());
+    assert_eq!(paint, ViemLayoutPaintInfo::default());
 
     assert_eq!(viem_core_view_remove(core.handle, view), ViemStatus::Ok);
 }
@@ -2444,17 +2405,16 @@ fn command_line_export_is_exact_kind_cursor_and_utf8_state() {
     let mut context = Box::new(FakeProviderContext::new(core.handle));
     let (view, mut outcome) = add_test_view(&core, &mut *context);
 
-    let mut info = ViemCommandLineInfoV1::default();
+    let mut info = ViemCommandLineInfo::default();
     assert_eq!(
         unsafe { viem_core_view_command_line_info(core.handle, view, &mut info) },
         ViemStatus::Ok
     );
-    assert_eq!(info.struct_size, VIEM_COMMAND_LINE_INFO_V1_SIZE);
     assert_eq!(info.identity.kind, VIEM_COMMAND_LINE_KIND_NONE);
     assert_eq!(info.identity.view_id, view);
     assert_eq!(info.identity.document_revision, 0);
     assert_eq!(info.utf8_length, 0);
-    let mut copied_info = ViemCommandLineInfoV1::default();
+    let mut copied_info = ViemCommandLineInfo::default();
     assert_eq!(
         unsafe {
             viem_core_view_copy_command_line(
@@ -2552,7 +2512,7 @@ fn command_line_export_is_exact_kind_cursor_and_utf8_state() {
         ViemStatus::StaleRevision,
         "command cursor movement must stale an otherwise unchanged export"
     );
-    assert_eq!(copied_info, ViemCommandLineInfoV1::default());
+    assert_eq!(copied_info, ViemCommandLineInfo::default());
 
     for (prefix, expected_kind) in [
         ('/', VIEM_COMMAND_LINE_KIND_SEARCH_FORWARD),
@@ -2603,14 +2563,14 @@ fn visual_line_export_uses_wrapped_rows_and_the_physical_line_policy() {
             unsafe { viem_core_view_resize(core.handle, view, 90., 250., &mut outcome) },
             ViemStatus::Ok
         );
-        let mut layout = ViemLayoutSnapshotInfoV1::default();
+        let mut layout = ViemLayoutSnapshotInfo::default();
         assert_eq!(
             unsafe { viem_core_view_layout_snapshot_info(core.handle, view, &mut layout) },
             ViemStatus::Ok
         );
-        let mut rows = vec![ViemVisualRowV1::default(); layout.row_count as usize];
-        let mut clusters = vec![ViemPositionedClusterV1::default(); layout.cluster_count as usize];
-        let mut carets = vec![ViemPositionedCaretV1::default(); layout.caret_count as usize];
+        let mut rows = vec![ViemVisualRow::default(); layout.row_count as usize];
+        let mut clusters = vec![ViemPositionedCluster::default(); layout.cluster_count as usize];
+        let mut carets = vec![ViemPositionedCaret::default(); layout.caret_count as usize];
         assert_eq!(
             unsafe {
                 viem_core_view_copy_layout_snapshot(
@@ -2623,7 +2583,7 @@ fn visual_line_export_uses_wrapped_rows_and_the_physical_line_policy() {
                     clusters.len() as u64,
                     carets.as_mut_ptr(),
                     carets.len() as u64,
-                    &mut ViemLayoutSnapshotInfoV1::default(),
+                    &mut ViemLayoutSnapshotInfo::default(),
                 )
             },
             ViemStatus::Ok
@@ -2650,15 +2610,15 @@ fn visual_line_export_uses_wrapped_rows_and_the_physical_line_policy() {
                 },
                 ViemStatus::Ok
             );
-            let mut info = ViemVisualSelectionInfoV1::default();
+            let mut info = ViemVisualSelectionInfo::default();
             assert_eq!(
                 unsafe { viem_core_view_visual_selection_info(core.handle, view, &mut info) },
                 ViemStatus::Ok
             );
             let mut segments =
-                vec![ViemVisualSelectionSegmentV1::default(); info.segment_count as usize];
+                vec![ViemVisualSelectionSegment::default(); info.segment_count as usize];
             let mut rectangles =
-                vec![ViemVisualSelectionRectangleV1::default(); info.rectangle_count as usize];
+                vec![ViemVisualSelectionRectangle::default(); info.rectangle_count as usize];
             assert_eq!(
                 unsafe {
                     viem_core_view_copy_visual_selection(
@@ -2669,7 +2629,7 @@ fn visual_line_export_uses_wrapped_rows_and_the_physical_line_policy() {
                         segments.len() as u64,
                         rectangles.as_mut_ptr(),
                         rectangles.len() as u64,
-                        &mut ViemVisualSelectionInfoV1::default(),
+                        &mut ViemVisualSelectionInfo::default(),
                     )
                 },
                 ViemStatus::Ok
@@ -2692,7 +2652,7 @@ fn visual_line_export_uses_wrapped_rows_and_the_physical_line_policy() {
                 ViemStatus::Ok
             );
         }
-        let mut presentation = ViemViewPresentationV1::default();
+        let mut presentation = ViemViewPresentation::default();
         for (kind, expected) in [
             (
                 VIEM_KEY_DOCUMENT_END,
@@ -2720,7 +2680,7 @@ fn visual_selection_export_preserves_character_line_and_block_semantics() {
     let mut context = Box::new(FakeProviderContext::new(core.handle));
     let (view, mut outcome) = add_test_view(&core, &mut *context);
 
-    let mut info = ViemVisualSelectionInfoV1::default();
+    let mut info = ViemVisualSelectionInfo::default();
     assert_eq!(
         unsafe { viem_core_view_visual_selection_info(core.handle, view, &mut info) },
         ViemStatus::Ok
@@ -2750,10 +2710,10 @@ fn visual_selection_export_preserves_character_line_and_block_semantics() {
     assert_eq!(info.segment_count, 1);
     assert!(info.rectangle_count >= 1);
     let mut character_segments =
-        vec![ViemVisualSelectionSegmentV1::default(); info.segment_count as usize];
+        vec![ViemVisualSelectionSegment::default(); info.segment_count as usize];
     let mut character_rectangles =
-        vec![ViemVisualSelectionRectangleV1::default(); info.rectangle_count as usize];
-    let mut copied = ViemVisualSelectionInfoV1::default();
+        vec![ViemVisualSelectionRectangle::default(); info.rectangle_count as usize];
+    let mut copied = ViemVisualSelectionInfo::default();
     assert_eq!(
         unsafe {
             viem_core_view_copy_visual_selection(
@@ -2800,9 +2760,9 @@ fn visual_selection_export_preserves_character_line_and_block_semantics() {
     );
     assert_eq!(info.identity.kind, VIEM_VISUAL_SELECTION_KIND_LINE);
     let mut line_segments =
-        vec![ViemVisualSelectionSegmentV1::default(); info.segment_count as usize];
+        vec![ViemVisualSelectionSegment::default(); info.segment_count as usize];
     let mut line_rectangles =
-        vec![ViemVisualSelectionRectangleV1::default(); info.rectangle_count as usize];
+        vec![ViemVisualSelectionRectangle::default(); info.rectangle_count as usize];
     assert_eq!(
         unsafe {
             viem_core_view_copy_visual_selection(
@@ -2862,9 +2822,9 @@ fn visual_selection_export_preserves_character_line_and_block_semantics() {
     assert_eq!(info.identity.kind, VIEM_VISUAL_SELECTION_KIND_BLOCK);
     assert_eq!(info.segment_count, 2);
     let mut block_segments =
-        vec![ViemVisualSelectionSegmentV1::default(); info.segment_count as usize];
+        vec![ViemVisualSelectionSegment::default(); info.segment_count as usize];
     let mut block_rectangles =
-        vec![ViemVisualSelectionRectangleV1::default(); info.rectangle_count as usize];
+        vec![ViemVisualSelectionRectangle::default(); info.rectangle_count as usize];
     block_segments[0].text_start = u64::MAX;
     block_rectangles[0].rect.x = f32::MAX;
     assert_eq!(
@@ -2911,7 +2871,6 @@ fn visual_selection_export_preserves_character_line_and_block_semantics() {
         | VIEM_VISUAL_SELECTION_SEGMENT_HAS_HARD_LINE
         | VIEM_VISUAL_SELECTION_SEGMENT_HAS_EDGE_AFFINITIES;
     for (index, segment) in block_segments.iter().enumerate() {
-        assert_eq!(segment.struct_size, VIEM_VISUAL_SELECTION_SEGMENT_V1_SIZE);
         assert_eq!(segment.flags, block_flags);
         assert_eq!(segment.row_index, index as u64);
         assert_eq!(segment.hard_line_index, index as u64);
@@ -2928,10 +2887,6 @@ fn visual_selection_export_preserves_character_line_and_block_semantics() {
         (pair[0].row_index, pair[0].rect.x) <= (pair[1].row_index, pair[1].rect.x)
     }));
     for rectangle in &block_rectangles {
-        assert_eq!(
-            rectangle.struct_size,
-            VIEM_VISUAL_SELECTION_RECTANGLE_V1_SIZE
-        );
         assert!(rectangle.segment_index < block_segments.len() as u64);
         assert_eq!(
             rectangle.row_index,
@@ -2967,7 +2922,7 @@ fn visual_selection_export_preserves_character_line_and_block_semantics() {
         ViemStatus::StaleRevision,
         "Visual motion without relayout must stale the selection state token"
     );
-    assert_eq!(copied, ViemVisualSelectionInfoV1::default());
+    assert_eq!(copied, ViemVisualSelectionInfo::default());
 
     let stale_layout = {
         assert_eq!(
@@ -3009,7 +2964,7 @@ fn native_find_selection_is_exact_literal_and_reveal_requires_visual_state() {
         unsafe { viem_core_view_reveal_selection(core.handle, view, &mut outcome) },
         ViemStatus::InvalidRange
     );
-    assert_eq!(outcome, ViemCoreOutcomeV1::default());
+    assert_eq!(outcome, ViemCoreOutcome::default());
 
     for input in [
         key(VIEM_KEY_CHARACTER, 'v' as u32),
@@ -3022,7 +2977,7 @@ fn native_find_selection_is_exact_literal_and_reveal_requires_visual_state() {
         );
     }
 
-    let mut selection = ViemVisualSelectionInfoV1::default();
+    let mut selection = ViemVisualSelectionInfo::default();
     assert_eq!(
         unsafe { viem_core_view_visual_selection_info(core.handle, view, &mut selection) },
         ViemStatus::Ok
@@ -3061,7 +3016,7 @@ fn native_find_selection_is_exact_literal_and_reveal_requires_visual_state() {
         unsafe { viem_core_view_use_selection_for_find(core.handle, view, &stale, &mut outcome) },
         ViemStatus::StaleRevision
     );
-    assert_eq!(outcome, ViemCoreOutcomeV1::default());
+    assert_eq!(outcome, ViemCoreOutcome::default());
 
     assert_eq!(
         unsafe { viem_core_view_reveal_selection(core.handle, view, &mut outcome) },
@@ -3091,7 +3046,7 @@ fn visual_selection_preserves_logical_extent_outside_partial_layout_coverage() {
     let core = create_core(source.as_bytes(), ViemDocumentOptions::default());
     let mut context = Box::new(FakeProviderContext::new(core.handle));
     let (view, mut outcome) = add_test_view(&core, &mut *context);
-    let mut layout = ViemLayoutSnapshotInfoV1::default();
+    let mut layout = ViemLayoutSnapshotInfo::default();
     assert_eq!(
         unsafe { viem_core_view_layout_snapshot_info(core.handle, view, &mut layout) },
         ViemStatus::Ok
@@ -3113,12 +3068,12 @@ fn visual_selection_preserves_logical_extent_outside_partial_layout_coverage() {
     }
     for top in [None, Some(10_000.0), Some(0.0)] {
         if let Some(top) = top {
-            let mut state = ViemViewportStateV1::default();
+            let mut state = ViemViewportState::default();
             assert_eq!(
                 unsafe { viem_core_view_viewport_state(core.handle, view, &mut state) },
                 ViemStatus::Ok
             );
-            let request = ViemViewportOriginV1 {
+            let request = ViemViewportOrigin {
                 flags: VIEM_VIEWPORT_ORIGIN_HAS_TOP,
                 top,
                 expected_document_id: state.document_id,
@@ -3127,7 +3082,7 @@ fn visual_selection_preserves_logical_extent_outside_partial_layout_coverage() {
                 expected_configuration_generation: state.configuration_generation,
                 expected_measurement_environment_id: state.measurement_environment_id,
                 expected_metrics_generation: state.metrics_generation,
-                ..ViemViewportOriginV1::default()
+                ..ViemViewportOrigin::default()
             };
             assert_eq!(
                 unsafe {
@@ -3136,7 +3091,7 @@ fn visual_selection_preserves_logical_extent_outside_partial_layout_coverage() {
                 ViemStatus::Ok
             );
         }
-        let mut selection = ViemVisualSelectionInfoV1::default();
+        let mut selection = ViemVisualSelectionInfo::default();
         assert_eq!(
             unsafe { viem_core_view_visual_selection_info(core.handle, view, &mut selection) },
             ViemStatus::Ok
@@ -3144,9 +3099,9 @@ fn visual_selection_preserves_logical_extent_outside_partial_layout_coverage() {
         assert_eq!(selection.identity.kind, VIEM_VISUAL_SELECTION_KIND_LINE);
         assert_eq!(selection.segment_count, 1);
         assert!(selection.rectangle_count > 0);
-        let mut segment = ViemVisualSelectionSegmentV1::default();
+        let mut segment = ViemVisualSelectionSegment::default();
         let mut rectangles =
-            vec![ViemVisualSelectionRectangleV1::default(); selection.rectangle_count as usize];
+            vec![ViemVisualSelectionRectangle::default(); selection.rectangle_count as usize];
         assert_eq!(
             unsafe {
                 viem_core_view_copy_visual_selection(
@@ -3157,7 +3112,7 @@ fn visual_selection_preserves_logical_extent_outside_partial_layout_coverage() {
                     1,
                     rectangles.as_mut_ptr(),
                     rectangles.len() as u64,
-                    &mut ViemVisualSelectionInfoV1::default(),
+                    &mut ViemVisualSelectionInfo::default(),
                 )
             },
             ViemStatus::Ok
@@ -3272,7 +3227,7 @@ fn native_ffi_history_is_mode_independent_and_finalizes_insert_grouping() {
     );
     assert_eq!(outcome.mode, VIEM_MODE_NORMAL);
     assert_ne!(outcome.flags & VIEM_OUTCOME_MODE_CHANGED, 0);
-    let mut presentation = ViemViewPresentationV1::default();
+    let mut presentation = ViemViewPresentation::default();
     assert_eq!(
         unsafe { viem_core_view_presentation(core.handle, view, &mut presentation) },
         ViemStatus::Ok
@@ -3305,13 +3260,13 @@ fn viewport_origin_api_is_identity_bound_bounded_and_atomic() {
         (&mut *context as *mut FakeProviderContext).cast(),
         fake_shape_batch,
     );
-    let options = ViemViewOptionsV1 {
+    let options = ViemViewOptions {
         width: 40.0,
         height: 32.0,
-        ..ViemViewOptionsV1::default()
+        ..ViemViewOptions::default()
     };
     let mut view = 0;
-    let mut outcome = ViemCoreOutcomeV1::default();
+    let mut outcome = ViemCoreOutcome::default();
     assert_eq!(
         unsafe { viem_core_view_add(core.handle, &options, &provider, &mut view, &mut outcome) },
         ViemStatus::Ok
@@ -3321,7 +3276,7 @@ fn viewport_origin_api_is_identity_bound_bounded_and_atomic() {
         ViemStatus::Ok
     );
 
-    let mut state = ViemViewportStateV1::default();
+    let mut state = ViemViewportState::default();
     assert_eq!(
         unsafe { viem_core_view_viewport_state(core.handle, view, &mut state) },
         ViemStatus::Ok
@@ -3347,7 +3302,7 @@ fn viewport_origin_api_is_identity_bound_bounded_and_atomic() {
     let layout_revision = outcome.layout_revision;
     let configuration_generation = outcome.configuration_generation;
     let shape_calls = context.shape_calls;
-    let request = ViemViewportOriginV1 {
+    let request = ViemViewportOrigin {
         left: 40.0,
         expected_document_id: state.document_id,
         expected_document_revision: state.document_revision,
@@ -3355,7 +3310,7 @@ fn viewport_origin_api_is_identity_bound_bounded_and_atomic() {
         expected_configuration_generation: state.configuration_generation,
         expected_measurement_environment_id: state.measurement_environment_id,
         expected_metrics_generation: state.metrics_generation,
-        ..ViemViewportOriginV1::default()
+        ..ViemViewportOrigin::default()
     };
     assert_eq!(
         unsafe { viem_core_view_set_viewport_origin(core.handle, view, &request, &mut outcome) },
@@ -3372,21 +3327,16 @@ fn viewport_origin_api_is_identity_bound_bounded_and_atomic() {
     assert_eq!(state.left, 40.0);
 
     for invalid in [
-        ViemViewportOriginV1 {
-            struct_size: VIEM_VIEWPORT_ORIGIN_V1_SIZE - 1,
-            left: 60.0,
-            ..request
-        },
-        ViemViewportOriginV1 {
+        ViemViewportOrigin {
             flags: 1 << 31,
             left: 60.0,
             ..request
         },
-        ViemViewportOriginV1 {
+        ViemViewportOrigin {
             left: f32::NAN,
             ..request
         },
-        ViemViewportOriginV1 {
+        ViemViewportOrigin {
             flags: VIEM_VIEWPORT_ORIGIN_HAS_TOP,
             left: 60.0,
             top: f32::INFINITY,
@@ -3406,7 +3356,7 @@ fn viewport_origin_api_is_identity_bound_bounded_and_atomic() {
         assert_eq!(state.left, 40.0);
     }
 
-    let vertical = ViemViewportOriginV1 {
+    let vertical = ViemViewportOrigin {
         flags: VIEM_VIEWPORT_ORIGIN_HAS_TOP,
         left: 60.0,
         top: 14_000.0,
@@ -3433,7 +3383,7 @@ fn viewport_origin_api_is_identity_bound_bounded_and_atomic() {
     assert!(context.maximum_request_end < source.len() as u64);
     assert!(context.shaped_bytes - shaped_bytes < 10_000);
 
-    let mut layout_info = ViemLayoutSnapshotInfoV1::default();
+    let mut layout_info = ViemLayoutSnapshotInfo::default();
     assert_eq!(
         unsafe { viem_core_view_layout_snapshot_info(core.handle, view, &mut layout_info) },
         ViemStatus::Ok
@@ -3444,15 +3394,15 @@ fn viewport_origin_api_is_identity_bound_bounded_and_atomic() {
     assert!(state.top + options.height <= layout_info.coverage_y_end);
 
     let after_down = state;
-    outcome = ViemCoreOutcomeV1 {
+    outcome = ViemCoreOutcome {
         flags: u32::MAX,
-        ..ViemCoreOutcomeV1::default()
+        ..ViemCoreOutcome::default()
     };
     assert_eq!(
         unsafe { viem_core_view_set_viewport_origin(core.handle, view, &vertical, &mut outcome) },
         ViemStatus::StaleRevision
     );
-    assert_eq!(outcome, ViemCoreOutcomeV1::default());
+    assert_eq!(outcome, ViemCoreOutcome::default());
     assert_eq!(
         unsafe { viem_core_view_viewport_state(core.handle, view, &mut state) },
         ViemStatus::Ok
@@ -3463,7 +3413,7 @@ fn viewport_origin_api_is_identity_bound_bounded_and_atomic() {
     );
 
     let request_from_state =
-        |state: ViemViewportStateV1, left: f32, top: f32| ViemViewportOriginV1 {
+        |state: ViemViewportState, left: f32, top: f32| ViemViewportOrigin {
             flags: VIEM_VIEWPORT_ORIGIN_HAS_TOP,
             left,
             top,
@@ -3473,7 +3423,7 @@ fn viewport_origin_api_is_identity_bound_bounded_and_atomic() {
             expected_configuration_generation: state.configuration_generation,
             expected_measurement_environment_id: state.measurement_environment_id,
             expected_metrics_generation: state.metrics_generation,
-            ..ViemViewportOriginV1::default()
+            ..ViemViewportOrigin::default()
         };
     let upward = request_from_state(state, 20.0, 1_000.0);
     assert_eq!(
@@ -3542,7 +3492,7 @@ fn viewport_origin_api_is_identity_bound_bounded_and_atomic() {
     #[repr(C, align(8))]
     struct OverlapStorage([u8; 128]);
     let mut overlap = OverlapStorage([0; 128]);
-    let overlap_request = overlap.0.as_mut_ptr().cast::<ViemViewportOriginV1>();
+    let overlap_request = overlap.0.as_mut_ptr().cast::<ViemViewportOrigin>();
     unsafe { overlap_request.write(request) };
     assert_eq!(
         unsafe {
@@ -3607,12 +3557,12 @@ fn provider_key_utf8_pointer_and_enum_failures_are_rejected_without_state_change
     let core = create_core(b"text", ViemDocumentOptions::default());
     let mut context = Box::new(FakeProviderContext::new(core.handle));
     let context_pointer = (&mut *context as *mut FakeProviderContext).cast();
-    let options = ViemViewOptionsV1::default();
+    let options = ViemViewOptions::default();
     let mut view = 99;
-    let mut outcome = ViemCoreOutcomeV1::default();
+    let mut outcome = ViemCoreOutcome::default();
 
     let mut invalid_provider = provider(context_pointer, fake_shape_batch);
-    invalid_provider.struct_size = VIEM_TEXT_MEASUREMENT_PROVIDER_V1_SIZE - 1;
+    invalid_provider.abi_version = 0;
     assert_eq!(
         unsafe {
             viem_core_view_add(
@@ -3738,13 +3688,13 @@ fn provider_crossing_cluster_and_unstable_context_contract_are_explicit() {
     let core = create_core(&source, ViemDocumentOptions::default());
     let mut context = Box::new(FakeProviderContext::new(core.handle));
     let context_pointer = (&mut *context as *mut FakeProviderContext).cast();
-    let options = ViemViewOptionsV1 {
+    let options = ViemViewOptions {
         width: 100_000.0,
         height: 100.0,
-        ..ViemViewOptionsV1::default()
+        ..ViemViewOptions::default()
     };
     let mut view = 0;
-    let mut outcome = ViemCoreOutcomeV1::default();
+    let mut outcome = ViemCoreOutcome::default();
     let current = provider(context_pointer, fake_shape_batch);
 
     assert_eq!(
@@ -3777,13 +3727,13 @@ fn core_handles_are_final_and_never_reused() {
         ViemStatus::InvalidHandle
     );
     assert_eq!(revision, 0);
-    let mut outcome = ViemCoreOutcomeV1 { flags: u32::MAX, ..Default::default() };
+    let mut outcome = ViemCoreOutcome { flags: u32::MAX, ..Default::default() };
     assert_eq!(
         unsafe { test_send_text(first_handle, 1, b"x".as_ptr(), 1, &mut outcome) },
         ViemStatus::InvalidHandle,
         "input cannot revive a destroyed core"
     );
-    assert_eq!(outcome, ViemCoreOutcomeV1::default());
+    assert_eq!(outcome, ViemCoreOutcome::default());
 }
 
 #[test]
@@ -3801,11 +3751,11 @@ fn busy_destroy_preserves_provider_lifetime_until_successful_retry() {
         let mut provider = provider(context_address as *mut c_void, blocking_shape_batch);
         provider.metrics_generation = Some(blocking_metrics_generation);
         let mut view = 0;
-        let mut outcome = ViemCoreOutcomeV1::default();
+        let mut outcome = ViemCoreOutcome::default();
         let status = unsafe {
             viem_core_view_add(
                 first_handle,
-                &ViemViewOptionsV1::default(),
+                &ViemViewOptions::default(),
                 &provider,
                 &mut view,
                 &mut outcome,
@@ -3873,9 +3823,7 @@ fn native_composition_commit_is_one_exact_undo_unit() {
     assert_eq!(outcome.document_revision, 1);
     assert_eq!(outcome.cursor_utf8_offset, 1);
 
-    let begin = ViemCompositionBeginV1 {
-        struct_size: VIEM_COMPOSITION_BEGIN_V1_SIZE,
-        reserved: 0,
+    let begin = ViemCompositionBegin {
         document_revision: 1,
         replacement_start: 1,
         replacement_end: 1,
@@ -3888,9 +3836,7 @@ fn native_composition_commit_is_one_exact_undo_unit() {
     assert_eq!(outcome.document_revision, 1);
 
     let update_text = "e\u{301}".as_bytes();
-    let update = ViemCompositionUpdateV1 {
-        struct_size: VIEM_COMPOSITION_UPDATE_V1_SIZE,
-        reserved: 0,
+    let update = ViemCompositionUpdate {
         document_revision: 1,
         marked_text: utf8_slice(update_text),
         selected_start: update_text.len() as u64,
@@ -3903,9 +3849,7 @@ fn native_composition_commit_is_one_exact_undo_unit() {
     assert_eq!(outcome.document_revision, 1, "marked text is an overlay");
 
     let committed_text = "é".as_bytes();
-    let commit = ViemCompositionCommitV1 {
-        struct_size: VIEM_COMPOSITION_COMMIT_V1_SIZE,
-        reserved: 0,
+    let commit = ViemCompositionCommit {
         document_revision: 1,
         committed_text: utf8_slice(committed_text),
     };
@@ -3977,21 +3921,14 @@ fn composition_overlay_reads_are_exact_revision_tagged_and_source_nonmutating() 
     let context_pointer = &mut *context as *mut FakeProviderContext;
     let (view, mut outcome) = add_test_view(&core, context_pointer);
 
-    let mut inactive = ViemCompositionOverlayInfoV1::default();
+    let mut inactive = ViemCompositionOverlayInfo::default();
     assert_eq!(
         unsafe { viem_core_view_composition_overlay_info(core.handle, view, &mut inactive) },
         ViemStatus::Ok
     );
-    assert_eq!(inactive.struct_size, VIEM_COMPOSITION_OVERLAY_INFO_V1_SIZE);
     assert_eq!(inactive.flags & VIEM_COMPOSITION_OVERLAY_ACTIVE, 0);
-    assert_eq!(
-        inactive.identity.struct_size,
-        VIEM_COMPOSITION_OVERLAY_IDENTITY_V1_SIZE
-    );
 
-    let begin = ViemCompositionBeginV1 {
-        struct_size: VIEM_COMPOSITION_BEGIN_V1_SIZE,
-        reserved: 0,
+    let begin = ViemCompositionBegin {
         document_revision: 0,
         replacement_start: 1,
         replacement_end: 4,
@@ -4001,9 +3938,7 @@ fn composition_overlay_reads_are_exact_revision_tagged_and_source_nonmutating() 
         ViemStatus::Ok
     );
     let marked = "é界".as_bytes();
-    let update = ViemCompositionUpdateV1 {
-        struct_size: VIEM_COMPOSITION_UPDATE_V1_SIZE,
-        reserved: 0,
+    let update = ViemCompositionUpdate {
         document_revision: 0,
         marked_text: utf8_slice(marked),
         selected_start: "é".len() as u64,
@@ -4019,7 +3954,7 @@ fn composition_overlay_reads_are_exact_revision_tagged_and_source_nonmutating() 
         "queryable marked text remains a disposable projection"
     );
 
-    let mut info = ViemCompositionOverlayInfoV1::default();
+    let mut info = ViemCompositionOverlayInfo::default();
     assert_eq!(
         unsafe { viem_core_view_composition_overlay_info(core.handle, view, &mut info) },
         ViemStatus::Ok
@@ -4039,9 +3974,7 @@ fn composition_overlay_reads_are_exact_revision_tagged_and_source_nonmutating() 
         (1 + "é".len() as u64, 1 + marked.len() as u64)
     );
 
-    let request = ViemCompositionOverlayUtf8RangeV1 {
-        struct_size: VIEM_COMPOSITION_OVERLAY_UTF8_RANGE_V1_SIZE,
-        reserved: 0,
+    let request = ViemCompositionOverlayUtf8Range {
         identity: info.identity,
         start: 0,
         end: info.utf8_length,
@@ -4077,7 +4010,7 @@ fn composition_overlay_reads_are_exact_revision_tagged_and_source_nonmutating() 
     );
     assert_eq!(bytes, "hé界o".as_bytes());
 
-    let split_scalar = ViemCompositionOverlayUtf8RangeV1 {
+    let split_scalar = ViemCompositionOverlayUtf8Range {
         start: 2,
         end: 3,
         ..request
@@ -4098,7 +4031,7 @@ fn composition_overlay_reads_are_exact_revision_tagged_and_source_nonmutating() 
     assert_eq!(required, 0, "failed reads clear their byte count first");
 
     let next_marked = "X".as_bytes();
-    let next_update = ViemCompositionUpdateV1 {
+    let next_update = ViemCompositionUpdate {
         marked_text: utf8_slice(next_marked),
         selected_start: 1,
         selected_end: 1,
@@ -4124,16 +4057,14 @@ fn composition_overlay_reads_are_exact_revision_tagged_and_source_nonmutating() 
     );
     assert_eq!(required, 0);
 
-    let cancel = ViemCompositionCancelV1 {
-        struct_size: VIEM_COMPOSITION_CANCEL_V1_SIZE,
-        reserved: 0,
+    let cancel = ViemCompositionCancel {
         document_revision: 0,
     };
     assert_eq!(
         unsafe { viem_core_view_composition_cancel(core.handle, view, &cancel, &mut outcome) },
         ViemStatus::Ok
     );
-    let mut cancelled = ViemCompositionOverlayInfoV1::default();
+    let mut cancelled = ViemCompositionOverlayInfo::default();
     assert_eq!(
         unsafe { viem_core_view_composition_overlay_info(core.handle, view, &mut cancelled) },
         ViemStatus::Ok
@@ -4152,24 +4083,12 @@ fn composition_cancel_and_invalid_or_stale_updates_are_source_atomic() {
     let mut context = Box::new(FakeProviderContext::new(core.handle));
     let context_pointer = &mut *context as *mut FakeProviderContext;
     let (view, mut outcome) = add_test_view(&core, context_pointer);
-    let begin = ViemCompositionBeginV1 {
-        struct_size: VIEM_COMPOSITION_BEGIN_V1_SIZE,
-        reserved: 0,
+    let begin = ViemCompositionBegin {
         document_revision: 0,
         replacement_start: 1,
         replacement_end: 4,
     };
-    let undersized_begin = ViemCompositionBeginV1 {
-        struct_size: VIEM_COMPOSITION_BEGIN_V1_SIZE - 1,
-        ..begin
-    };
-    assert_eq!(
-        unsafe {
-            viem_core_view_composition_begin(core.handle, view, &undersized_begin, &mut outcome)
-        },
-        ViemStatus::InvalidArgument
-    );
-    let inverted_begin = ViemCompositionBeginV1 {
+    let inverted_begin = ViemCompositionBegin {
         replacement_start: 4,
         replacement_end: 1,
         ..begin
@@ -4184,7 +4103,7 @@ fn composition_cancel_and_invalid_or_stale_updates_are_source_atomic() {
         unsafe { viem_core_view_composition_begin(core.handle, view, ptr::null(), &mut outcome) },
         ViemStatus::NullPointer
     );
-    let aliased = &mut outcome as *mut ViemCoreOutcomeV1;
+    let aliased = &mut outcome as *mut ViemCoreOutcome;
     assert_eq!(
         unsafe { viem_core_view_composition_begin(core.handle, view, aliased.cast(), aliased) },
         ViemStatus::InvalidArgument
@@ -4194,9 +4113,7 @@ fn composition_cancel_and_invalid_or_stale_updates_are_source_atomic() {
         ViemStatus::Ok
     );
     let marked = "é".as_bytes();
-    let valid_update = ViemCompositionUpdateV1 {
-        struct_size: VIEM_COMPOSITION_UPDATE_V1_SIZE,
-        reserved: 0,
+    let valid_update = ViemCompositionUpdate {
         document_revision: 0,
         marked_text: utf8_slice(marked),
         selected_start: 2,
@@ -4209,7 +4126,7 @@ fn composition_cancel_and_invalid_or_stale_updates_are_source_atomic() {
         ViemStatus::Ok
     );
 
-    let split_update = ViemCompositionUpdateV1 {
+    let split_update = ViemCompositionUpdate {
         selected_start: 1,
         selected_end: 1,
         ..valid_update
@@ -4220,7 +4137,7 @@ fn composition_cancel_and_invalid_or_stale_updates_are_source_atomic() {
         },
         ViemStatus::NotGraphemeBoundary
     );
-    let out_of_range_update = ViemCompositionUpdateV1 {
+    let out_of_range_update = ViemCompositionUpdate {
         selected_start: 3,
         selected_end: 3,
         ..valid_update
@@ -4232,7 +4149,7 @@ fn composition_cancel_and_invalid_or_stale_updates_are_source_atomic() {
         ViemStatus::InvalidRange
     );
     let invalid_utf8 = [0xff];
-    let malformed_update = ViemCompositionUpdateV1 {
+    let malformed_update = ViemCompositionUpdate {
         marked_text: utf8_slice(&invalid_utf8),
         selected_start: 0,
         selected_end: 0,
@@ -4244,7 +4161,7 @@ fn composition_cancel_and_invalid_or_stale_updates_are_source_atomic() {
         },
         ViemStatus::InvalidUtf8
     );
-    let null_text_update = ViemCompositionUpdateV1 {
+    let null_text_update = ViemCompositionUpdate {
         marked_text: ViemUtf8Slice {
             data: ptr::null(),
             length: 1,
@@ -4259,9 +4176,7 @@ fn composition_cancel_and_invalid_or_stale_updates_are_source_atomic() {
         },
         ViemStatus::NullPointer
     );
-    let invalid_commit = ViemCompositionCommitV1 {
-        struct_size: VIEM_COMPOSITION_COMMIT_V1_SIZE,
-        reserved: 0,
+    let invalid_commit = ViemCompositionCommit {
         document_revision: 0,
         committed_text: utf8_slice(&invalid_utf8),
     };
@@ -4275,9 +4190,7 @@ fn composition_cancel_and_invalid_or_stale_updates_are_source_atomic() {
         copy_core_bytes(viem_core_copy_source_bytes, &core, 0),
         b"hello"
     );
-    let cancel = ViemCompositionCancelV1 {
-        struct_size: VIEM_COMPOSITION_CANCEL_V1_SIZE,
-        reserved: 0,
+    let cancel = ViemCompositionCancel {
         document_revision: 0,
     };
     assert_eq!(
@@ -4344,9 +4257,7 @@ fn latin1_unrepresentable_composition_commit_is_typed_and_non_destructive() {
     let mut context = Box::new(FakeProviderContext::new(core.handle));
     let context_pointer = &mut *context as *mut FakeProviderContext;
     let (view, mut outcome) = add_test_view(&core, context_pointer);
-    let begin = ViemCompositionBeginV1 {
-        struct_size: VIEM_COMPOSITION_BEGIN_V1_SIZE,
-        reserved: 0,
+    let begin = ViemCompositionBegin {
         document_revision: 0,
         replacement_start: "café".len() as u64,
         replacement_end: "café".len() as u64,
@@ -4356,9 +4267,7 @@ fn latin1_unrepresentable_composition_commit_is_typed_and_non_destructive() {
         ViemStatus::Ok
     );
     let emoji = "😀".as_bytes();
-    let commit = ViemCompositionCommitV1 {
-        struct_size: VIEM_COMPOSITION_COMMIT_V1_SIZE,
-        reserved: 0,
+    let commit = ViemCompositionCommit {
         document_revision: 0,
         committed_text: utf8_slice(emoji),
     };
@@ -4374,9 +4283,7 @@ fn latin1_unrepresentable_composition_commit_is_typed_and_non_destructive() {
         copy_core_bytes(viem_core_copy_formatted_utf8, &core, 0),
         "café".as_bytes()
     );
-    let cancel = ViemCompositionCancelV1 {
-        struct_size: VIEM_COMPOSITION_CANCEL_V1_SIZE,
-        reserved: 0,
+    let cancel = ViemCompositionCancel {
         document_revision: 0,
     };
     assert_eq!(
@@ -4388,7 +4295,6 @@ fn latin1_unrepresentable_composition_commit_is_typed_and_non_destructive() {
 
 #[test]
 fn checked_line_mode_and_location_queries_are_view_local_and_do_not_edit() {
-    assert_eq!(std::mem::size_of::<ViemViewLineLocationV1>(), 48);
     let core = create_core(b"abcdef\nsecond", ViemDocumentOptions::default());
     let mut provider = Box::new(FakeProviderContext::new(core.handle));
     let (view, mut outcome) = add_test_view(&core, &mut *provider);
@@ -4399,7 +4305,7 @@ fn checked_line_mode_and_location_queries_are_view_local_and_do_not_edit() {
         ViemStatus::Ok
     );
     assert_eq!((mode, fixed), (0, 0));
-    let mut location = ViemViewLineLocationV1::default();
+    let mut location = ViemViewLineLocation::default();
     assert_eq!(
         unsafe { viem_core_view_line_location(core.handle, view, &mut location) },
         ViemStatus::Ok
@@ -4535,11 +4441,10 @@ fn readonly_and_recovered_flags_are_exact_buffer_policies_and_save_clears_recove
     assert_ne!(recovered.flags & VIEM_DOCUMENT_STATE_IS_DIRTY, 0);
     assert_ne!(recovered.flags & VIEM_DOCUMENT_STATE_RECOVERED, 0);
     assert_eq!(recovered.flags & VIEM_DOCUMENT_STATE_CAN_UNDO, 0);
-    let saved = ViemMarkSavedV1 {
-        struct_size: VIEM_MARK_SAVED_V1_SIZE,
+    let saved = ViemMarkSaved {
         document_id: initial.document_id,
         document_revision: initial.document_revision,
-        ..ViemMarkSavedV1::default()
+        ..ViemMarkSaved::default()
     };
     assert_eq!(
         unsafe { viem_core_mark_saved(core.handle, &saved) },
@@ -4697,9 +4602,7 @@ fn current_core_replacement_checks_graphemes_and_payloads_before_mutating_source
     let core = create_core(source.as_bytes(), ViemDocumentOptions::default());
     let mut provider = Box::new(FakeProviderContext::new(core.handle));
     let (view, mut outcome) = add_test_view(&core, provider.as_mut());
-    let begin = ViemCompositionBeginV1 {
-        struct_size: VIEM_COMPOSITION_BEGIN_V1_SIZE,
-        reserved: 0,
+    let begin = ViemCompositionBegin {
         document_revision: 0,
         replacement_start: 1,
         replacement_end: 4,
@@ -4708,7 +4611,7 @@ fn current_core_replacement_checks_graphemes_and_payloads_before_mutating_source
         (2, 2, ViemStatus::NotGraphemeBoundary),
         (4, 1, ViemStatus::InvalidRange),
     ] {
-        let invalid = ViemCompositionBeginV1 {
+        let invalid = ViemCompositionBegin {
             replacement_start: start,
             replacement_end: end,
             ..begin
@@ -4736,9 +4639,7 @@ fn current_core_replacement_checks_graphemes_and_payloads_before_mutating_source
             ViemStatus::NullPointer,
         ),
     ] {
-        let invalid = ViemCompositionCommitV1 {
-            struct_size: VIEM_COMPOSITION_COMMIT_V1_SIZE,
-            reserved: 0,
+        let invalid = ViemCompositionCommit {
             document_revision: 0,
             committed_text: text,
         };
@@ -4751,9 +4652,7 @@ fn current_core_replacement_checks_graphemes_and_payloads_before_mutating_source
             source.as_bytes()
         );
     }
-    let valid = ViemCompositionCommitV1 {
-        struct_size: VIEM_COMPOSITION_COMMIT_V1_SIZE,
-        reserved: 0,
+    let valid = ViemCompositionCommit {
         document_revision: 0,
         committed_text: utf8_slice("ø".as_bytes()),
     };
@@ -4782,12 +4681,12 @@ fn current_host_context_checks_targets_counts_and_nested_output_aliases() {
     let core = create_core(b"text", ViemDocumentOptions::default());
     let mut provider = Box::new(FakeProviderContext::new(core.handle));
     let (view, _) = add_test_view(&core, provider.as_mut());
-    let entry = ViemClipboardTurnEntryV2 {
+    let entry = ViemClipboardTurnEntry {
         target: VIEM_CLIPBOARD_TARGET_CLIPBOARD,
         flags: VIEM_CLIPBOARD_TURN_HAS_READ,
         generation: 1,
         plain_text: utf8_slice(b"clipboard"),
-        ..ViemClipboardTurnEntryV2::default()
+        ..ViemClipboardTurnEntry::default()
     };
     let (status, _, effects) = host_key(
         &core,
@@ -4799,15 +4698,15 @@ fn current_host_context_checks_targets_counts_and_nested_output_aliases() {
     assert_eq!(effects, 0);
     for count in [3, u64::MAX] {
         // Invalid counts must be rejected before following the null array.
-        let context = ViemCommandTurnContextV2 {
+        let context = ViemCommandTurnContext {
             clipboard_count: count,
-            ..ViemCommandTurnContextV2::default()
+            ..ViemCommandTurnContext::default()
         };
-        let mut outcome = ViemCoreOutcomeV1::default();
+        let mut outcome = ViemCoreOutcome::default();
         let mut effects = u64::MAX;
         assert_eq!(
             unsafe {
-                viem_core_view_send_text_with_host_context_v2(
+                viem_core_view_send_text_with_host_context(
                     core.handle,
                     view,
                     b"x".as_ptr(),
@@ -4822,33 +4721,33 @@ fn current_host_context_checks_targets_counts_and_nested_output_aliases() {
         assert_eq!(effects, 0);
     }
     for alias_fragment in [false, true] {
-        let mut outcome = ViemCoreOutcomeV1::default();
+        let mut outcome = ViemCoreOutcome::default();
         let alias = ViemUtf8Slice {
-            data: (&outcome as *const ViemCoreOutcomeV1).cast(),
+            data: (&outcome as *const ViemCoreOutcome).cast(),
             length: 1,
         };
         let entry = if alias_fragment {
-            ViemClipboardTurnEntryV2 {
+            ViemClipboardTurnEntry {
                 fragment_json: alias,
                 ..entry
             }
         } else {
-            ViemClipboardTurnEntryV2 {
+            ViemClipboardTurnEntry {
                 plain_text: alias,
                 ..entry
             }
         };
-        let context = ViemCommandTurnContextV2 {
+        let context = ViemCommandTurnContext {
             clipboards: &entry,
             clipboard_count: 1,
-            ..ViemCommandTurnContextV2::default()
+            ..ViemCommandTurnContext::default()
         };
         let mut effects = 0;
         // Deliberately overlap a nested readable field with writable output;
         // the ABI validates the relation before interpreting its bytes.
         assert_eq!(
             unsafe {
-                viem_core_view_send_key_with_host_context_v2(
+                viem_core_view_send_key_with_host_context(
                     core.handle,
                     view,
                     &key(VIEM_KEY_CHARACTER, 'x' as u32),
@@ -4877,9 +4776,9 @@ fn view_presentation_exports_what_the_caret_occupies() {
     let core = create_core("abcde\u{301}\nnext".as_bytes(), ViemDocumentOptions::default());
     let mut context = Box::new(FakeProviderContext::new(core.handle));
     let (view, _) = add_test_view(&core, &mut *context);
-    let mut outcome = ViemCoreOutcomeV1::default();
-    let mut presentation = ViemViewPresentationV1::default();
-    let read = |presentation: &mut ViemViewPresentationV1| {
+    let mut outcome = ViemCoreOutcome::default();
+    let mut presentation = ViemViewPresentation::default();
+    let read = |presentation: &mut ViemViewPresentation| {
         assert_eq!(
             unsafe { viem_core_view_presentation(core.handle, view, presentation) },
             ViemStatus::Ok
@@ -4926,15 +4825,15 @@ fn view_presentation_preserves_pending_vim_input_for_native_accelerators() {
     let core = create_core(b"first\nsecond", ViemDocumentOptions::default());
     let mut context = Box::new(FakeProviderContext::new(core.handle));
     let (view, _) = add_test_view(&core, &mut *context);
-    let mut outcome = ViemCoreOutcomeV1::default();
-    let send = |input: ViemKeyInputV1, outcome: &mut ViemCoreOutcomeV1| {
+    let mut outcome = ViemCoreOutcome::default();
+    let send = |input: ViemKeyInput, outcome: &mut ViemCoreOutcome| {
         assert_eq!(
             unsafe { test_send_key(core.handle, view, &input, outcome) },
             ViemStatus::Ok
         );
     };
     let pending = || {
-        let mut presentation = ViemViewPresentationV1::default();
+        let mut presentation = ViemViewPresentation::default();
         assert_eq!(
             unsafe { viem_core_view_presentation(core.handle, view, &mut presentation) },
             ViemStatus::Ok
@@ -5024,14 +4923,13 @@ fn document_mode_request_checks_inputs_aliases_stale_revisions_and_source() {
     let mut provider = Box::new(FakeProviderContext::new(core.handle));
     let (view, _) = add_test_view(&core, provider.as_mut());
     let before = document_state(&core);
-    let request = ViemSetDocumentModeV1 {
-        struct_size: VIEM_SET_DOCUMENT_MODE_V1_SIZE,
+    let request = ViemSetDocumentMode {
         mode: VIEM_DOCUMENT_MODE_MARKDOWN,
         document_id: before.document_id,
         document_revision: before.document_revision,
     };
-    let call = |request: &ViemSetDocumentModeV1, language: &[u8]| {
-        let mut outcome = ViemCoreOutcomeV1::default();
+    let call = |request: &ViemSetDocumentMode, language: &[u8]| {
+        let mut outcome = ViemCoreOutcome::default();
         let mut effects = 0;
         let status = unsafe { viem_core_view_set_document_mode_with_effects(core.handle, view, request,
             language.as_ptr(), language.len() as u64, &mut outcome, &mut effects) };
@@ -5039,18 +4937,17 @@ fn document_mode_request_checks_inputs_aliases_stale_revisions_and_source() {
         status
     };
     for invalid in [
-        ViemSetDocumentModeV1 { mode: 99, ..request },
-        ViemSetDocumentModeV1 { struct_size: VIEM_SET_DOCUMENT_MODE_V1_SIZE - 1, ..request },
+        ViemSetDocumentMode { mode: 99, ..request },
     ] {
         assert_eq!(call(&invalid, b""), ViemStatus::InvalidArgument);
         assert_eq!(document_state(&core), before);
     }
     assert_eq!(call(&request, b"rust"), ViemStatus::InvalidArgument);
-    let code_request = ViemSetDocumentModeV1 { mode: VIEM_DOCUMENT_MODE_CODE, ..request };
+    let code_request = ViemSetDocumentMode { mode: VIEM_DOCUMENT_MODE_CODE, ..request };
     assert_eq!(call(&code_request, &[0xff]), ViemStatus::InvalidUtf8);
-    let mut outcome = ViemCoreOutcomeV1::default();
+    let mut outcome = ViemCoreOutcome::default();
     let mut effects = 99;
-    let alias = (&mut outcome as *mut ViemCoreOutcomeV1).cast::<u8>();
+    let alias = (&mut outcome as *mut ViemCoreOutcome).cast::<u8>();
     assert_eq!(unsafe { viem_core_view_set_document_mode_with_effects(core.handle, view, &code_request,
         alias, 4, &mut outcome, &mut effects) }, ViemStatus::InvalidArgument);
     assert_eq!(effects, 99);
@@ -5062,7 +4959,7 @@ fn document_mode_request_checks_inputs_aliases_stale_revisions_and_source() {
     assert_eq!(call(&request, b""), ViemStatus::StaleRevision);
     assert_eq!(call(&code_request, b""), ViemStatus::StaleRevision);
     assert_eq!(document_state(&core), after);
-    let code_request = ViemSetDocumentModeV1 { document_revision: after.document_revision, ..code_request };
+    let code_request = ViemSetDocumentMode { document_revision: after.document_revision, ..code_request };
     assert_eq!(call(&code_request, b""), ViemStatus::Ok);
     let code = document_state(&core);
     assert_eq!(code.format, VIEM_FORMAT_CODE);
@@ -5074,9 +4971,9 @@ fn link_popup_ffi_exports_selection_seed_and_rejects_stale_authoring() {
     let core = create_core(b"selected", ViemDocumentOptions { format: VIEM_FORMAT_MARKDOWN, ..Default::default() });
     let mut provider = Box::new(FakeProviderContext::new(core.handle));
     let (view, _) = add_test_view(&core, provider.as_mut());
-    let mut outcome = ViemCoreOutcomeV1::default();
+    let mut outcome = ViemCoreOutcome::default();
     for ch in "v$".chars() { assert_eq!(unsafe { test_send_key(core.handle, view, &key(VIEM_KEY_CHARACTER, ch as u32), &mut outcome) }, ViemStatus::Ok); }
-    let mut selection = ViemLogicalSelectionIdentityV1::default();
+    let mut selection = ViemLogicalSelectionIdentity::default();
     assert_eq!(unsafe { viem_core_view_list_selection(core.handle, view, &mut selection) }, ViemStatus::Ok);
     let mut required = 0;
     assert_eq!(unsafe { viem_core_view_copy_link_context(core.handle, view, ptr::null_mut(), 0, &mut required) }, ViemStatus::BufferTooSmall);
@@ -5119,9 +5016,9 @@ fn image_popup_ffi_exports_selection_seed_and_rejects_stale_authoring() {
     let core = create_core(b"selected", ViemDocumentOptions { format: VIEM_FORMAT_MARKDOWN, ..Default::default() });
     let mut provider = Box::new(FakeProviderContext::new(core.handle));
     let (view, _) = add_test_view(&core, provider.as_mut());
-    let mut outcome = ViemCoreOutcomeV1::default();
+    let mut outcome = ViemCoreOutcome::default();
     for ch in "v$".chars() { assert_eq!(unsafe { test_send_key(core.handle, view, &key(VIEM_KEY_CHARACTER, ch as u32), &mut outcome) }, ViemStatus::Ok); }
-    let mut selection = ViemLogicalSelectionIdentityV1::default();
+    let mut selection = ViemLogicalSelectionIdentity::default();
     assert_eq!(unsafe { viem_core_view_list_selection(core.handle, view, &mut selection) }, ViemStatus::Ok);
     let mut required = 0;
     assert_eq!(unsafe { viem_core_view_copy_image_context(core.handle, view, ptr::null_mut(), 0, &mut required) }, ViemStatus::BufferTooSmall);
@@ -5161,26 +5058,25 @@ fn image_popup_ffi_identifies_forward_and_reversed_native_image_selections() {
             let mut provider = Box::new(FakeProviderContext::new(core.handle));
             let (view, _) = add_test_view(&core, provider.as_mut());
             let revision = document_state(&core).document_revision;
-            let mut outcome = ViemCoreOutcomeV1::default();
+            let mut outcome = ViemCoreOutcome::default();
             assert_eq!(unsafe { test_send_text(core.handle, view, b"i".as_ptr(), 1, &mut outcome) }, ViemStatus::Ok);
             let start = 1;
             let end = if format == VIEM_FORMAT_MARKDOWN { 4 } else { (source.len() - 1) as u64 };
-            let place = ViemPlaceCursorV1 {
-                struct_size: VIEM_PLACE_CURSOR_V1_SIZE,
+            let place = ViemPlaceCursor {
                 document_revision: revision,
                 text_offset: if reversed { end } else { start },
                 affinity: if reversed { VIEM_BOUNDARY_AFFINITY_UPSTREAM } else { VIEM_BOUNDARY_AFFINITY_DOWNSTREAM },
                 ..Default::default()
             };
             assert_eq!(unsafe { viem_core_view_place_cursor(core.handle, view, &place, &mut outcome) }, ViemStatus::Ok);
-            let extend = ViemPlaceCursorV1 {
+            let extend = ViemPlaceCursor {
                 flags: VIEM_PLACE_CURSOR_EXTEND_SELECTION,
                 text_offset: if reversed { start } else { end },
                 affinity: if reversed { VIEM_BOUNDARY_AFFINITY_DOWNSTREAM } else { VIEM_BOUNDARY_AFFINITY_UPSTREAM },
                 ..place
             };
             assert_eq!(unsafe { viem_core_view_place_cursor(core.handle, view, &extend, &mut outcome) }, ViemStatus::Ok);
-            let mut selection = ViemLogicalSelectionIdentityV1::default();
+            let mut selection = ViemLogicalSelectionIdentity::default();
             assert_eq!(unsafe { viem_core_view_list_selection(core.handle, view, &mut selection) }, ViemStatus::Ok);
             assert_eq!((selection.text_start, selection.text_end), (start, end));
             assert_eq!(outcome.cursor_utf8_offset, if reversed { start } else { end });
@@ -5208,26 +5104,26 @@ fn composition_replacing_selection_exports_only_overlay_selection_until_cancel()
         let (view, mut outcome) = add_test_view(&core, &mut *context);
         let document = document_state(&core).document_id;
         assert_eq!(unsafe { viem_core_view_select_all(core.handle, view, document, 0, &mut outcome) }, ViemStatus::Ok);
-        let mut original = ViemVisualSelectionInfoV1::default();
+        let mut original = ViemVisualSelectionInfo::default();
         assert_eq!(unsafe { viem_core_view_visual_selection_info(core.handle, view, &mut original) }, ViemStatus::Ok);
         assert_eq!(original.segment_count, 1);
         let formatted = copy_core_bytes(viem_core_copy_formatted_utf8, &core, 0);
-        let begin = ViemCompositionBeginV1 { struct_size: VIEM_COMPOSITION_BEGIN_V1_SIZE, reserved: 0, document_revision: 0, replacement_start: 0, replacement_end: formatted.len() as u64 };
+        let begin = ViemCompositionBegin { document_revision: 0, replacement_start: 0, replacement_end: formatted.len() as u64 };
         assert_eq!(unsafe { viem_core_view_composition_begin(core.handle, view, &begin, &mut outcome) }, ViemStatus::Ok);
         let marked = "ほん".as_bytes();
-        let update = ViemCompositionUpdateV1 { struct_size: VIEM_COMPOSITION_UPDATE_V1_SIZE, reserved: 0, document_revision: 0, marked_text: utf8_slice(marked), selected_start: marked.len() as u64, selected_end: marked.len() as u64 };
+        let update = ViemCompositionUpdate { document_revision: 0, marked_text: utf8_slice(marked), selected_start: marked.len() as u64, selected_end: marked.len() as u64 };
         assert_eq!(unsafe { viem_core_view_composition_update(core.handle, view, &update, &mut outcome) }, ViemStatus::Ok);
-        let mut selection = ViemVisualSelectionInfoV1::default();
+        let mut selection = ViemVisualSelectionInfo::default();
         assert_eq!(unsafe { viem_core_view_visual_selection_info(core.handle, view, &mut selection) }, ViemStatus::Ok, "format={format}");
         assert_eq!(selection.identity.kind, VIEM_VISUAL_SELECTION_KIND_NONE);
         assert_eq!(selection.rectangle_count, 0);
         if format == VIEM_FORMAT_PLAIN_TEXT || format == VIEM_FORMAT_CODE {
-            let commit = ViemCompositionCommitV1 { struct_size: VIEM_COMPOSITION_COMMIT_V1_SIZE, reserved: 0, document_revision: 0, committed_text: utf8_slice(marked) };
+            let commit = ViemCompositionCommit { document_revision: 0, committed_text: utf8_slice(marked) };
             assert_eq!(unsafe { viem_core_view_composition_commit(core.handle, view, &commit, &mut outcome) }, ViemStatus::UnrepresentableCharacter);
             assert_eq!(unsafe { viem_core_view_visual_selection_info(core.handle, view, &mut selection) }, ViemStatus::Ok);
             assert_eq!(selection.identity.kind, VIEM_VISUAL_SELECTION_KIND_NONE);
         }
-        let cancel = ViemCompositionCancelV1 { struct_size: VIEM_COMPOSITION_CANCEL_V1_SIZE, reserved: 0, document_revision: 0 };
+        let cancel = ViemCompositionCancel { document_revision: 0 };
         assert_eq!(unsafe { viem_core_view_composition_cancel(core.handle, view, &cancel, &mut outcome) }, ViemStatus::Ok);
         assert_eq!(unsafe { viem_core_view_visual_selection_info(core.handle, view, &mut selection) }, ViemStatus::Ok);
         assert_eq!(selection.segment_count, original.segment_count);
@@ -5238,7 +5134,7 @@ fn composition_replacing_selection_exports_only_overlay_selection_until_cancel()
 }
 
 fn send_characters(core: &TestCore, view: ViemViewId, characters: &str) {
-    let mut outcome = ViemCoreOutcomeV1::default();
+    let mut outcome = ViemCoreOutcome::default();
     for character in characters.chars() {
         let input = key(VIEM_KEY_CHARACTER, character as u32);
         assert_eq!(

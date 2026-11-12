@@ -14,19 +14,19 @@ namespace Viem.Windows.Editor;
 internal sealed partial class EditorPane
 {
     private Border? tableWidget;
-    private ViemLayoutSnapshotIdentityV1? tableWidgetIdentity;
-    private ViemLogicalSelectionIdentityV1? tableWidgetSelection;
+    private ViemLayoutSnapshotIdentity? tableWidgetIdentity;
+    private ViemLogicalSelectionIdentity? tableWidgetSelection;
     private bool tableContextFromPointer;
-    private ViemTableContextV1? tableContextTarget;
+    private ViemTableContext? tableContextTarget;
     private Rect tableActivation;
     private TableHoverKind tableWidgetKind;
     private ulong tableWidgetTableId, tableWidgetRow, tableWidgetColumn;
     private Point tableWidgetViewport;
     private bool tablePopupTracking;
-    private ViemTableCellV1? tableDragAnchor;
-    private ViemLayoutSnapshotIdentityV1? tableDragIdentity;
+    private ViemTableCell? tableDragAnchor;
+    private ViemLayoutSnapshotIdentity? tableDragIdentity;
     private bool tableCellDrag;
-    private ViemTableSelectionV1 tableSelection;
+    private ViemTableSelection tableSelection;
     private (ulong Table, ulong Anchor, ulong Rows)? tableColumnGesture;
     // Whether a selection of every cell shows column rather than row controls.
     private bool tablePrefersColumns;
@@ -51,8 +51,8 @@ internal sealed partial class EditorPane
     private void RefreshTableSelectionWidget()
     {
         if (tablePopupTracking || View == null || snapshot == null) return;
-        ViemTableContextV1 context = default;
-        ViemTableCellV1? target = null;
+        ViemTableContext context = default;
+        ViemTableCell? target = null;
         var kind = TableHoverKind.RowSelection;
         if (Document.State.format == VIEM_FORMAT_MARKDOWN && !gutterSelectionDragging && tableColumnGesture == null
             && tableSelection.active != 0 && tableSelection.document_revision == snapshot.Info.identity.document_revision) {
@@ -123,14 +123,14 @@ internal sealed partial class EditorPane
         if (retention is { } path && path.Contains(point)) return;
         HideTableWidget();
     }
-    private static string TableRowsName(ViemTableContextV1 context) =>
+    private static string TableRowsName(ViemTableContext context) =>
         context.row_end - context.row > 1 ? $"rows {context.row + 1}–{context.row_end}" : context.row == 0 ? "header row" : $"row {context.row + 1}";
-    private static string TableColumnsName(ViemTableContextV1 context) =>
+    private static string TableColumnsName(ViemTableContext context) =>
         context.column_end - context.column > 1 ? $"columns {context.column + 1}–{context.column_end}" : $"column {context.column + 1}";
-    private static string TableAlignmentName(ViemTableContextV1 context) =>
+    private static string TableAlignmentName(ViemTableContext context) =>
         string.Concat(char.ToUpperInvariant(TableColumnsName(context)[0]).ToString(), TableColumnsName(context).AsSpan(1), " alignment");
 
-    private void ShowTableWidget(ViemTableContextV1 context, TableHoverKind kind, Rect cell, Rect table)
+    private void ShowTableWidget(ViemTableContext context, TableHoverKind kind, Rect cell, Rect table)
     {
         if (tableWidget == null) {
             tableWidget = new Border { CornerRadius = new(5), Padding = new(3), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
@@ -184,11 +184,11 @@ internal sealed partial class EditorPane
     internal Border? VisibleTableWidgetForTest => tableWidget?.Visibility == Visibility.Visible ? tableWidget : null;
 #endif
 
-    private void PerformTableAction(ViemTableContextV1 context, uint action, uint alignment = 0)
+    private void PerformTableAction(ViemTableContext context, uint action, uint alignment = 0)
     {
         Run(() => View?.TableAction(action, context, alignment)); HideTableWidget(); FocusEditor();
     }
-    private MenuFlyout TableAlignmentMenu(ViemTableContextV1 context)
+    private MenuFlyout TableAlignmentMenu(ViemTableContext context)
     {
         var menu = new MenuFlyout();
         foreach (var (name, alignment, glyph) in new[] { ("Left", 1u, "\uE8E4"), ("Center", 2u, "\uE8E3"), ("Right", 3u, "\uE8E2") }) {
@@ -239,7 +239,7 @@ internal sealed partial class EditorPane
         }
     }
     /// The table cell whose column owns the strip along the table's top edge.
-    private ViemTableCellV1? TableColumnStripCell(Point point)
+    private ViemTableCell? TableColumnStripCell(Point point)
     {
         if (snapshot == null || Document.State.format != VIEM_FORMAT_MARKDOWN) return null;
         if (tableWidget?.Visibility == Visibility.Visible && TableWidgetRectangle().Contains(point)) return null;
@@ -265,7 +265,7 @@ internal sealed partial class EditorPane
     private void DragTableColumns(Point point)
     {
         if (snapshot == null || tableColumnGesture is not { } gesture) return;
-        ViemTableCellV1? nearest = null; double best = double.MaxValue;
+        ViemTableCell? nearest = null; double best = double.MaxValue;
         foreach (var cell in snapshot.TableCells) {
             if (cell.table_id != gesture.Table) continue;
             var rect = OffsetRect(cell.rect, viewport);
@@ -285,7 +285,7 @@ internal sealed partial class EditorPane
         var current = View.TableSelection();
         if (current.active != 0 && current.table_id == gesture.Table && current.anchor_row == anchorRow
             && current.anchor_column == gesture.Anchor && current.active_row == activeRow && current.active_column == column) return;
-        var selection = Interop.Abi.New<ViemTableSelectionV1>(); selection.active = 1;
+        var selection = Interop.new ViemTableSelection(); selection.active = 1;
         selection.document_id = snapshot.Info.identity.document_id; selection.document_revision = snapshot.Info.identity.document_revision;
         selection.table_id = gesture.Table; selection.anchor_row = anchorRow; selection.anchor_column = gesture.Anchor;
         selection.active_row = activeRow; selection.active_column = column;
@@ -315,7 +315,7 @@ internal sealed partial class EditorPane
     {
         if (View == null || snapshot == null || tableDragAnchor is not { } anchor || tableDragIdentity is not { } identity || snapshot.Info.identity.document_revision != identity.document_revision || snapshot.Info.identity.document_id != identity.document_id) return false;
         var cells = snapshot.TableCells.Where(c => c.table_id == anchor.table_id).ToArray(); if (cells.Length == 0) return false;
-        double Distance(ViemTableCellV1 c) { var r = OffsetRect(c.rect, viewport); double x = Math.Max(Math.Max(r.Left - point.X, 0), point.X - r.Right), y = Math.Max(Math.Max(r.Top - point.Y, 0), point.Y - r.Bottom); return x * x + y * y; }
+        double Distance(ViemTableCell c) { var r = OffsetRect(c.rect, viewport); double x = Math.Max(Math.Max(r.Left - point.X, 0), point.X - r.Right), y = Math.Max(Math.Max(r.Top - point.Y, 0), point.Y - r.Bottom); return x * x + y * y; }
         var destination = cells.OrderBy(Distance).ThenByDescending(c => c.row).ThenByDescending(c => c.column).First();
         if (destination.cell_id != anchor.cell_id || anchor.text_start == anchor.text_end) tableCellDrag = true;
         if (!tableCellDrag) {
@@ -326,7 +326,7 @@ internal sealed partial class EditorPane
             if (point.Y >= y && point.Y < y + line.line_advance && (previous.x > end.x ? point.X < x - 4 : point.X > x + 4) && OffsetRect(anchor.rect, viewport).Contains(point)) tableCellDrag = true;
         }
         if (!tableCellDrag) return false;
-        var selection = Interop.Abi.New<ViemTableSelectionV1>(); selection.active = 1;
+        var selection = Interop.new ViemTableSelection(); selection.active = 1;
         selection.document_id = identity.document_id; selection.document_revision = identity.document_revision; selection.table_id = anchor.table_id;
         selection.anchor_row = anchor.row; selection.anchor_column = anchor.column; selection.active_row = destination.row; selection.active_column = destination.column;
         View.SelectTableCells(selection); return true;

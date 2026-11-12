@@ -21,7 +21,7 @@ extension EVEditorSurfaceController {
         do { try session?.setHostRegister(35, text: path ?? "") } catch { report(error) }
     }
     public func resolveFileMark(_ name: UInt32) throws -> EVFileMarkTarget {
-        var info = ViemFileMarkTargetV1()
+        var info = ViemFileMarkTarget()
         var status = viem_file_mark_target(name, 0, &info, nil, 0)
         guard status == UInt32(VIEM_STATUS_OK), let count = Int(exactly: info.path_length) else {
             throw EVCoreFrontendError.core(operation: "Find file mark", status: status)
@@ -43,7 +43,7 @@ extension EVEditorSurfaceController {
     }
 }
 extension EVCoreViewSession {
-    func dropText(_ text: String) throws -> ViemCoreOutcomeV1 {
+    func dropText(_ text: String) throws -> ViemCoreOutcome {
         let bytes = Array(text.utf8)
         return try performHostEffectTurn("Drop text") { outcome, effects in
             withCommandTurnContext { context in

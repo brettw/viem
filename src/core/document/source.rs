@@ -77,6 +77,7 @@ impl Piece {
 
 impl Item for Piece {
     type Summary = usize;
+    type Tag = ();
 
     fn summary(&self) -> usize {
         self.len

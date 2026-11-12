@@ -12,7 +12,7 @@ struct EVSelectedNamedStyles {
 extension EVCoreViewSession {
   func selectedNamedStyles() throws -> EVSelectedNamedStyles {
     let revision = try document.revision()
-    var info = ViemSelectedStylesInfoV1()
+    var info = ViemSelectedStylesInfo()
     func check(_ status: UInt32) throws {
       guard status == UInt32(VIEM_STATUS_OK) else {
         throw EVCoreFrontendError.core(operation: "Read selected styles", status: status)

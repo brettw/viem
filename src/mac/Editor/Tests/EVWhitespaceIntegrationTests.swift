@@ -554,7 +554,7 @@ final class EVWhitespaceIntegrationTests: XCTestCase {
         XCTAssertFalse(snapshot.whitespace.markers.isEmpty)
         XCTAssertLessThan(snapshot.whitespace.markers.count, 1000)
         let clusters = (0..<10_000).map { index in
-            var cluster = ViemPositionedClusterV1()
+            var cluster = ViemPositionedCluster()
             cluster.x = Float(index * 2)
             cluster.advance = 2
             cluster.text_start = UInt64(index)

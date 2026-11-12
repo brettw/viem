@@ -41,7 +41,7 @@ internal sealed partial class EditorPane
         Canvas.Invalidate();
     }
 
-    internal float CodeBlockLanguageOpacity(ViemLayoutDecorationV1 item)
+    internal float CodeBlockLanguageOpacity(ViemLayoutDecoration item)
     {
         if ((item.flags & VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED) != 0) return .25f;
         bool hovered = codeBlockLanguageHoverRect == OffsetRect(item.typographic_bounds, viewport);

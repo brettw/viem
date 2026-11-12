@@ -6,7 +6,7 @@ using static Viem.Windows.Interop.Abi;
 namespace Viem.Windows.Core;
 
 internal sealed record MarkdownImage(ulong Start, ulong End, string Text, string Destination, bool Editable, uint? Width, uint? Height);
-internal sealed record ImageContext(ViemLogicalSelectionIdentityV1 Selection, bool CanInsert, string Text, MarkdownImage? Image);
+internal sealed record ImageContext(ViemLogicalSelectionIdentity Selection, bool CanInsert, string Text, MarkdownImage? Image);
 
 internal sealed unsafe partial class CoreView
 {

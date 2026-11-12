@@ -22,13 +22,13 @@ internal static class ListInteractionTests
     private static unsafe string[] DecorationLabels(CoreView view)
     {
         var identity = view.LayoutInfo().identity;
-        var info = New<ViemLayoutDecorationsInfoV1>();
+        var info = new ViemLayoutDecorationsInfo();
         uint status = viem_core_view_copy_layout_decorations(
             view.Document.Handle, view.Id, &identity, null, 0, null, 0, &info);
         if (status != VIEM_STATUS_BUFFER_TOO_SMALL) Abi.Check(status, "Read list marker decorations");
-        var decorations = new ViemLayoutDecorationV1[checked((int)info.decoration_count)];
+        var decorations = new ViemLayoutDecoration[checked((int)info.decoration_count)];
         var labels = new byte[checked((int)info.label_bytes)];
-        fixed (ViemLayoutDecorationV1* decorationData = decorations)
+        fixed (ViemLayoutDecoration* decorationData = decorations)
         fixed (byte* labelData = labels)
             Abi.Check(viem_core_view_copy_layout_decorations(
                 view.Document.Handle, view.Id, &identity,

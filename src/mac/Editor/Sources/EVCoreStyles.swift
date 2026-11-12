@@ -69,15 +69,14 @@ struct EVStyleSheetIdentity: Equatable {
         self.styleSheetRevision = styleSheetRevision
     }
 
-    init(_ value: ViemStyleSheetIdentityV1) {
+    init(_ value: ViemStyleSheetIdentity) {
         documentID = value.document_id
         documentRevision = value.document_revision
         styleSheetRevision = value.style_sheet_revision
     }
 
-    var abiValue: ViemStyleSheetIdentityV1 {
-        var value = ViemStyleSheetIdentityV1()
-        value.struct_size = UInt32(MemoryLayout<ViemStyleSheetIdentityV1>.size)
+    var abiValue: ViemStyleSheetIdentity {
+        var value = ViemStyleSheetIdentity()
         value.document_id = documentID
         value.document_revision = documentRevision
         value.style_sheet_revision = styleSheetRevision
@@ -89,7 +88,7 @@ struct EVStyleSheetIdentity: Equatable {
 /// Keeping the complete ABI value prevents a token from being replayed against
 /// another view or document even if the numeric token is copied accidentally.
 struct EVStyleEditGroup {
-    fileprivate let abiValue: ViemStyleEditGroupV1
+    fileprivate let abiValue: ViemStyleEditGroup
 
     var token: UInt64 { abiValue.token }
 }
@@ -535,7 +534,7 @@ extension EVCoreViewSession {
         key: EVStyleKey,
         expected: EVStyleSheetIdentity,
         mutation: EVStyleMutation
-    ) throws -> ViemCoreOutcomeV1 {
+    ) throws -> ViemCoreOutcome {
         guard viewID != 0 else { throw EVStyleBridgeError.noEditingView }
         let outcome = try EVCoreStyleBridge.apply(
             core: document.core,
@@ -554,7 +553,7 @@ extension EVCoreViewSession {
         expected: EVStyleSheetIdentity,
         mutation: EVStyleMutation,
         in group: EVStyleEditGroup
-    ) throws -> ViemCoreOutcomeV1 {
+    ) throws -> ViemCoreOutcome {
         guard viewID != 0 else { throw EVStyleBridgeError.noEditingView }
         let outcome = try EVCoreStyleBridge.apply(
             core: document.core,
@@ -576,8 +575,7 @@ extension EVCoreViewSession {
 
 enum EVCoreStyleBridge {
     static func styleIdentity(core: ViemCoreHandle) throws -> EVStyleSheetIdentity {
-        var identity = ViemStyleSheetIdentityV1()
-        identity.struct_size = UInt32(MemoryLayout<ViemStyleSheetIdentityV1>.size)
+        var identity = ViemStyleSheetIdentity()
         try check(viem_core_style_sheet_identity(core, &identity))
         return EVStyleSheetIdentity(identity)
     }
@@ -587,8 +585,7 @@ enum EVCoreStyleBridge {
         expected: EVStyleSheetIdentity
     ) throws -> EVStyleEditGroup {
         var expectedValue = expected.abiValue
-        var group = ViemStyleEditGroupV1()
-        group.struct_size = UInt32(MemoryLayout<ViemStyleEditGroupV1>.size)
+        var group = ViemStyleEditGroup()
         try check(viem_core_view_begin_style_edit_group(core, view, &expectedValue, &group))
         return EVStyleEditGroup(abiValue: group)
     }
@@ -603,8 +600,7 @@ enum EVCoreStyleBridge {
     }
 
     static func copyStyleSheet(core: ViemCoreHandle?, gutterUnderlay: UInt32 = 0) throws -> EVStyleSheetSnapshot {
-        var info = ViemStyleSheetInfoV1()
-        info.struct_size = UInt32(MemoryLayout<ViemStyleSheetInfoV1>.size)
+        var info = ViemStyleSheetInfo()
         try check(viem_core_style_sheet_info(core ?? 0, gutterUnderlay, &info))
 
         guard info.definition_count <= UInt64(Int.max),
@@ -614,13 +610,12 @@ enum EVCoreStyleBridge {
               info.string_bytes <= UInt64(Int.max)
         else { throw EVStyleBridgeError.malformedSnapshot("array length overflow") }
 
-        var definitions = Array(repeating: ViemStyleDefinitionV1(), count: Int(info.definition_count))
-        var properties = Array(repeating: ViemStylePropertyV1(), count: Int(info.property_count))
-        var items = Array(repeating: ViemStyleValueItemV1(), count: Int(info.value_item_count))
-        var dependencies = Array(repeating: ViemStyleDependencyV1(), count: Int(info.dependency_count))
+        var definitions = Array(repeating: ViemStyleDefinition(), count: Int(info.definition_count))
+        var properties = Array(repeating: ViemStyleProperty(), count: Int(info.property_count))
+        var items = Array(repeating: ViemStyleValueItem(), count: Int(info.value_item_count))
+        var dependencies = Array(repeating: ViemStyleDependency(), count: Int(info.dependency_count))
         var strings = Array(repeating: UInt8(0), count: Int(info.string_bytes))
-        var copiedInfo = ViemStyleSheetInfoV1()
-        copiedInfo.struct_size = UInt32(MemoryLayout<ViemStyleSheetInfoV1>.size)
+        var copiedInfo = ViemStyleSheetInfo()
         var expected = info.identity
 
         let status = definitions.withUnsafeMutableBufferPointer { definitionsBuffer in
@@ -668,12 +663,11 @@ enum EVCoreStyleBridge {
         expected: EVStyleSheetIdentity,
         mutation: EVStyleMutation,
         group: EVStyleEditGroup? = nil
-    ) throws -> ViemCoreOutcomeV1 {
+    ) throws -> ViemCoreOutcome {
         let encoded = EncodedMutation(key: key, expected: expected, mutation: mutation)
         return try encoded.withRequest { request in
             var request = request
-            var outcome = ViemCoreOutcomeV1()
-            outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+            var outcome = ViemCoreOutcome()
             if let group {
                 var groupValue = group.abiValue
                 try check(viem_core_view_edit_style_in_group(
@@ -694,19 +688,16 @@ enum EVCoreStyleBridge {
         let encoded = EncodedMutation(key: key, expected: expected, mutation: mutation)
         try encoded.withRequest { request in
             var request = request
-            var info = ViemStyleSheetInfoV1()
-            info.struct_size = UInt32(MemoryLayout<ViemStyleSheetInfoV1>.size)
+            var info = ViemStyleSheetInfo()
             try check(viem_code_edit_style(&request, &info))
         }
     }
 
     static func createCodeStyle(key: EVStyleKey, name: String, expected: EVStyleSheetIdentity) throws {
-        var request = ViemCreateStyleV1()
-        request.struct_size = UInt32(MemoryLayout<ViemCreateStyleV1>.size)
+        var request = ViemCreateStyle()
         request.namespace = key.namespace.rawValue
         request.identity = expected.abiValue
-        var info = ViemStyleSheetInfoV1()
-        info.struct_size = UInt32(MemoryLayout<ViemStyleSheetInfoV1>.size)
+        var info = ViemStyleSheetInfo()
         try Array(key.id.rawValue.utf8).withUnsafeBufferPointer { id in
             try Array(name.utf8).withUnsafeBufferPointer { name in
                 request.style_id.data = id.baseAddress
@@ -721,20 +712,17 @@ enum EVCoreStyleBridge {
     /// Generates the implicit definition for a syntax name, and its missing
     /// dotted ancestors. An existing definition is left unchanged.
     static func materializeCodeStyle(name: String) throws {
-        var info = ViemStyleSheetInfoV1()
-        info.struct_size = UInt32(MemoryLayout<ViemStyleSheetInfoV1>.size)
+        var info = ViemStyleSheetInfo()
         try Array(name.utf8).withUnsafeBufferPointer { name in
             try check(viem_code_materialize_style(name.baseAddress, UInt64(name.count), &info))
         }
     }
 
     static func deleteCodeStyle(key: EVStyleKey, expected: EVStyleSheetIdentity) throws {
-        var request = ViemDeleteStyleV1()
-        request.struct_size = UInt32(MemoryLayout<ViemDeleteStyleV1>.size)
+        var request = ViemDeleteStyle()
         request.namespace = key.namespace.rawValue
         request.identity = expected.abiValue
-        var info = ViemStyleSheetInfoV1()
-        info.struct_size = UInt32(MemoryLayout<ViemStyleSheetInfoV1>.size)
+        var info = ViemStyleSheetInfo()
         try Array(key.id.rawValue.utf8).withUnsafeBufferPointer { id in
             request.style_id.data = id.baseAddress
             request.style_id.length = UInt64(id.count)
@@ -749,14 +737,14 @@ enum EVCoreStyleBridge {
     }
 
     private static func decode(
-        info: ViemStyleSheetInfoV1,
-        definitions rawDefinitions: [ViemStyleDefinitionV1],
-        properties rawProperties: [ViemStylePropertyV1],
-        items: [ViemStyleValueItemV1],
-        dependencies: [ViemStyleDependencyV1],
+        info: ViemStyleSheetInfo,
+        definitions rawDefinitions: [ViemStyleDefinition],
+        properties rawProperties: [ViemStyleProperty],
+        items: [ViemStyleValueItem],
+        dependencies: [ViemStyleDependency],
         strings: [UInt8]
     ) throws -> EVStyleSheetSnapshot {
-        func text(_ reference: ViemStyleStringRefV1) throws -> String {
+        func text(_ reference: ViemStyleStringRef) throws -> String {
             guard reference.offset <= UInt64(Int.max), reference.length <= UInt64(Int.max) else {
                 throw EVStyleBridgeError.malformedSnapshot("string range overflow")
             }
@@ -783,7 +771,7 @@ enum EVCoreStyleBridge {
             return start..<(start + length)
         }
 
-        func decodeValue(_ raw: ViemStyleValueV1) throws -> EVStyleValue? {
+        func decodeValue(_ raw: ViemStyleValue) throws -> EVStyleValue? {
             switch raw.kind {
             case UInt32(VIEM_STYLE_VALUE_NONE): return nil
             case UInt32(VIEM_STYLE_VALUE_FLOAT): return .float(raw.number)
@@ -990,7 +978,7 @@ enum EVCoreStyleBridge {
             }
         }
 
-        func withRequest<Result>(_ body: (ViemStyleEditV1) throws -> Result) rethrows -> Result {
+        func withRequest<Result>(_ body: (ViemStyleEdit) throws -> Result) rethrows -> Result {
             var groups = [Array(key.id.rawValue.utf8)]
             var relationshipGroup: Int?
             var itemGroupIndices: [Int] = []
@@ -1036,18 +1024,16 @@ enum EVCoreStyleBridge {
                     return slice
                 }
 
-                var editItems: [ViemStyleEditValueItemV1] = []
+                var editItems: [ViemStyleEditValueItem] = []
                 for (index, spec) in itemSpecs.enumerated() {
-                    var item = ViemStyleEditValueItemV1()
-                    item.struct_size = UInt32(MemoryLayout<ViemStyleEditValueItemV1>.size)
+                    var item = ViemStyleEditValueItem()
                     item.kind = spec.kind
                     item.text = slice(for: itemGroupIndices[index])
                     item.unsigned_value = spec.unsigned
                     editItems.append(item)
                 }
                 return try editItems.withUnsafeBufferPointer { itemBuffer in
-                    var abiValue = ViemStyleEditValueV1()
-                    abiValue.struct_size = UInt32(MemoryLayout<ViemStyleEditValueV1>.size)
+                    var abiValue = ViemStyleEditValue()
                     if let relationshipGroup {
                         abiValue.kind = UInt32(VIEM_STYLE_VALUE_STRING)
                         abiValue.text = slice(for: relationshipGroup)
@@ -1099,8 +1085,7 @@ enum EVCoreStyleBridge {
                         abiValue.kind = UInt32(VIEM_STYLE_VALUE_NONE)
                     }
 
-                    var request = ViemStyleEditV1()
-                    request.struct_size = UInt32(MemoryLayout<ViemStyleEditV1>.size)
+                    var request = ViemStyleEdit()
                     request.identity = expected.abiValue
                     request.namespace_id = key.namespace.rawValue
                     request.operation = operation

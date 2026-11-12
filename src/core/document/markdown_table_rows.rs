@@ -5,7 +5,8 @@ use super::range_index::{OrderedRangeStore, RangeSpliceStats, RangedItem};
 use std::ops::{Index, IndexMut, Range};
 use std::sync::{Arc, OnceLock};
 
-pub struct TableRows<T> {
+#[allow(private_bounds)]
+pub struct TableRows<T: Clone + RangedItem> {
     store: OrderedRangeStore<T>,
     lookup: Arc<RowLookup<T>>,
     building: Option<Vec<T>>,
@@ -262,7 +263,8 @@ impl<T: Clone + RangedItem> IndexMut<usize> for TableRows<T> {
         &mut self.make_mut()[index]
     }
 }
-pub struct TableRowsIter<'a, T> {
+#[allow(private_bounds)]
+pub struct TableRowsIter<'a, T: Clone + RangedItem> {
     rows: &'a TableRows<T>,
     range: Range<usize>,
 }

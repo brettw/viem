@@ -57,7 +57,7 @@ internal static class ChromeStyleTests
                 if (!condition) throw new InvalidOperationException($"{name}: DPI {dpi}, zoom {zoom}, scroll {scroll}");
             }
             double width = 31 * zoom, height = 60.25 * zoom;
-            var regions = Enumerable.Range(0, 7).Select(index => new ViemLineNumberRegionV1 {
+            var regions = Enumerable.Range(0, 7).Select(index => new ViemLineNumberRegion {
                 source_line = (ulong)index + 1, top = index * 10.125f * zoom, bottom = (index + 1) * 10.125f * zoom,
                 flags = index == 2 ? VIEM_LINE_NUMBER_REGION_CURRENT : 0
             }).ToArray();
@@ -110,7 +110,7 @@ internal static class ChromeStyleTests
                 using var target = Target(24, boxHeight, dpi);
                 using (var drawing = target.CreateDrawingSession())
                     EditorPane.DrawLineNumberBoxesForTesting(drawing, 24, boxHeight, 0,
-                        new[] { new ViemLineNumberRegionV1 { source_line = 1, top = 0, bottom = boxHeight } }, edges, edges);
+                        new[] { new ViemLineNumberRegion { source_line = 1, top = 0, bottom = boxHeight } }, edges, edges);
                 int pixelsWide = (int)target.SizeInPixels.Width, pixelsHigh = (int)target.SizeInPixels.Height;
                 byte[] corners = target.GetPixelBytes(0, 0, 1, pixelsHigh);
                 byte[] top = target.GetPixelBytes(pixelsWide / 2, 0, 1, 1);
@@ -122,8 +122,8 @@ internal static class ChromeStyleTests
             using (var target = Target(24, 20, dpi)) {
                 using (var drawing = target.CreateDrawingSession())
                     EditorPane.DrawLineNumberBoxesForTesting(drawing, 24, 20, 0, new[] {
-                        new ViemLineNumberRegionV1 { source_line = 1, top = 0, bottom = 10 },
-                        new ViemLineNumberRegionV1 { source_line = 2, top = 10, bottom = 20 }
+                        new ViemLineNumberRegion { source_line = 1, top = 0, bottom = 10 },
+                        new ViemLineNumberRegion { source_line = 2, top = 10, bottom = 20 }
                     }, overlapping, overlapping);
                 byte[] overlap = target.GetPixelBytes(3, (int)(10 * dpi / 96), 1, 1);
                 byte[] single = target.GetPixelBytes(3, (int)(3 * dpi / 96), 1, 1);
@@ -301,7 +301,7 @@ internal static class ChromeStyleTests
         StyleDefinition SyntaxCollision(StyleDefinition builtin, string id) {
             var native = builtin.Native;
             native.flags = 0;
-            var properties = new Dictionary<uint, ViemStylePropertyV1>(builtin.Properties);
+            var properties = new Dictionary<uint, ViemStyleProperty>(builtin.Properties);
             var size = properties[VIEM_STYLE_PROPERTY_CHARACTER_SIZE];
             size.effective.number = 99;
             properties[VIEM_STYLE_PROPERTY_CHARACTER_SIZE] = size;

@@ -6,7 +6,7 @@
 //! byte slices into immutable, shared UTF-8 buffers, so untouched leaves retain
 //! both their identity and their backing allocation across revisions.
 
-use std::cmp::Ordering;
+use crate::persistent::{at as seek_at, Item, LeafSplit, Summary, Tree, View, Work};
 use std::fmt;
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
@@ -159,13 +159,22 @@ impl fmt::Display for FormattedTextError {
 
 impl std::error::Error for FormattedTextError {}
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Aggregate {
     bytes: usize,
     utf16_units: usize,
     hard_line_breaks: usize,
     leaves: usize,
-    height: u32,
+}
+
+// Every count is bounded by bytes held in memory, so the sums cannot overflow.
+impl Summary for Aggregate {
+    fn add(&mut self, right: &Self) {
+        self.bytes += right.bytes;
+        self.utf16_units += right.utf16_units;
+        self.hard_line_breaks += right.hard_line_breaks;
+        self.leaves += right.leaves;
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -189,33 +198,31 @@ impl Leaf {
     }
 }
 
-#[derive(Clone, Debug)]
-struct Branch {
-    left: Arc<Node>,
-    right: Arc<Node>,
-    aggregate: Aggregate,
+impl Item for Leaf {
+    type Summary = Aggregate;
+    type Tag = ();
+
+    fn summary(&self) -> Aggregate {
+        Aggregate {
+            bytes: self.byte_len(),
+            utf16_units: self.utf16_units,
+            hard_line_breaks: self.hard_line_breaks,
+            leaves: 1,
+        }
+    }
 }
 
-#[derive(Clone, Debug)]
-enum Node {
-    Leaf(Leaf),
-    Branch(Branch),
-}
+type Node = crate::persistent::Node<Leaf>;
 
 type NodeSplit = Result<(Option<Arc<Node>>, Option<Arc<Node>>), FormattedTextError>;
 
-impl Node {
+trait NodeAggregate {
+    fn aggregate(&self) -> Aggregate;
+}
+
+impl NodeAggregate for Node {
     fn aggregate(&self) -> Aggregate {
-        match self {
-            Self::Leaf(leaf) => Aggregate {
-                bytes: leaf.byte_len(),
-                utf16_units: leaf.utf16_units,
-                hard_line_breaks: leaf.hard_line_breaks,
-                leaves: 1,
-                height: 1,
-            },
-            Self::Branch(branch) => branch.aggregate,
-        }
+        *self.summary()
     }
 }
 
@@ -254,11 +261,11 @@ impl FormattedTextTree {
     }
     pub(super) fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
         fn visit(node: &Arc<Node>, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
-            visitor.arc(node, |visitor| match node.as_ref() {
-                Node::Leaf(leaf) => visitor.arc(&leaf.buffer, |_| {}),
-                Node::Branch(branch) => {
-                    visit(&branch.left, visitor);
-                    visit(&branch.right, visitor);
+            visitor.arc(node, |visitor| match node.view() {
+                View::Leaf(leaf) => visitor.arc(&leaf.buffer, |_| {}),
+                View::Branch(lhs, rhs) => {
+                    visit(lhs, visitor);
+                    visit(rhs, visitor);
                 }
             });
         }
@@ -348,7 +355,7 @@ impl FormattedTextTree {
         }
 
         Ok(Self {
-            root: build_balanced(&leaves)?,
+            root: build_balanced(&leaves),
         })
     }
 
@@ -371,7 +378,7 @@ impl FormattedTextTree {
     }
 
     pub fn height(&self) -> u32 {
-        aggregate(self.root.as_ref()).height
+        self.root.as_ref().map_or(0, |root| u32::from(root.height()))
     }
 
     /// Whether two immutable snapshots share the exact persistent root.
@@ -1070,13 +1077,13 @@ impl BatchSplice<'_> {
         {
             return Ok(Some(node.clone()));
         }
-        match node.as_ref() {
-            Node::Branch(branch) => {
-                let left = self.visit(&branch.left, start)?;
-                let right = self.visit(&branch.right, start + branch.left.aggregate().bytes)?;
+        match node.view() {
+            View::Branch(lhs, rhs) => {
+                let left = self.visit(lhs, start)?;
+                let right = self.visit(rhs, start + lhs.aggregate().bytes)?;
                 join_optional(left, right, &mut self.stats)
             }
-            Node::Leaf(leaf) => {
+            View::Leaf(leaf) => {
                 let mut parts = Vec::new();
                 let mut at = start.max(self.deleted_until);
                 let mut retained_identity = false;
@@ -1140,13 +1147,14 @@ impl BatchSplice<'_> {
             .saturating_add(local.len());
         self.stats.leaves_copied = self.stats.leaves_copied.saturating_add(1);
         self.stats.nodes_copied = self.stats.nodes_copied.saturating_add(1);
-        new_leaf_with_identity(
+        leaf_with_identity(
             id,
             revision,
             leaf.buffer_id,
             leaf.buffer.clone(),
             leaf.range.start + local.start..leaf.range.start + local.end,
         )
+        .map(Node::new_leaf)
     }
 }
 
@@ -1173,22 +1181,17 @@ fn new_leaf(
     buffer: Arc<str>,
     range: Range<usize>,
 ) -> Result<Arc<Node>, FormattedTextError> {
-    new_leaf_with_identity(
-        next_leaf_id()?,
-        FormattedLeafRevision(0),
-        buffer_id,
-        buffer,
-        range,
-    )
+    leaf_with_identity(next_leaf_id()?, FormattedLeafRevision(0), buffer_id, buffer, range)
+        .map(Node::new_leaf)
 }
 
-fn new_leaf_with_identity(
+fn leaf_with_identity(
     id: FormattedLeafId,
     revision: FormattedLeafRevision,
     buffer_id: FormattedBufferId,
     buffer: Arc<str>,
     range: Range<usize>,
-) -> Result<Arc<Node>, FormattedTextError> {
+) -> Result<Leaf, FormattedTextError> {
     if range.start > range.end
         || range.end > buffer.len()
         || !buffer.is_char_boundary(range.start)
@@ -1204,7 +1207,7 @@ fn new_leaf_with_identity(
         .filter(|byte| *byte == b'\n')
         .count();
     let utf16_units = buffer[range.clone()].encode_utf16().count();
-    Ok(Arc::new(Node::Leaf(Leaf {
+    Ok(Leaf {
         id,
         revision,
         buffer_id,
@@ -1212,66 +1215,20 @@ fn new_leaf_with_identity(
         range,
         utf16_units,
         hard_line_breaks,
-    })))
+    })
 }
 
 fn aggregate(node: Option<&Arc<Node>>) -> Aggregate {
-    node.map_or(
-        Aggregate {
-            bytes: 0,
-            utf16_units: 0,
-            hard_line_breaks: 0,
-            leaves: 0,
-            height: 0,
-        },
-        |node| node.aggregate(),
-    )
+    node.map_or_else(Aggregate::default, |node| node.aggregate())
 }
 
-fn branch(left: Arc<Node>, right: Arc<Node>) -> Result<Arc<Node>, FormattedTextError> {
-    let left_aggregate = left.aggregate();
-    let right_aggregate = right.aggregate();
-    let aggregate = Aggregate {
-        bytes: left_aggregate
-            .bytes
-            .checked_add(right_aggregate.bytes)
-            .ok_or(FormattedTextError::ArithmeticOverflow)?,
-        utf16_units: left_aggregate
-            .utf16_units
-            .checked_add(right_aggregate.utf16_units)
-            .ok_or(FormattedTextError::ArithmeticOverflow)?,
-        hard_line_breaks: left_aggregate
-            .hard_line_breaks
-            .checked_add(right_aggregate.hard_line_breaks)
-            .ok_or(FormattedTextError::ArithmeticOverflow)?,
-        leaves: left_aggregate
-            .leaves
-            .checked_add(right_aggregate.leaves)
-            .ok_or(FormattedTextError::ArithmeticOverflow)?,
-        height: left_aggregate
-            .height
-            .max(right_aggregate.height)
-            .checked_add(1)
-            .ok_or(FormattedTextError::ArithmeticOverflow)?,
-    };
-    Ok(Arc::new(Node::Branch(Branch {
-        left,
-        right,
-        aggregate,
-    })))
+fn build_balanced(nodes: &[Arc<Node>]) -> Option<Arc<Node>> {
+    Tree::balanced(nodes, &mut Work::default()).into_root()
 }
 
-fn build_balanced(nodes: &[Arc<Node>]) -> Result<Option<Arc<Node>>, FormattedTextError> {
-    match nodes.len() {
-        0 => Ok(None),
-        1 => Ok(Some(nodes[0].clone())),
-        length => {
-            let middle = length / 2;
-            let left = build_balanced(&nodes[..middle])?.expect("nonempty left half");
-            let right = build_balanced(&nodes[middle..])?.expect("nonempty right half");
-            Ok(Some(branch(left, right)?))
-        }
-    }
+fn count_tree_work(stats: &mut FormattedTextSpliceStats, work: Work) {
+    stats.nodes_visited = stats.nodes_visited.saturating_add(work.visited);
+    stats.nodes_copied = stats.nodes_copied.saturating_add(work.created);
 }
 
 fn join_optional(
@@ -1279,86 +1236,10 @@ fn join_optional(
     right: Option<Arc<Node>>,
     stats: &mut FormattedTextSpliceStats,
 ) -> Result<Option<Arc<Node>>, FormattedTextError> {
-    match (left, right) {
-        (None, value) | (value, None) => Ok(value),
-        (Some(left), Some(right)) => Ok(Some(join(left, right, stats)?)),
-    }
-}
-
-fn join(
-    left: Arc<Node>,
-    right: Arc<Node>,
-    stats: &mut FormattedTextSpliceStats,
-) -> Result<Arc<Node>, FormattedTextError> {
-    stats.nodes_visited = stats.nodes_visited.saturating_add(1);
-    let left_height = left.aggregate().height;
-    let right_height = right.aggregate().height;
-    if left_height > right_height.saturating_add(1) {
-        let Node::Branch(left_branch) = left.as_ref() else {
-            return Err(FormattedTextError::ArithmeticOverflow);
-        };
-        let joined = join(left_branch.right.clone(), right, stats)?;
-        rebalance(left_branch.left.clone(), joined, stats)
-    } else if right_height > left_height.saturating_add(1) {
-        let Node::Branch(right_branch) = right.as_ref() else {
-            return Err(FormattedTextError::ArithmeticOverflow);
-        };
-        let joined = join(left, right_branch.left.clone(), stats)?;
-        rebalance(joined, right_branch.right.clone(), stats)
-    } else {
-        counted_branch(left, right, stats)
-    }
-}
-
-fn rebalance(
-    left: Arc<Node>,
-    right: Arc<Node>,
-    stats: &mut FormattedTextSpliceStats,
-) -> Result<Arc<Node>, FormattedTextError> {
-    stats.nodes_visited = stats.nodes_visited.saturating_add(1);
-    let left_height = left.aggregate().height;
-    let right_height = right.aggregate().height;
-    if left_height > right_height.saturating_add(1) {
-        let Node::Branch(left_branch) = left.as_ref() else {
-            return Err(FormattedTextError::ArithmeticOverflow);
-        };
-        if left_branch.left.aggregate().height >= left_branch.right.aggregate().height {
-            let nested = counted_branch(left_branch.right.clone(), right, stats)?;
-            return counted_branch(left_branch.left.clone(), nested, stats);
-        }
-        let Node::Branch(left_right) = left_branch.right.as_ref() else {
-            return Err(FormattedTextError::ArithmeticOverflow);
-        };
-        let new_left = counted_branch(left_branch.left.clone(), left_right.left.clone(), stats)?;
-        let new_right = counted_branch(left_right.right.clone(), right, stats)?;
-        return counted_branch(new_left, new_right, stats);
-    }
-    if right_height > left_height.saturating_add(1) {
-        let Node::Branch(right_branch) = right.as_ref() else {
-            return Err(FormattedTextError::ArithmeticOverflow);
-        };
-        if right_branch.right.aggregate().height >= right_branch.left.aggregate().height {
-            let nested = counted_branch(left, right_branch.left.clone(), stats)?;
-            return counted_branch(nested, right_branch.right.clone(), stats);
-        }
-        let Node::Branch(right_left) = right_branch.left.as_ref() else {
-            return Err(FormattedTextError::ArithmeticOverflow);
-        };
-        let new_left = counted_branch(left, right_left.left.clone(), stats)?;
-        let new_right =
-            counted_branch(right_left.right.clone(), right_branch.right.clone(), stats)?;
-        return counted_branch(new_left, new_right, stats);
-    }
-    counted_branch(left, right, stats)
-}
-
-fn counted_branch(
-    left: Arc<Node>,
-    right: Arc<Node>,
-    stats: &mut FormattedTextSpliceStats,
-) -> Result<Arc<Node>, FormattedTextError> {
-    stats.nodes_copied = stats.nodes_copied.saturating_add(1);
-    branch(left, right)
+    let mut work = Work::default();
+    let joined = Tree::from_root(left).concat(&Tree::from_root(right), &mut work);
+    count_tree_work(stats, work);
+    Ok(joined.into_root())
 }
 
 fn split_optional(
@@ -1376,52 +1257,38 @@ fn split_optional(
             length: 0,
         });
     };
-    if at > node.aggregate().bytes {
-        return Err(FormattedTextError::InvalidByteOffset {
-            offset: at,
-            length: node.aggregate().bytes,
-        });
-    }
-    split(node, at, retain, stats)
-}
-
-fn split(
-    node: Arc<Node>,
-    at: usize,
-    retain: Retain,
-    stats: &mut FormattedTextSpliceStats,
-) -> NodeSplit {
     let length = node.aggregate().bytes;
+    if at > length {
+        return Err(FormattedTextError::InvalidByteOffset { offset: at, length });
+    }
     if at == 0 {
         return Ok((None, Some(node)));
     }
     if at == length {
         return Ok((Some(node), None));
     }
-    stats.nodes_visited = stats.nodes_visited.saturating_add(1);
-    match node.as_ref() {
-        Node::Leaf(leaf) => split_leaf(leaf, at, retain, stats),
-        Node::Branch(branch_node) => {
-            let left_length = branch_node.left.aggregate().bytes;
-            match at.cmp(&left_length) {
-                Ordering::Less => {
-                    let (before, middle) = split(branch_node.left.clone(), at, retain, stats)?;
-                    let after = join_optional(middle, Some(branch_node.right.clone()), stats)?;
-                    Ok((before, after))
+    let mut work = Work::default();
+    let mut failure = None;
+    let (before, after) = Tree::from_root(Some(node)).split(
+        &mut seek_at(at, |aggregate: &Aggregate| aggregate.bytes),
+        |leaf, seek| match seek.remaining {
+            0 => LeafSplit::Before,
+            offset if offset == leaf.byte_len() => LeafSplit::After,
+            offset => match split_leaf(leaf, offset, retain, stats) {
+                Ok((left, right)) => LeafSplit::Parts(left, right),
+                Err(error) => {
+                    failure = Some(error);
+                    LeafSplit::Before
                 }
-                Ordering::Equal => Ok((
-                    Some(branch_node.left.clone()),
-                    Some(branch_node.right.clone()),
-                )),
-                Ordering::Greater => {
-                    let (middle, after) =
-                        split(branch_node.right.clone(), at - left_length, retain, stats)?;
-                    let before = join_optional(Some(branch_node.left.clone()), middle, stats)?;
-                    Ok((before, after))
-                }
-            }
-        }
+            },
+        },
+        &mut work,
+    );
+    if let Some(error) = failure {
+        return Err(error);
     }
+    count_tree_work(stats, work);
+    Ok((before.into_root(), after.into_root()))
 }
 
 fn split_leaf(
@@ -1429,7 +1296,7 @@ fn split_leaf(
     at: usize,
     retain: Retain,
     stats: &mut FormattedTextSpliceStats,
-) -> NodeSplit {
+) -> Result<(Leaf, Leaf), FormattedTextError> {
     stats.original_bytes_recounted = stats
         .original_bytes_recounted
         .saturating_add(leaf.byte_len());
@@ -1462,32 +1329,31 @@ fn split_leaf(
         ),
     };
     let result = (
-        Some(new_leaf_with_identity(
+        leaf_with_identity(
             left_id,
             left_revision,
             leaf.buffer_id,
             leaf.buffer.clone(),
             leaf.range.start..split_at,
-        )?),
-        Some(new_leaf_with_identity(
+        )?,
+        leaf_with_identity(
             right_id,
             right_revision,
             leaf.buffer_id,
             leaf.buffer.clone(),
             split_at..leaf.range.end,
-        )?),
+        )?,
     );
     stats.leaves_copied = stats.leaves_copied.saturating_add(2);
-    stats.nodes_copied = stats.nodes_copied.saturating_add(2);
     Ok(result)
 }
 
 fn append_text(node: &Node, output: &mut String) {
-    match node {
-        Node::Leaf(leaf) => output.push_str(leaf.text()),
-        Node::Branch(branch) => {
-            append_text(&branch.left, output);
-            append_text(&branch.right, output);
+    match node.view() {
+        View::Leaf(leaf) => output.push_str(leaf.text()),
+        View::Branch(lhs, rhs) => {
+            append_text(lhs, output);
+            append_text(rhs, output);
         }
     }
 }
@@ -1497,17 +1363,17 @@ fn append_range(node: &Node, start: usize, range: &Range<usize>, output: &mut St
     if range.end <= start || end <= range.start {
         return;
     }
-    match node {
-        Node::Leaf(leaf) => {
+    match node.view() {
+        View::Leaf(leaf) => {
             let local_start = range.start.saturating_sub(start).min(leaf.byte_len());
             let local_end = range.end.saturating_sub(start).min(leaf.byte_len());
             output.push_str(&leaf.text()[local_start..local_end]);
         }
-        Node::Branch(branch) => {
-            append_range(&branch.left, start, range, output);
+        View::Branch(lhs, rhs) => {
+            append_range(lhs, start, range, output);
             append_range(
-                &branch.right,
-                start + branch.left.aggregate().bytes,
+                rhs,
+                start + lhs.aggregate().bytes,
                 range,
                 output,
             );
@@ -1528,8 +1394,8 @@ fn append_range_with_stats(
     if range.end <= start || end <= range.start {
         return;
     }
-    match node {
-        Node::Leaf(leaf) => {
+    match node.view() {
+        View::Leaf(leaf) => {
             stats.leaves_visited = stats.leaves_visited.saturating_add(1);
             let local_start = range.start.saturating_sub(start).min(leaf.byte_len());
             let local_end = range.end.saturating_sub(start).min(leaf.byte_len());
@@ -1537,11 +1403,11 @@ fn append_range_with_stats(
             stats.bytes_copied = stats.bytes_copied.saturating_add(text.len());
             output.push_str(text);
         }
-        Node::Branch(branch) => {
-            append_range_with_stats(&branch.left, start, range, output, stats);
+        View::Branch(lhs, rhs) => {
+            append_range_with_stats(lhs, start, range, output, stats);
             append_range_with_stats(
-                &branch.right,
-                start + branch.left.aggregate().bytes,
+                rhs,
+                start + lhs.aggregate().bytes,
                 range,
                 output,
                 stats,
@@ -1551,15 +1417,15 @@ fn append_range_with_stats(
 }
 
 fn utf16_offset_for_byte(node: &Node, offset: usize) -> Result<usize, FormattedTextError> {
-    match node {
-        Node::Leaf(leaf) => Ok(leaf.text()[..offset].encode_utf16().count()),
-        Node::Branch(branch) => {
-            let left = branch.left.aggregate();
+    match node.view() {
+        View::Leaf(leaf) => Ok(leaf.text()[..offset].encode_utf16().count()),
+        View::Branch(lhs, rhs) => {
+            let left = lhs.aggregate();
             if offset <= left.bytes {
-                utf16_offset_for_byte(&branch.left, offset)
+                utf16_offset_for_byte(lhs, offset)
             } else {
                 left.utf16_units
-                    .checked_add(utf16_offset_for_byte(&branch.right, offset - left.bytes)?)
+                    .checked_add(utf16_offset_for_byte(rhs, offset - left.bytes)?)
                     .ok_or(FormattedTextError::ArithmeticOverflow)
             }
         }
@@ -1571,8 +1437,8 @@ fn byte_offset_for_utf16(
     offset: usize,
     requested: usize,
 ) -> Result<usize, FormattedTextError> {
-    match node {
-        Node::Leaf(leaf) => {
+    match node.view() {
+        View::Leaf(leaf) => {
             let mut utf16 = 0usize;
             for (byte, scalar) in leaf.text().char_indices() {
                 if utf16 == offset {
@@ -1595,14 +1461,14 @@ fn byte_offset_for_utf16(
                 })
             }
         }
-        Node::Branch(branch) => {
-            let left = branch.left.aggregate();
+        View::Branch(lhs, rhs) => {
+            let left = lhs.aggregate();
             if offset <= left.utf16_units {
-                byte_offset_for_utf16(&branch.left, offset, requested)
+                byte_offset_for_utf16(lhs, offset, requested)
             } else {
                 left.bytes
                     .checked_add(byte_offset_for_utf16(
-                        &branch.right,
+                        rhs,
                         offset - left.utf16_units,
                         requested,
                     )?)
@@ -1615,10 +1481,10 @@ fn byte_offset_for_utf16(
 fn shared_edge_bytes(a: &FormattedTextTree, b: &FormattedTextTree, reverse: bool, stats:&mut FormattedTextDiffStats) -> usize {
     fn expand<'a>(stack: &mut Vec<(&'a Node, usize)>, reverse: bool) -> bool {
         let Some((node, _)) = stack.last() else { return false; };
-        let Node::Branch(branch) = node else { return false; };
+        let View::Branch(lhs, rhs) = node.view() else { return false; };
         stack.pop();
-        if reverse { stack.push((&branch.left,0)); stack.push((&branch.right,0)); }
-        else { stack.push((&branch.right,0)); stack.push((&branch.left,0)); }
+        if reverse { stack.push((lhs,0)); stack.push((rhs,0)); }
+        else { stack.push((rhs,0)); stack.push((lhs,0)); }
         true
     }
     let mut left = a.root.as_deref().map(|n|vec![(n,0)]).unwrap_or_default();
@@ -1627,15 +1493,15 @@ fn shared_edge_bytes(a: &FormattedTextTree, b: &FormattedTextTree, reverse: bool
     while let (Some(&(l,lo)),Some(&(r,ro))) = (left.last(),right.last()) {
         stats.nodes_visited+=1;
         if lo == 0 && ro == 0 && std::ptr::eq(l,r) { count+=l.aggregate().bytes;left.pop();right.pop();continue; }
-        match (l,r) {
-            (Node::Branch(_),Node::Branch(_)) => {
+        match (l.view(),r.view()) {
+            (View::Branch(..),View::Branch(..)) => {
                 if l.aggregate().bytes >= r.aggregate().bytes { expand(&mut left,reverse); }
                 else { expand(&mut right,reverse); }
                 continue;
             }
-            (Node::Branch(_),_) => { expand(&mut left,reverse);continue; }
-            (_,Node::Branch(_)) => { expand(&mut right,reverse);continue; }
-            (Node::Leaf(l),Node::Leaf(r)) => {
+            (View::Branch(..),_) => { expand(&mut left,reverse);continue; }
+            (_,View::Branch(..)) => { expand(&mut right,reverse);continue; }
+            (View::Leaf(l),View::Leaf(r)) => {
                 let n=(l.byte_len()-lo).min(r.byte_len()-ro);
                 let (li,ri)=if reverse {(l.range.end-lo,r.range.end-ro)} else {(l.range.start+lo,r.range.start+ro)};
                 // Treat any loss of backing identity as the conservative
@@ -1653,28 +1519,28 @@ fn shared_edge_bytes(a: &FormattedTextTree, b: &FormattedTextTree, reverse: bool
 }
 
 fn leaf_at_or_after(node: &Node, offset: usize, start: usize) -> (&Leaf, usize) {
-    match node {
-        Node::Leaf(leaf) => (leaf, start),
-        Node::Branch(branch) => {
-            let right_start = start + branch.left.aggregate().bytes;
+    match node.view() {
+        View::Leaf(leaf) => (leaf, start),
+        View::Branch(lhs, rhs) => {
+            let right_start = start + lhs.aggregate().bytes;
             if offset < right_start {
-                leaf_at_or_after(&branch.left, offset, start)
+                leaf_at_or_after(lhs, offset, start)
             } else {
-                leaf_at_or_after(&branch.right, offset, right_start)
+                leaf_at_or_after(rhs, offset, right_start)
             }
         }
     }
 }
 
 fn leaf_before_or_at(node: &Node, offset: usize, start: usize) -> (&Leaf, usize) {
-    match node {
-        Node::Leaf(leaf) => (leaf, start),
-        Node::Branch(branch) => {
-            let right_start = start + branch.left.aggregate().bytes;
+    match node.view() {
+        View::Leaf(leaf) => (leaf, start),
+        View::Branch(lhs, rhs) => {
+            let right_start = start + lhs.aggregate().bytes;
             if offset <= right_start {
-                leaf_before_or_at(&branch.left, offset, start)
+                leaf_before_or_at(lhs, offset, start)
             } else {
-                leaf_before_or_at(&branch.right, offset, right_start)
+                leaf_before_or_at(rhs, offset, right_start)
             }
         }
     }
@@ -1684,30 +1550,30 @@ fn context_before(node: &Node, end: usize, start: usize) -> Option<(&Leaf, usize
     if end == 0 || end > start + node.aggregate().bytes {
         return None;
     }
-    match node {
-        Node::Leaf(leaf) => Some((leaf, start, end - start)),
-        Node::Branch(branch) => {
-            let right_start = start + branch.left.aggregate().bytes;
+    match node.view() {
+        View::Leaf(leaf) => Some((leaf, start, end - start)),
+        View::Branch(lhs, rhs) => {
+            let right_start = start + lhs.aggregate().bytes;
             if end <= right_start {
-                context_before(&branch.left, end, start)
+                context_before(lhs, end, start)
             } else {
-                context_before(&branch.right, end, right_start)
+                context_before(rhs, end, right_start)
             }
         }
     }
 }
 
 fn collect_leaf_info(node: &Node, start: usize, output: &mut Vec<FormattedLeafInfo>) {
-    match node {
-        Node::Leaf(leaf) => output.push(FormattedLeafInfo {
+    match node.view() {
+        View::Leaf(leaf) => output.push(FormattedLeafInfo {
             id: leaf.id,
             revision: leaf.revision,
             byte_range: start..start + leaf.byte_len(),
             hard_line_breaks: leaf.hard_line_breaks,
         }),
-        Node::Branch(branch) => {
-            collect_leaf_info(&branch.left, start, output);
-            collect_leaf_info(&branch.right, start + branch.left.aggregate().bytes, output);
+        View::Branch(lhs, rhs) => {
+            collect_leaf_info(lhs, start, output);
+            collect_leaf_info(rhs, start + lhs.aggregate().bytes, output);
         }
     }
 }
@@ -1723,8 +1589,8 @@ fn find_stable_boundary(
     side: LeafBoundarySide,
     require_leaf_id: bool,
 ) -> Option<usize> {
-    match node {
-        Node::Leaf(leaf) => {
+    match node.view() {
+        View::Leaf(leaf) => {
             if leaf.buffer_id != buffer_id || (require_leaf_id && leaf.id != id) {
                 return None;
             }
@@ -1743,8 +1609,8 @@ fn find_stable_boundary(
             };
             contains.then(|| document_start + buffer_byte - leaf.range.start)
         }
-        Node::Branch(branch) => find_stable_boundary(
-            &branch.left,
+        View::Branch(lhs, rhs) => find_stable_boundary(
+            lhs,
             document_start,
             id,
             captured_revision,
@@ -1755,8 +1621,8 @@ fn find_stable_boundary(
         )
         .or_else(|| {
             find_stable_boundary(
-                &branch.right,
-                document_start + branch.left.aggregate().bytes,
+                rhs,
+                document_start + lhs.aggregate().bytes,
                 id,
                 captured_revision,
                 buffer_id,
@@ -1770,18 +1636,18 @@ fn find_stable_boundary(
 
 #[cfg(test)]
 fn collect_leaf_refs<'a>(node: &'a Node, output: &mut Vec<&'a Leaf>) {
-    match node {
-        Node::Leaf(leaf) => output.push(leaf),
-        Node::Branch(branch) => {
-            collect_leaf_refs(&branch.left, output);
-            collect_leaf_refs(&branch.right, output);
+    match node.view() {
+        View::Leaf(leaf) => output.push(leaf),
+        View::Branch(lhs, rhs) => {
+            collect_leaf_refs(lhs, output);
+            collect_leaf_refs(rhs, output);
         }
     }
 }
 
 fn nth_line_break(node: &Node, index: usize, start: usize) -> Result<usize, FormattedTextError> {
-    match node {
-        Node::Leaf(leaf) => leaf
+    match node.view() {
+        View::Leaf(leaf) => leaf
             .text()
             .bytes()
             .enumerate()
@@ -1789,16 +1655,16 @@ fn nth_line_break(node: &Node, index: usize, start: usize) -> Result<usize, Form
             .nth(index)
             .and_then(|offset| start.checked_add(offset))
             .ok_or(FormattedTextError::ArithmeticOverflow),
-        Node::Branch(branch) => {
-            let left_breaks = branch.left.aggregate().hard_line_breaks;
+        View::Branch(lhs, rhs) => {
+            let left_breaks = lhs.aggregate().hard_line_breaks;
             if index < left_breaks {
-                nth_line_break(&branch.left, index, start)
+                nth_line_break(lhs, index, start)
             } else {
                 nth_line_break(
-                    &branch.right,
+                    rhs,
                     index - left_breaks,
                     start
-                        .checked_add(branch.left.aggregate().bytes)
+                        .checked_add(lhs.aggregate().bytes)
                         .ok_or(FormattedTextError::ArithmeticOverflow)?,
                 )
             }
@@ -1807,18 +1673,18 @@ fn nth_line_break(node: &Node, index: usize, start: usize) -> Result<usize, Form
 }
 
 fn count_line_breaks_before(node: &Node, offset: usize) -> usize {
-    match node {
-        Node::Leaf(leaf) => leaf.text().as_bytes()[..offset]
+    match node.view() {
+        View::Leaf(leaf) => leaf.text().as_bytes()[..offset]
             .iter()
             .filter(|byte| **byte == b'\n')
             .count(),
-        Node::Branch(branch) => {
-            let left_length = branch.left.aggregate().bytes;
+        View::Branch(lhs, rhs) => {
+            let left_length = lhs.aggregate().bytes;
             if offset <= left_length {
-                count_line_breaks_before(&branch.left, offset)
+                count_line_breaks_before(lhs, offset)
             } else {
-                branch.left.aggregate().hard_line_breaks
-                    + count_line_breaks_before(&branch.right, offset - left_length)
+                lhs.aggregate().hard_line_breaks
+                    + count_line_breaks_before(rhs, offset - left_length)
             }
         }
     }
@@ -1846,9 +1712,9 @@ mod tests {
         drop(original);
         let mut buffers = std::collections::HashMap::new();
         fn visit(node: &super::Node, buffers: &mut std::collections::HashMap<usize, usize>) {
-            match node {
-                super::Node::Leaf(leaf) => { buffers.insert(std::sync::Arc::as_ptr(&leaf.buffer).cast::<u8>() as usize, leaf.buffer.len()); }
-                super::Node::Branch(branch) => { visit(&branch.left, buffers); visit(&branch.right, buffers); }
+            match node.view() {
+                super::View::Leaf(leaf) => { buffers.insert(std::sync::Arc::as_ptr(&leaf.buffer).cast::<u8>() as usize, leaf.buffer.len()); }
+                super::View::Branch(lhs, rhs) => { visit(lhs, buffers); visit(rhs, buffers); }
             }
         }
         visit(surviving.root.as_ref().unwrap(), &mut buffers);
@@ -2002,8 +1868,8 @@ mod tests {
 
     fn assert_invariants(tree: &FormattedTextTree) {
         fn visit(node: &Node) -> Aggregate {
-            match node {
-                Node::Leaf(leaf) => {
+            match node.view() {
+                View::Leaf(leaf) => {
                     assert!(!leaf.text().is_empty());
                     assert!(leaf.buffer.is_char_boundary(leaf.range.start));
                     assert!(leaf.buffer.is_char_boundary(leaf.range.end));
@@ -2014,25 +1880,14 @@ mod tests {
                     assert_eq!(leaf.utf16_units, leaf.text().encode_utf16().count());
                     node.aggregate()
                 }
-                Node::Branch(branch) => {
-                    let left = visit(&branch.left);
-                    let right = visit(&branch.right);
-                    assert!(left.height.abs_diff(right.height) <= 1);
-                    assert_eq!(branch.aggregate.bytes, left.bytes + right.bytes);
-                    assert_eq!(
-                        branch.aggregate.utf16_units,
-                        left.utf16_units + right.utf16_units
-                    );
-                    assert_eq!(
-                        branch.aggregate.hard_line_breaks,
-                        left.hard_line_breaks + right.hard_line_breaks
-                    );
-                    assert_eq!(branch.aggregate.leaves, left.leaves + right.leaves);
-                    assert_eq!(branch.aggregate.height, left.height.max(right.height) + 1);
-                    branch.aggregate
+                View::Branch(lhs, rhs) => {
+                    visit(lhs);
+                    visit(rhs);
+                    node.aggregate()
                 }
             }
         }
+        assert!(Tree::from_root(tree.root.clone()).invariant_holds());
         if let Some(root) = &tree.root {
             let aggregate = visit(root);
             assert_eq!(aggregate.bytes, tree.byte_len());

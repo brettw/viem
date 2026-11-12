@@ -20,7 +20,7 @@ final class EVWhitespaceViewportTests: XCTestCase {
         let before = try session.layoutExport()
         let state = try session.viewportState()
         var identity = before.info.identity
-        var viewport = ViemLayoutRectV1(x: state.left, y: state.top,
+        var viewport = ViemLayoutRect(x: state.left, y: state.top,
             width: before.info.viewport_width, height: before.info.viewport_height)
         var count: UInt64 = 0
         XCTAssertEqual(viem_core_view_copy_whitespace_markers(backend.core, session.viewID,
@@ -41,21 +41,19 @@ final class EVWhitespaceViewportTests: XCTestCase {
         XCTAssertTrue(bytes.allSatisfy { $0 == 0xAB })
         XCTAssertThrowsError(try session.whitespaceMarkersExport(identity: identity, expectedViewport: viewport))
         XCTAssertEqual(try session.whitespaceMarkersExport(identity: identity), after.whitespace)
-        var resized = ViemCoreOutcomeV1()
-        resized.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        var resized = ViemCoreOutcome()
         XCTAssertEqual(viem_core_view_resize(backend.core, session.viewID, 0, 0, &resized), UInt32(VIEM_STATUS_OK))
         XCTAssertTrue(try session.layoutExport().whitespace.markers.isEmpty,
             "A collapsed pane still has a valid empty presentation")
     }
 
     func testMarkerViewportRegionsAreValidatedBeforeOutputWrites() {
-        var identity = ViemLayoutSnapshotIdentityV1()
-        identity.struct_size = UInt32(MemoryLayout<ViemLayoutSnapshotIdentityV1>.size)
-        var viewport = ViemLayoutRectV1(x: 0, y: 0, width: 300, height: 200)
+        var identity = ViemLayoutSnapshotIdentity()
+        var viewport = ViemLayoutRect(x: 0, y: 0, width: 300, height: 200)
         let status = withUnsafeMutablePointer(to: &viewport) { pointer in
             viem_core_view_copy_whitespace_markers(0, 0, &identity, pointer,
                 UnsafeMutableRawPointer(pointer).assumingMemoryBound(to: UInt8.self),
-                UInt64(MemoryLayout<ViemLayoutRectV1>.size),
+                UInt64(MemoryLayout<ViemLayoutRect>.size),
                 UnsafeMutableRawPointer(pointer).assumingMemoryBound(to: UInt64.self))
         }
         XCTAssertEqual(status, UInt32(VIEM_STATUS_INVALID_ARGUMENT))

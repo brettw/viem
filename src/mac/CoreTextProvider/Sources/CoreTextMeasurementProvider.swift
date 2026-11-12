@@ -220,9 +220,8 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   /// Produces the trivially-copyable table consumed by
   /// `viem_core_view_add`. The caller retains this provider until the view is
   /// removed or the owning core is successfully destroyed.
-  public func makeProviderTable() -> ViemTextMeasurementProviderV1 {
-    var table = ViemTextMeasurementProviderV1()
-    table.struct_size = UInt32(MemoryLayout<ViemTextMeasurementProviderV1>.size)
+  public func makeProviderTable() -> ViemTextMeasurementProvider {
+    var table = ViemTextMeasurementProvider()
     table.abi_version = UInt32(VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION)
     table.context = Unmanaged.passUnretained(self).toOpaque()
     table.measurement_environment_id = measurementEnvironmentID
@@ -230,7 +229,6 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
     table.has_render_run_policy = 1
     table.render_run_owner = renderRunOwner
     table.render_run_threading = UInt32(VIEM_RENDER_THREADING_FRONTEND_MAIN)
-    table.reserved = 0
     table.metrics_generation = viemCoreTextMetricsGeneration
     table.shape_batch = viemCoreTextShapeBatch
     table.retain_render_runs = viemCoreTextRetainRenderRuns
@@ -239,9 +237,9 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   }
 
   fileprivate func shapeBatch(
-    requests: UnsafePointer<ViemShapeRequestV1>?,
+    requests: UnsafePointer<ViemShapeRequest>?,
     requestCount: UInt64,
-    responses: UnsafeMutablePointer<ViemShapeResponseV1>?,
+    responses: UnsafeMutablePointer<ViemShapeResponse>?,
     responseCapacity: UInt64
   ) -> UInt32 {
     guard requestCount <= responseCapacity,
@@ -267,7 +265,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
     do { try shapingDidBegin?() } catch { return Status.providerFailure }
 
     let arena = ResponseArena(registry: renderRegistry, generation: callbackGeneration)
-    var shaped: [ViemShapeResponseV1] = []
+    var shaped: [ViemShapeResponse] = []
     shaped.reserveCapacity(Int(requestCount))
 
     for index in 0..<Int(requestCount) {
@@ -299,12 +297,11 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   }
 
   private func shapeOne(
-    _ request: ViemShapeRequestV1,
+    _ request: ViemShapeRequest,
     arena: ResponseArena,
     callbackGeneration: UInt64
-  ) throws -> ViemShapeResponseV1 {
-    guard request.struct_size >= UInt32(MemoryLayout<ViemShapeRequestV1>.size),
-      request.measurement_environment_id == measurementEnvironmentID,
+  ) throws -> ViemShapeResponse {
+    guard request.measurement_environment_id == measurementEnvironmentID,
       request.metrics_generation == callbackGeneration,
       request.text_start <= request.text_end,
       request.scale.isFinite,
@@ -470,17 +467,15 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
     let installsRenderRuns = request.purpose == UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA)
       && request.has_render_run_policy == 1
 
-    var ffiClusters: [ViemShapedClusterV1] = []
+    var ffiClusters: [ViemShapedCluster] = []
     ffiClusters.reserveCapacity(clusters.count)
-    var caretStops: [ViemClusterCaretStopV1] = []
+    var caretStops: [ViemClusterCaretStop] = []
     caretStops.reserveCapacity(clusters.count * 2)
     // Inline images carry their own resource; text clusters are looked up by
     // signature first.
     var inlineImageResources: [Int: (resource: CoreTextRenderRegistry.Resource, preferredIdentifier: UInt64)] = [:]
     for result in clusters {
-      var cluster = ViemShapedClusterV1()
-      cluster.struct_size = UInt32(MemoryLayout<ViemShapedClusterV1>.size)
-      cluster.reserved = 0
+      var cluster = ViemShapedCluster()
       cluster.text_start = result.start
       cluster.text_end = result.end
       cluster.advance = Float(result.advance)
@@ -500,10 +495,10 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
         let height = Float(size.height)
         cluster.advance = width
         cluster.metrics.ascent = height; cluster.metrics.descent = 0; cluster.metrics.leading = 0
-        cluster.typographic_bounds = ViemShapedBoundsV1(x: 0, y: -height, width: width, height: height)
+        cluster.typographic_bounds = ViemShapedBounds(x: 0, y: -height, width: width, height: height)
         cluster.ink_bounds = cluster.typographic_bounds
-        startCaret = ViemClusterCaretStopV1(); startCaret.text_offset = result.start; startCaret.inline_offset = result.bidiLevel % 2 == 0 ? 0 : width; startCaret.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)
-        endCaret = ViemClusterCaretStopV1(); endCaret.text_offset = result.end; endCaret.inline_offset = result.bidiLevel % 2 == 0 ? width : 0; endCaret.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM)
+        startCaret = ViemClusterCaretStop(); startCaret.text_offset = result.start; startCaret.inline_offset = result.bidiLevel % 2 == 0 ? 0 : width; startCaret.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)
+        endCaret = ViemClusterCaretStop(); endCaret.text_offset = result.end; endCaret.inline_offset = result.bidiLevel % 2 == 0 ? width : 0; endCaret.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM)
         if installsRenderRuns {
           let imageSignature = ["image", image.identity.uuidString, String(request.scale),
             CTFontCopyPostScriptName(style.font) as String, String(describing: style.size)].joined(separator: ":")
@@ -516,7 +511,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
       caretStops.append(startCaret)
       caretStops.append(endCaret)
       cluster.has_render_run = 0
-      cluster.render_run = ViemRenderRunHandleV1()
+      cluster.render_run = ViemRenderRunHandle()
       ffiClusters.append(cluster)
     }
     // One allocation holds every cluster's start and end caret stops.
@@ -535,23 +530,19 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
         ffiClusters[index].render_run.identifier = identifier
         ffiClusters[index].render_run.metrics_generation = callbackGeneration
         ffiClusters[index].render_run.threading = request.render_run_threading
-        ffiClusters[index].render_run.reserved = 0
       }
     }
 
     let order = visualOrder(for: clusters.map(\.bidiLevel))
-    let ffiDiagnostics = diagnostics.map { diagnostic -> ViemShapingDiagnosticV1 in
-      var value = ViemShapingDiagnosticV1()
-      value.struct_size = UInt32(MemoryLayout<ViemShapingDiagnosticV1>.size)
-      value.reserved = 0
+    let ffiDiagnostics = diagnostics.map { diagnostic -> ViemShapingDiagnostic in
+      var value = ViemShapingDiagnostic()
       value.text_start = diagnostic.start
       value.text_end = diagnostic.end
       value.message = arena.storeUTF8(diagnostic.message)
       return value
     }
 
-    var response = ViemShapeResponseV1()
-    response.struct_size = UInt32(MemoryLayout<ViemShapeResponseV1>.size)
+    var response = ViemShapeResponse()
     response.document_id = request.document_id
     response.document_revision = request.document_revision
     response.measurement_environment_id = measurementEnvironmentID
@@ -631,9 +622,9 @@ private func viemCoreTextMetricsGeneration(_ context: UnsafeMutableRawPointer?) 
 
 private func viemCoreTextShapeBatch(
   _ context: UnsafeMutableRawPointer?,
-  _ requests: UnsafePointer<ViemShapeRequestV1>?,
+  _ requests: UnsafePointer<ViemShapeRequest>?,
   _ requestCount: UInt64,
-  _ responses: UnsafeMutablePointer<ViemShapeResponseV1>?,
+  _ responses: UnsafeMutablePointer<ViemShapeResponse>?,
   _ responseCapacity: UInt64
 ) -> UInt32 {
   guard let context else { return Status.invalidArgument }
@@ -701,9 +692,8 @@ private final class ResolvedStyle {
   let syntheticBold: Bool
   let renderAttributes: CoreTextRenderAttributes
 
-  init(_ source: ViemResolvedTextStyleV1, scale: CGFloat) throws {
-    guard source.struct_size >= UInt32(MemoryLayout<ViemResolvedTextStyleV1>.size),
-      source.reserved <= 1,
+  init(_ source: ViemResolvedTextStyle, scale: CGFloat) throws {
+    guard source.relative_bold <= 1,
       source.size.isFinite, source.size > 0,
       source.weight.isFinite,
       source.letter_spacing.isFinite, source.baseline_offset.isFinite,
@@ -760,7 +750,7 @@ private final class ResolvedStyle {
     features = decodedFeatures
     let faceName = try decode(source.font_face)
     let axes = try decode(source.font_axes)
-    let relativeBold = source.reserved & 1 != 0
+    let relativeBold = source.relative_bold != 0
     let key = ResolvedFontKey(
       families: families, size: size, weight: source.weight, slant: slant,
       features: decodedFeatures.map { ResolvedFontKey.Feature(tag: $0.0, value: $0.1) },
@@ -884,7 +874,7 @@ private struct StyleRun {
   let style: ResolvedStyle
 }
 
-private func readStyleRuns(_ request: ViemShapeRequestV1, scale: CGFloat) throws -> [StyleRun] {
+private func readStyleRuns(_ request: ViemShapeRequest, scale: CGFloat) throws -> [StyleRun] {
   guard request.style_run_count <= UInt64(Int.max) else {
     throw ProviderError(Status.invalidArgument)
   }
@@ -895,9 +885,7 @@ private func readStyleRuns(_ request: ViemShapeRequestV1, scale: CGFloat) throws
   var previousEnd: UInt64?
   for index in 0..<Int(request.style_run_count) {
     let run = base[index]
-    guard run.struct_size >= UInt32(MemoryLayout<ViemShapeStyleRunV1>.size),
-      run.reserved == 0,
-      run.text_start <= run.text_end,
+    guard run.text_start <= run.text_end,
       previousEnd.map({ $0 <= run.text_start }) ?? true
     else { throw ProviderError(Status.invalidArgument) }
     result.append(
@@ -1239,8 +1227,8 @@ private struct Metrics {
   let leading: CGFloat
   let capHeight: CGFloat
 
-  var ffi: ViemTextMetricsV1 {
-    var result = ViemTextMetricsV1()
+  var ffi: ViemTextMetrics {
+    var result = ViemTextMetrics()
     result.ascent = Float(ascent)
     result.descent = Float(descent)
     result.leading = Float(leading)
@@ -1264,8 +1252,8 @@ private struct Bounds {
   let width: CGFloat
   let height: CGFloat
 
-  var ffi: ViemShapedBoundsV1 {
-    var result = ViemShapedBoundsV1()
+  var ffi: ViemShapedBounds {
+    var result = ViemShapedBounds()
     result.x = Float(x)
     result.y = Float(y)
     result.width = Float(max(width, 0))
@@ -1283,8 +1271,8 @@ private struct ClusterResult {
   let inkBounds: Bounds
   let bidiLevel: UInt8
   let fallbackFont: String
-  let startCaret: ViemClusterCaretStopV1
-  let endCaret: ViemClusterCaretStopV1
+  let startCaret: ViemClusterCaretStop
+  let endCaret: ViemClusterCaretStop
   /// Render data, materialized only for a resource not already registered.
   let style: ResolvedStyle
   let recordRange: Range<Int>
@@ -1442,7 +1430,7 @@ private func makeCluster(
   clusterFonts: [ShapedFont],
   style: ResolvedStyle,
   bidiLevel: UInt8,
-  request: ViemShapeRequestV1,
+  request: ViemShapeRequest,
   signatures: inout RenderSignatures
 ) -> ClusterResult {
   let records = allRecords[recordRange]
@@ -1513,11 +1501,11 @@ private func makeCluster(
   let rtl = bidiLevel % 2 == 1
   let startInline = rtl ? advance : 0
   let endInline = rtl ? 0 : advance
-  var startCaret = ViemClusterCaretStopV1()
+  var startCaret = ViemClusterCaretStop()
   startCaret.text_offset = globalStart
   startCaret.inline_offset = Float(startInline)
   startCaret.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)
-  var endCaret = ViemClusterCaretStopV1()
+  var endCaret = ViemClusterCaretStop()
   endCaret.text_offset = globalEnd
   endCaret.inline_offset = Float(endInline)
   endCaret.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM)
@@ -1680,10 +1668,10 @@ private final class ResponseArena {
   }
   func retainInstalledResource(_ identifier: UInt64) { installedIdentifiers.append(identifier) }
   private var bytes: [(UnsafeMutablePointer<UInt8>, Int)] = []
-  private var carets: [(UnsafeMutablePointer<ViemClusterCaretStopV1>, Int)] = []
-  private var clusters: [(UnsafeMutablePointer<ViemShapedClusterV1>, Int)] = []
+  private var carets: [(UnsafeMutablePointer<ViemClusterCaretStop>, Int)] = []
+  private var clusters: [(UnsafeMutablePointer<ViemShapedCluster>, Int)] = []
   private var visualOrders: [(UnsafeMutablePointer<UInt64>, Int)] = []
-  private var diagnostics: [(UnsafeMutablePointer<ViemShapingDiagnosticV1>, Int)] = []
+  private var diagnostics: [(UnsafeMutablePointer<ViemShapingDiagnostic>, Int)] = []
 
   deinit {
     registry.releaseResponseResources(identifiers: installedIdentifiers, generation: generation)
@@ -1731,11 +1719,11 @@ private final class ResponseArena {
     return slice
   }
 
-  func storeCarets(_ values: [ViemClusterCaretStopV1]) -> UnsafePointer<ViemClusterCaretStopV1>? {
+  func storeCarets(_ values: [ViemClusterCaretStop]) -> UnsafePointer<ViemClusterCaretStop>? {
     store(values, in: &carets)
   }
 
-  func storeClusters(_ values: [ViemShapedClusterV1]) -> UnsafePointer<ViemShapedClusterV1>? {
+  func storeClusters(_ values: [ViemShapedCluster]) -> UnsafePointer<ViemShapedCluster>? {
     store(values, in: &clusters)
   }
 
@@ -1743,8 +1731,8 @@ private final class ResponseArena {
     store(values, in: &visualOrders)
   }
 
-  func storeDiagnostics(_ values: [ViemShapingDiagnosticV1]) -> UnsafePointer<
-    ViemShapingDiagnosticV1
+  func storeDiagnostics(_ values: [ViemShapingDiagnostic]) -> UnsafePointer<
+    ViemShapingDiagnostic
   >? {
     store(values, in: &diagnostics)
   }
@@ -1762,7 +1750,7 @@ private final class ResponseArena {
 }
 
 private func viemCoreTextRetainRenderRuns(
-  _ context: UnsafeMutableRawPointer?, _ handles: UnsafePointer<ViemRenderRunHandleV1>?,
+  _ context: UnsafeMutableRawPointer?, _ handles: UnsafePointer<ViemRenderRunHandle>?,
   _ count: UInt64
 ) -> UnsafeMutableRawPointer? {
   guard let context, let handles, count > 0, count <= UInt64(Int.max) else { return nil }
@@ -1770,7 +1758,7 @@ private func viemCoreTextRetainRenderRuns(
   let values = UnsafeBufferPointer(start: handles, count: Int(count))
   let generation = values[0].metrics_generation
   guard values.allSatisfy({ $0.owner == provider.renderRunOwner && $0.metrics_generation == generation
-    && $0.threading == UInt32(VIEM_RENDER_THREADING_FRONTEND_MAIN) && $0.reserved == 0 }),
+    && $0.threading == UInt32(VIEM_RENDER_THREADING_FRONTEND_MAIN) }),
     let lease = provider.renderRegistry.retain(identifiers: values.map(\.identifier), generation: generation)
   else { return nil }
   return Unmanaged.passRetained(lease).toOpaque()

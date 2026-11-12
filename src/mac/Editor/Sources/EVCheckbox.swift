@@ -4,7 +4,7 @@ import ViemAppShell
 
 extension EVCoreViewSession {
     @discardableResult
-    func toggleCheckbox(paragraphID: UInt64, expected identity: ViemLayoutSnapshotIdentityV1) throws -> ViemCoreOutcomeV1 {
+    func toggleCheckbox(paragraphID: UInt64, expected identity: ViemLayoutSnapshotIdentity) throws -> ViemCoreOutcome {
         var identity = identity
         return try performCoreOperation("Toggle checkbox") { outcome in
             viem_core_view_toggle_checkbox(document.core, viewID, &identity, paragraphID, outcome)

@@ -4,8 +4,7 @@ use crate::document::ArtifactPath;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct ViemFileMarkTargetV1 {
-    pub struct_size: u32,
+pub struct ViemFileMarkTarget {
     pub name: u32,
     pub generation: u64,
     pub document_id: u64,
@@ -40,7 +39,7 @@ fn file_mark(name: u32, generation: u64) -> Result<crate::coordinator::FileMarkT
 pub unsafe extern "C" fn viem_file_mark_target(
     name: u32,
     generation: u64,
-    out_info: *mut ViemFileMarkTargetV1,
+    out_info: *mut ViemFileMarkTarget,
     path: *mut u8,
     capacity: u64,
 ) -> ViemStatus {
@@ -49,13 +48,12 @@ pub unsafe extern "C" fn viem_file_mark_target(
             typed_pointer_region(out_info, 1)?,
             typed_pointer_region(path, capacity)?,
         ])?;
-        unsafe { out_info.write(ViemFileMarkTargetV1::default()) };
+        unsafe { out_info.write(ViemFileMarkTarget::default()) };
         let target = file_mark(name, generation)?;
         let bytes = target.path.as_ref().map_or(&[][..], |path| path.as_bytes());
         std::str::from_utf8(bytes).map_err(|_| ViemStatus::InvalidUtf8)?;
         unsafe {
-            out_info.write(ViemFileMarkTargetV1 {
-                struct_size: size_of::<ViemFileMarkTargetV1>() as u32,
+            out_info.write(ViemFileMarkTarget {
                 name,
                 generation: target.generation,
                 document_id: target.document.0,
@@ -84,7 +82,7 @@ pub unsafe extern "C" fn viem_core_view_jump_file_mark(
     name: u32,
     generation: u64,
     linewise: u32,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    out_outcome: *mut ViemCoreOutcome,
 ) -> ViemStatus {
     ffi_boundary(|| {
         unsafe { clear_outcome(out_outcome)? };
@@ -153,8 +151,8 @@ pub unsafe extern "C" fn viem_core_view_drop_text(
     view: ViemViewId,
     text: *const u8,
     length: u64,
-    context: *const ViemCommandTurnContextV2,
-    out_outcome: *mut ViemCoreOutcomeV1,
+    context: *const ViemCommandTurnContext,
+    out_outcome: *mut ViemCoreOutcome,
     out_effect_batch: *mut ViemEffectBatchHandle,
 ) -> ViemStatus {
     ffi_boundary(|| {

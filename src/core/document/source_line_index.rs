@@ -46,6 +46,7 @@ impl Summary for Extent {
 
 impl Item for Lengths {
     type Summary = Extent;
+    type Tag = ();
 
     fn summary(&self) -> Extent {
         Extent { lines: self.0.len(), bytes: self.0.iter().sum() }

@@ -263,7 +263,7 @@ final class EVMultilineRenderingTests: XCTestCase {
 
     @MainActor
     private func inkBounds(
-        for clusters: [ViemPositionedClusterV1],
+        for clusters: [ViemPositionedCluster],
         in view: EVEditorView
     ) -> NSRect? {
         clusters.reduce(nil as NSRect?) { result, cluster in

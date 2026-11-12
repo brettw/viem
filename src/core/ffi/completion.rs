@@ -10,8 +10,7 @@ pub const VIEM_COMPLETION_RIGHT_TO_LEFT: u32 = 1 << 4;
 /// The frontend renders this backend-owned ordering and selection unchanged.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ViemCompletionInfoV1 {
-    pub struct_size: u32,
+pub struct ViemCompletionInfo {
     pub flags: u32,
     pub session_id: u64,
     pub generation: u64,
@@ -21,16 +20,14 @@ pub struct ViemCompletionInfoV1 {
     pub selected_index: i64,
     pub item_count: u64,
     pub utf8_length: u64,
-    pub anchor_layout: ViemLayoutSnapshotIdentityV1,
-    pub anchor_rect: ViemLayoutRectV1,
+    pub anchor_layout: ViemLayoutSnapshotIdentity,
+    pub anchor_rect: ViemLayoutRect,
 }
 
-pub const VIEM_COMPLETION_INFO_V1_SIZE: u32 = size_of::<ViemCompletionInfoV1>() as u32;
 
-impl Default for ViemCompletionInfoV1 {
+impl Default for ViemCompletionInfo {
     fn default() -> Self {
         Self {
-            struct_size: VIEM_COMPLETION_INFO_V1_SIZE,
             flags: 0,
             session_id: 0,
             generation: 0,
@@ -40,8 +37,8 @@ impl Default for ViemCompletionInfoV1 {
             selected_index: -1,
             item_count: 0,
             utf8_length: 0,
-            anchor_layout: ViemLayoutSnapshotIdentityV1::default(),
-            anchor_rect: ViemLayoutRectV1::default(),
+            anchor_layout: ViemLayoutSnapshotIdentity::default(),
+            anchor_rect: ViemLayoutRect::default(),
         }
     }
 }
@@ -49,20 +46,19 @@ impl Default for ViemCompletionInfoV1 {
 /// A candidate's byte range in the concatenated UTF-8 arena.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemCompletionItemV1 {
+pub struct ViemCompletionItem {
     pub text_offset: u64,
     pub text_length: u64,
 }
 
-pub const VIEM_COMPLETION_ITEM_V1_SIZE: u32 = size_of::<ViemCompletionItemV1>() as u32;
 
 /// Keep the serial core lease throughout validation and export. The token
 /// registry mutex is already released before this operation begins.
 fn with_completion<R>(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: Option<ViemCompletionInfoV1>,
-    operation: impl FnOnce(ViemCompletionInfoV1, &[String]) -> Result<R, ViemStatus>,
+    expected: Option<ViemCompletionInfo>,
+    operation: impl FnOnce(ViemCompletionInfo, &[String]) -> Result<R, ViemStatus>,
 ) -> Result<R, ViemStatus> {
     with_core(handle, |core| {
         core.command_state(ViewId(view))
@@ -70,11 +66,11 @@ fn with_completion<R>(
         let presentation = core
             .completion_presentation(ViewId(view))
             .map_err(core_status)?;
-        let mut info = ViemCompletionInfoV1 {
+        let mut info = ViemCompletionInfo {
             document_id: core.document().id().0,
             document_revision: core.document().revision().0,
             view_id: view,
-            ..ViemCompletionInfoV1::default()
+            ..ViemCompletionInfo::default()
         };
         let items = if let Some(presentation) = presentation.as_ref() {
             info.flags = VIEM_COMPLETION_ACTIVE
@@ -114,7 +110,7 @@ fn with_completion<R>(
                     info.flags |= VIEM_COMPLETION_RIGHT_TO_LEFT;
                 }
                 info.anchor_layout = snapshot_identity(snapshot, ViewId(view));
-                info.anchor_rect = ViemLayoutRectV1 {
+                info.anchor_rect = ViemLayoutRect {
                     x: anchor.rect.x,
                     y: anchor.rect.y,
                     width: anchor.rect.width,
@@ -133,12 +129,9 @@ fn with_completion<R>(
 }
 
 fn validate_completion_info(
-    mut expected: ViemCompletionInfoV1,
-    current: ViemCompletionInfoV1,
+    expected: ViemCompletionInfo,
+    current: ViemCompletionInfo,
 ) -> Result<(), ViemStatus> {
-    // Larger caller structures are accepted consistently with other v1 ABI
-    // records, but all state-bearing fields must match the queried record.
-    expected.struct_size = VIEM_COMPLETION_INFO_V1_SIZE;
     if expected != current {
         return Err(ViemStatus::StaleRevision);
     }
@@ -146,11 +139,10 @@ fn validate_completion_info(
 }
 
 unsafe fn read_completion_info(
-    expected: *const ViemCompletionInfoV1,
-) -> Result<ViemCompletionInfoV1, ViemStatus> {
+    expected: *const ViemCompletionInfo,
+) -> Result<ViemCompletionInfo, ViemStatus> {
     let expected = unsafe { expected.read() };
-    if expected.struct_size < VIEM_COMPLETION_INFO_V1_SIZE
-        || expected.flags
+    if expected.flags
             & !(VIEM_COMPLETION_ACTIVE
                 | VIEM_COMPLETION_SEARCHING
                 | VIEM_COMPLETION_TRUNCATED
@@ -171,11 +163,11 @@ unsafe fn read_completion_info(
 pub unsafe extern "C" fn viem_core_view_completion_info(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    out_info: *mut ViemCompletionInfoV1,
+    out_info: *mut ViemCompletionInfo,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_info, 1)?;
-        unsafe { out_info.write(ViemCompletionInfoV1::default()) };
+        unsafe { out_info.write(ViemCompletionInfo::default()) };
         let info = with_completion(handle, view, None, |info, _| Ok(info))?;
         unsafe { out_info.write(info) };
         Ok(())
@@ -191,8 +183,8 @@ pub unsafe extern "C" fn viem_core_view_completion_info(
 pub unsafe extern "C" fn viem_core_view_copy_completion_items(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemCompletionInfoV1,
-    items: *mut ViemCompletionItemV1,
+    expected: *const ViemCompletionInfo,
+    items: *mut ViemCompletionItem,
     capacity: u64,
     out_count: *mut u64,
 ) -> ViemStatus {
@@ -214,7 +206,7 @@ pub unsafe extern "C" fn viem_core_view_copy_completion_items(
                 // Total size was checked before writing any caller memory.
                 let length = candidate.len() as u64;
                 unsafe {
-                    items.add(index).write(ViemCompletionItemV1 {
+                    items.add(index).write(ViemCompletionItem {
                         text_offset: offset,
                         text_length: length,
                     });
@@ -235,7 +227,7 @@ pub unsafe extern "C" fn viem_core_view_copy_completion_items(
 pub unsafe extern "C" fn viem_core_view_copy_completion_utf8(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    expected: *const ViemCompletionInfoV1,
+    expected: *const ViemCompletionInfo,
     bytes: *mut u8,
     capacity: u64,
     out_count: *mut u64,
@@ -320,9 +312,9 @@ mod tests {
     }
     unsafe extern "C" fn unavailable_shape(
         _: *mut c_void,
-        _: *const ViemShapeRequestV1,
+        _: *const ViemShapeRequest,
         _: u64,
-        _: *mut ViemShapeResponseV1,
+        _: *mut ViemShapeResponse,
         _: u64,
     ) -> u32 {
         ViemStatus::ProviderFailure as u32
@@ -361,8 +353,8 @@ mod tests {
             .unwrap();
         }
 
-        fn info(&self) -> ViemCompletionInfoV1 {
-            let mut info = ViemCompletionInfoV1::default();
+        fn info(&self) -> ViemCompletionInfo {
+            let mut info = ViemCompletionInfo::default();
             assert_eq!(
                 unsafe { viem_core_view_completion_info(self.handle, self.view, &mut info) },
                 ViemStatus::Ok
@@ -370,7 +362,7 @@ mod tests {
             info
         }
 
-        fn finish_search(&self) -> ViemCompletionInfoV1 {
+        fn finish_search(&self) -> ViemCompletionInfo {
             for _ in 0..1024 {
                 let info = self.info();
                 if info.flags & VIEM_COMPLETION_SEARCHING == 0 {
@@ -397,7 +389,6 @@ mod tests {
     fn inactive_completion_has_current_identity_and_empty_exports() {
         let fixture = Fixture::new("words");
         let info = fixture.info();
-        assert_eq!(info.struct_size, VIEM_COMPLETION_INFO_V1_SIZE);
         assert_ne!(info.document_id, 0);
         assert_eq!(info.view_id, fixture.view);
         assert_eq!((info.flags, info.session_id, info.generation), (0, 0, 0));
@@ -504,7 +495,7 @@ mod tests {
             ViemStatus::BufferTooSmall
         );
         assert_eq!(count, info.item_count);
-        let sentinel = ViemCompletionItemV1 {
+        let sentinel = ViemCompletionItem {
             text_offset: 99,
             text_length: 99,
         };
@@ -524,7 +515,7 @@ mod tests {
         );
         assert_eq!(short_items, [sentinel]);
 
-        let mut items = vec![ViemCompletionItemV1::default(); info.item_count as usize];
+        let mut items = vec![ViemCompletionItem::default(); info.item_count as usize];
         assert_eq!(
             unsafe {
                 viem_core_view_copy_completion_items(
@@ -681,7 +672,7 @@ mod tests {
             ViemStatus::NullPointer
         );
         let mut overlapping = info;
-        let pointer = &mut overlapping as *mut ViemCompletionInfoV1;
+        let pointer = &mut overlapping as *mut ViemCompletionInfo;
         assert_eq!(
             unsafe {
                 viem_core_view_copy_completion_utf8(
@@ -689,28 +680,13 @@ mod tests {
                     fixture.view,
                     pointer,
                     pointer.cast(),
-                    size_of::<ViemCompletionInfoV1>() as u64,
+                    size_of::<ViemCompletionInfo>() as u64,
                     &mut count,
                 )
             },
             ViemStatus::InvalidArgument
         );
         let mut malformed = info;
-        malformed.struct_size = 0;
-        assert_eq!(
-            unsafe {
-                viem_core_view_copy_completion_utf8(
-                    fixture.handle,
-                    fixture.view,
-                    &malformed,
-                    ptr::null_mut(),
-                    0,
-                    &mut count,
-                )
-            },
-            ViemStatus::InvalidArgument
-        );
-        malformed = info;
         malformed.flags = 1 << 31;
         assert_eq!(
             unsafe {
@@ -744,7 +720,7 @@ mod tests {
             unsafe { viem_core_view_completion_info(fixture.handle, u64::MAX, &mut output) },
             ViemStatus::InvalidView
         );
-        assert_eq!(output, ViemCompletionInfoV1::default());
+        assert_eq!(output, ViemCompletionInfo::default());
         let mut changed = 99;
         assert_eq!(
             unsafe { viem_core_view_poll_completion(fixture.handle, u64::MAX, &mut changed) },
@@ -761,7 +737,7 @@ mod tests {
 
     #[test]
     fn every_completion_presentation_field_participates_in_stale_validation() {
-        let current = ViemCompletionInfoV1 {
+        let current = ViemCompletionInfo {
             flags: VIEM_COMPLETION_ACTIVE,
             session_id: 1,
             generation: 2,
@@ -771,60 +747,60 @@ mod tests {
             selected_index: 0,
             item_count: 1,
             utf8_length: 7,
-            ..ViemCompletionInfoV1::default()
+            ..ViemCompletionInfo::default()
         };
         for stale in [
-            ViemCompletionInfoV1 {
+            ViemCompletionInfo {
                 flags: VIEM_COMPLETION_ACTIVE | VIEM_COMPLETION_SEARCHING,
                 ..current
             },
-            ViemCompletionInfoV1 {
+            ViemCompletionInfo {
                 session_id: 2,
                 ..current
             },
-            ViemCompletionInfoV1 {
+            ViemCompletionInfo {
                 generation: 3,
                 ..current
             },
-            ViemCompletionInfoV1 {
+            ViemCompletionInfo {
                 document_id: 4,
                 ..current
             },
-            ViemCompletionInfoV1 {
+            ViemCompletionInfo {
                 document_revision: 5,
                 ..current
             },
-            ViemCompletionInfoV1 {
+            ViemCompletionInfo {
                 view_id: 6,
                 ..current
             },
-            ViemCompletionInfoV1 {
+            ViemCompletionInfo {
                 selected_index: -1,
                 ..current
             },
-            ViemCompletionInfoV1 {
+            ViemCompletionInfo {
                 item_count: 2,
                 ..current
             },
-            ViemCompletionInfoV1 {
+            ViemCompletionInfo {
                 utf8_length: 8,
                 ..current
             },
-            ViemCompletionInfoV1 {
-                anchor_layout: ViemLayoutSnapshotIdentityV1 {
+            ViemCompletionInfo {
+                anchor_layout: ViemLayoutSnapshotIdentity {
                     layout_revision: 1,
                     ..current.anchor_layout
                 },
                 ..current
             },
-            ViemCompletionInfoV1 {
-                anchor_rect: ViemLayoutRectV1 {
+            ViemCompletionInfo {
+                anchor_rect: ViemLayoutRect {
                     x: 1.0,
                     ..current.anchor_rect
                 },
                 ..current
             },
-            ViemCompletionInfoV1 {
+            ViemCompletionInfo {
                 flags: current.flags | VIEM_COMPLETION_RIGHT_TO_LEFT,
                 ..current
             },

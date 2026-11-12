@@ -110,7 +110,7 @@ pub unsafe extern "C" fn viem_core_view_install_table_refinement(
 /// Provider callbacks/context remain alive for this call; out_result is writable.
 #[no_mangle]
 pub unsafe extern "C" fn viem_layout_work_compute(
-    id: u64, provider: *const ViemTextMeasurementProviderV1, out_result: *mut u64,
+    id: u64, provider: *const ViemTextMeasurementProvider, out_result: *mut u64,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_result, 1)?;

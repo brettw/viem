@@ -130,21 +130,20 @@ fn checkbox_ffi_rejects_stale_geometry_and_invalid_storage() {
     use std::ptr;
     let fixture = super::ffi_core_surface::table_ffi_fixture(b"task", VIEM_FORMAT_MARKDOWN);
     let (core, view) = (fixture.handle, fixture.view);
-    let mut selection = ViemLogicalSelectionIdentityV1::default();
-    let mut outcome = ViemCoreOutcomeV1::default();
+    let mut selection = ViemLogicalSelectionIdentity::default();
+    let mut outcome = ViemCoreOutcome::default();
     unsafe {
         assert_eq!(viem_core_view_list_selection(core, view, ptr::null_mut()), ViemStatus::NullPointer);
         assert_eq!(viem_core_view_list_selection(core, view, &mut selection), ViemStatus::Ok);
-        let request = ViemSetListStyleV1 { struct_size: VIEM_SET_LIST_STYLE_V1_SIZE,
-            style: VIEM_LIST_STYLE_TASK, expected_selection: selection };
+        let request = ViemSetListStyle { style: VIEM_LIST_STYLE_TASK, expected_selection: selection };
         assert_eq!(viem_core_view_set_list_style(core, view, &request, &mut outcome), ViemStatus::Ok);
         assert_ne!(viem_core_view_set_list_style(core, view, &request, &mut outcome), ViemStatus::Ok);
-        let mut snapshot = ViemLayoutSnapshotInfoV1::default();
+        let mut snapshot = ViemLayoutSnapshotInfo::default();
         assert_eq!(viem_core_view_layout_snapshot_info(core, view, &mut snapshot), ViemStatus::Ok);
-        let mut info = ViemLayoutDecorationsInfoV1::default();
+        let mut info = ViemLayoutDecorationsInfo::default();
         assert_eq!(viem_core_view_copy_layout_decorations(core, view, &snapshot.identity,
             ptr::null_mut(), 0, ptr::null_mut(), 0, &mut info), ViemStatus::BufferTooSmall);
-        let mut decorations = vec![ViemLayoutDecorationV1::default(); info.decoration_count as usize];
+        let mut decorations = vec![ViemLayoutDecoration::default(); info.decoration_count as usize];
         let mut labels = vec![0u8; info.label_bytes as usize];
         assert_eq!(viem_core_view_copy_layout_decorations(core, view, &snapshot.identity,
             decorations.as_mut_ptr(), decorations.len() as u64, labels.as_mut_ptr(), labels.len() as u64,

@@ -107,7 +107,7 @@ internal static class PaneLayoutTests
         {
             var baseStyle = view.Styles().Styles.Single(s => s.Namespace == VIEM_STYLE_NAMESPACE_BLOCK && s.Id == "Paragraph");
             view.EditStyle(baseStyle, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_SIZE, CoreView.Number(20));
-            var spacing = New<ViemStyleEditValueV1>();
+            var spacing = new ViemStyleEditValue();
             spacing.kind = VIEM_STYLE_VALUE_LINE_SPACING;
             spacing.enum_value = VIEM_STYLE_LINE_SPACING_MULTIPLIER;
             spacing.number = 1.5f;

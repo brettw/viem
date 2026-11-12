@@ -255,7 +255,7 @@ final class EVViewMarginIntegrationTests: XCTestCase {
         }
     }
 
-    private func activeRow(_ surface: EVEditorSurfaceController) throws -> ViemVisualRowV1 {
+    private func activeRow(_ surface: EVEditorSurfaceController) throws -> ViemVisualRow {
         let snapshot = try XCTUnwrap(surface.layoutSnapshot)
         let offset = surface.viewPresentation.cursor_utf8_offset
         return try XCTUnwrap(snapshot.rows.last { $0.text_start <= offset && offset <= $0.text_end })

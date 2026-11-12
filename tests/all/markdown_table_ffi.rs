@@ -5,8 +5,8 @@ use viem_core::ffi::*;
 
 const TABLE: &[u8] =
     b"| A | B | C |\n| :-- | :-: | --: |\n| one | two | three |\n| four | five | six |";
-fn context(f: &TableFfiFixture) -> ViemTableContextV1 {
-    let mut out = ViemTableContextV1::default();
+fn context(f: &TableFfiFixture) -> ViemTableContext {
+    let mut out = ViemTableContext::default();
     assert_eq!(
         unsafe { viem_core_view_table_context(f.handle, f.view, &mut out) },
         ViemStatus::Ok
@@ -17,12 +17,11 @@ fn context(f: &TableFfiFixture) -> ViemTableContextV1 {
 #[test]
 fn quote_toggle_abi_checks_selection_identity_and_preserves_heading() {
     let f = table_ffi_fixture(b"# Heading", VIEM_FORMAT_MARKDOWN);
-    let mut request = ViemSetBlockQuoteV1 {
-        struct_size: VIEM_SET_BLOCK_QUOTE_V1_SIZE,
+    let mut request = ViemSetBlockQuote {
         enabled: 1,
         expected_selection: context(&f).selection,
     };
-    let mut outcome = ViemCoreOutcomeV1::default();
+    let mut outcome = ViemCoreOutcome::default();
     assert_eq!(unsafe { viem_core_view_set_block_quote(f.handle, f.view, &request, &mut outcome) }, ViemStatus::Ok);
     assert_eq!(source(&f), b"> # Heading");
     request.enabled = 0;
@@ -35,8 +34,8 @@ fn quote_toggle_abi_checks_selection_identity_and_preserves_heading() {
     assert_eq!(unsafe { viem_core_view_set_block_quote(f.handle, f.view, &request, &mut outcome) }, ViemStatus::Ok);
     assert_eq!(source(&f), b"# Heading");
 }
-fn state(f: &TableFfiFixture) -> ViemDocumentStateV1 {
-    let mut out = ViemDocumentStateV1::default();
+fn state(f: &TableFfiFixture) -> ViemDocumentState {
+    let mut out = ViemDocumentState::default();
     assert_eq!(
         unsafe { viem_core_document_state(f.handle, &mut out) },
         ViemStatus::Ok
@@ -61,15 +60,15 @@ fn source(f: &TableFfiFixture) -> Vec<u8> {
     );
     out
 }
-fn info(f: &TableFfiFixture) -> ViemLayoutSnapshotInfoV1 {
-    let mut info = ViemLayoutSnapshotInfoV1::default();
+fn info(f: &TableFfiFixture) -> ViemLayoutSnapshotInfo {
+    let mut info = ViemLayoutSnapshotInfo::default();
     assert_eq!(
         unsafe { viem_core_view_layout_snapshot_info(f.handle, f.view, &mut info) },
         ViemStatus::Ok
     );
     info
 }
-fn cells(f: &TableFfiFixture) -> Vec<ViemTableCellV1> {
+fn cells(f: &TableFfiFixture) -> Vec<ViemTableCell> {
     let identity = info(f).identity;
     let mut count = 0;
     assert_eq!(
@@ -85,7 +84,7 @@ fn cells(f: &TableFfiFixture) -> Vec<ViemTableCellV1> {
         },
         ViemStatus::BufferTooSmall
     );
-    let mut cells = vec![ViemTableCellV1::default(); count as usize];
+    let mut cells = vec![ViemTableCell::default(); count as usize];
     assert_eq!(
         unsafe {
             viem_core_view_copy_table_cells(
@@ -101,10 +100,9 @@ fn cells(f: &TableFfiFixture) -> Vec<ViemTableCellV1> {
     );
     cells
 }
-fn select(f: &TableFfiFixture) -> ViemTableSelectionV1 {
+fn select(f: &TableFfiFixture) -> ViemTableSelection {
     let c = context(f);
-    ViemTableSelectionV1 {
-        struct_size: VIEM_TABLE_SELECTION_V1_SIZE,
+    ViemTableSelection {
         active: 1,
         document_id: c.selection.document_id,
         document_revision: c.selection.document_revision,
@@ -115,9 +113,8 @@ fn select(f: &TableFfiFixture) -> ViemTableSelectionV1 {
         active_column: 1,
     }
 }
-fn action(c: ViemTableContextV1, action: u32) -> ViemTableActionV1 {
-    ViemTableActionV1 {
-        struct_size: VIEM_TABLE_ACTION_V1_SIZE,
+fn action(c: ViemTableContext, action: u32) -> ViemTableAction {
+    ViemTableAction {
         action,
         expected: c,
         ..Default::default()
@@ -130,40 +127,30 @@ fn insertion_rejects_invalid_sizes_and_stale_picker_without_changes() {
         let f = table_ffi_fixture(b"alpha beta", format);
         let original = context(&f);
         assert_eq!(original.flags, VIEM_TABLE_CAN_INSERT);
-        let valid = ViemInsertTableV1 {
-            struct_size: VIEM_INSERT_TABLE_V1_SIZE,
-            reserved: 0,
+        let valid = ViemInsertTable {
             expected_selection: original.selection,
             columns: 3,
             body_rows: 4,
         };
         for invalid in [
-            ViemInsertTableV1 {
-                struct_size: 0,
-                ..valid
-            },
-            ViemInsertTableV1 {
-                reserved: 1,
-                ..valid
-            },
-            ViemInsertTableV1 {
+            ViemInsertTable {
                 columns: 0,
                 ..valid
             },
-            ViemInsertTableV1 {
+            ViemInsertTable {
                 columns: 21,
                 ..valid
             },
-            ViemInsertTableV1 {
+            ViemInsertTable {
                 body_rows: 0,
                 ..valid
             },
-            ViemInsertTableV1 {
+            ViemInsertTable {
                 body_rows: 51,
                 ..valid
             },
         ] {
-            let mut out = ViemCoreOutcomeV1::default();
+            let mut out = ViemCoreOutcome::default();
             assert_eq!(
                 unsafe { viem_core_view_insert_table(f.handle, f.view, &invalid, &mut out) },
                 ViemStatus::InvalidArgument
@@ -171,9 +158,8 @@ fn insertion_rejects_invalid_sizes_and_stale_picker_without_changes() {
             assert_eq!(context(&f), original);
             assert_eq!(source(&f), b"alpha beta");
         }
-        let mut out = ViemCoreOutcomeV1::default();
-        let place = ViemPlaceCursorV1 {
-            struct_size: VIEM_PLACE_CURSOR_V1_SIZE,
+        let mut out = ViemCoreOutcome::default();
+        let place = ViemPlaceCursor {
             document_revision: original.selection.document_revision,
             text_offset: 3,
             affinity: VIEM_BOUNDARY_AFFINITY_DOWNSTREAM,
@@ -190,7 +176,7 @@ fn insertion_rejects_invalid_sizes_and_stale_picker_without_changes() {
         );
         assert_eq!(context(&f), moved);
         assert_eq!(source(&f), b"alpha beta");
-        let current = ViemInsertTableV1 {
+        let current = ViemInsertTable {
             expected_selection: moved.selection,
             ..valid
         };
@@ -217,27 +203,19 @@ fn exact_context_actions_validate_fields_and_header_constraints() {
     );
     assert_eq!(original.flags, VIEM_TABLE_IN_TABLE | VIEM_TABLE_HEADER);
     assert_eq!(original.alignment, VIEM_TABLE_ALIGN_LEFT);
-    let mut out = ViemCoreOutcomeV1::default();
+    let mut out = ViemCoreOutcome::default();
     let valid = action(original, VIEM_TABLE_INSERT_ROW_BELOW);
     for invalid in [
-        ViemTableActionV1 {
-            struct_size: 0,
-            ..valid
-        },
-        ViemTableActionV1 {
-            reserved: 1,
-            ..valid
-        },
-        ViemTableActionV1 {
+        ViemTableAction {
             action: 99,
             ..valid
         },
-        ViemTableActionV1 {
+        ViemTableAction {
             alignment: 1,
             ..valid
         },
-        ViemTableActionV1 {
-            expected: ViemTableContextV1 {
+        ViemTableAction {
+            expected: ViemTableContext {
                 flags: original.flags | 128,
                 ..original
             },
@@ -252,19 +230,19 @@ fn exact_context_actions_validate_fields_and_header_constraints() {
         assert_eq!(context(&f), original);
     }
     for wrong in [
-        ViemTableContextV1 {
+        ViemTableContext {
             rows: 9,
             ..original
         },
-        ViemTableContextV1 {
+        ViemTableContext {
             table_id: u64::MAX,
             ..original
         },
-        ViemTableContextV1 {
+        ViemTableContext {
             alignment: VIEM_TABLE_ALIGN_CENTER,
             ..original
         },
-        ViemTableContextV1 {
+        ViemTableContext {
             flags: VIEM_TABLE_IN_TABLE,
             ..original
         },
@@ -317,7 +295,7 @@ fn geometry_is_snapshot_bound_and_short_or_aliased_buffers_are_untouched() {
         .all(|c| c.rect.width > 0.0 && c.rect.height > 0.0));
     assert_eq!(all[0].rect.y, all[2].rect.y);
     assert_eq!(all[0].table_rect, all[8].table_rect);
-    let sentinel = ViemTableCellV1 {
+    let sentinel = ViemTableCell {
         cell_id: u64::MAX,
         ..Default::default()
     };
@@ -338,7 +316,7 @@ fn geometry_is_snapshot_bound_and_short_or_aliased_buffers_are_untouched() {
     );
     assert_eq!(required, 9);
     assert_eq!(small, [sentinel]);
-    let stale = ViemLayoutSnapshotIdentityV1 {
+    let stale = ViemLayoutSnapshotIdentity {
         layout_revision: identity.layout_revision + 1,
         ..identity
     };
@@ -360,7 +338,7 @@ fn geometry_is_snapshot_bound_and_short_or_aliased_buffers_are_untouched() {
     let mut backing = [0u64; 128];
     let p = backing.as_mut_ptr();
     unsafe {
-        (p as *mut ViemLayoutSnapshotIdentityV1).write(identity);
+        (p as *mut ViemLayoutSnapshotIdentity).write(identity);
     }
     let saved = backing;
     assert_eq!(
@@ -388,12 +366,12 @@ fn geometry_is_snapshot_bound_and_short_or_aliased_buffers_are_untouched() {
 fn rectangle_selection_exports_exact_text_and_all_cell_ranges() {
     let f = table_ffi_fixture(TABLE, VIEM_FORMAT_MARKDOWN);
     let request = select(&f);
-    let mut out = ViemCoreOutcomeV1::default();
+    let mut out = ViemCoreOutcome::default();
     assert_eq!(
         unsafe { viem_core_view_select_table_cells(f.handle, f.view, &request, &mut out) },
         ViemStatus::Ok
     );
-    let mut actual = ViemTableSelectionV1::default();
+    let mut actual = ViemTableSelection::default();
     assert_eq!(
         unsafe { viem_core_view_table_selection(f.handle, f.view, &mut actual) },
         ViemStatus::Ok
@@ -453,7 +431,7 @@ fn rectangle_selection_exports_exact_text_and_all_cell_ranges() {
         ViemStatus::BufferTooSmall
     );
     assert_eq!(count, 6);
-    let mut ranges = vec![ViemFormattedUtf8RangeV1::default(); count as usize];
+    let mut ranges = vec![ViemFormattedUtf8Range::default(); count as usize];
     assert_eq!(
         unsafe {
             viem_core_view_copy_table_selection_ranges(
@@ -474,12 +452,8 @@ fn rectangle_selection_exports_exact_text_and_all_cell_ranges() {
         );
     }
     for invalid in [
-        ViemTableSelectionV1 {
+        ViemTableSelection {
             active: 2,
-            ..actual
-        },
-        ViemTableSelectionV1 {
-            struct_size: 0,
             ..actual
         },
     ] {
@@ -488,7 +462,7 @@ fn rectangle_selection_exports_exact_text_and_all_cell_ranges() {
             ViemStatus::InvalidArgument
         );
     }
-    let stale = ViemTableSelectionV1 {
+    let stale = ViemTableSelection {
         active_column: 0,
         ..actual
     };
@@ -507,7 +481,7 @@ fn rectangle_selection_exports_exact_text_and_all_cell_ranges() {
         ViemStatus::StaleRevision
     );
     assert!(sentinel.iter().all(|byte| *byte == 0xff));
-    let invalid = ViemTableSelectionV1 {
+    let invalid = ViemTableSelection {
         active_row: 999,
         ..actual
     };
@@ -537,15 +511,14 @@ fn null_misaligned_and_overlapping_requests_fail_before_mutation() {
         unsafe { viem_core_view_table_context(f.handle, f.view, p.cast::<u8>().add(1).cast()) },
         ViemStatus::InvalidArgument
     );
-    let request = ViemInsertTableV1 {
-        struct_size: VIEM_INSERT_TABLE_V1_SIZE,
+    let request = ViemInsertTable {
         expected_selection: original.selection,
         columns: 3,
         body_rows: 4,
         ..Default::default()
     };
     unsafe {
-        (p as *mut ViemInsertTableV1).write(request);
+        (p as *mut ViemInsertTable).write(request);
     }
     let saved = backing;
     assert_eq!(
@@ -568,7 +541,7 @@ fn null_misaligned_and_overlapping_requests_fail_before_mutation() {
         },
         ViemStatus::StaleRevision
     );
-    assert_eq!(out, ViemTableContextV1::default());
+    assert_eq!(out, ViemTableContext::default());
     assert_eq!(source(&f), b"text");
 }
 
@@ -580,8 +553,7 @@ fn selected_ranges_include_offscreen_cells_and_failed_copies_do_not_write() {
     }
     let f = table_ffi_fixture(text.as_bytes(), VIEM_FORMAT_MARKDOWN);
     let c = context(&f);
-    let selection = ViemTableSelectionV1 {
-        struct_size: VIEM_TABLE_SELECTION_V1_SIZE,
+    let selection = ViemTableSelection {
         active: 1,
         document_id: c.selection.document_id,
         document_revision: c.selection.document_revision,
@@ -591,7 +563,7 @@ fn selected_ranges_include_offscreen_cells_and_failed_copies_do_not_write() {
         active_row: 350,
         active_column: 1,
     };
-    let mut out = ViemCoreOutcomeV1::default();
+    let mut out = ViemCoreOutcome::default();
     assert_eq!(
         unsafe { viem_core_view_select_table_cells(f.handle, f.view, &selection, &mut out) },
         ViemStatus::Ok
@@ -611,7 +583,7 @@ fn selected_ranges_include_offscreen_cells_and_failed_copies_do_not_write() {
         ViemStatus::BufferTooSmall
     );
     assert_eq!(count, 351);
-    let sentinel = ViemFormattedUtf8RangeV1 {
+    let sentinel = ViemFormattedUtf8Range {
         utf8_start: u64::MAX,
         ..Default::default()
     };
@@ -630,7 +602,7 @@ fn selected_ranges_include_offscreen_cells_and_failed_copies_do_not_write() {
         ViemStatus::BufferTooSmall
     );
     assert_eq!(short, [sentinel; 2]);
-    let mut ranges = vec![ViemFormattedUtf8RangeV1::default(); count as usize];
+    let mut ranges = vec![ViemFormattedUtf8Range::default(); count as usize];
     assert_eq!(
         unsafe {
             viem_core_view_copy_table_selection_ranges(
@@ -648,7 +620,7 @@ fn selected_ranges_include_offscreen_cells_and_failed_copies_do_not_write() {
         .windows(2)
         .all(|pair| pair[0].utf8_end < pair[1].utf8_start));
     let mut aliased = selection;
-    let p = &mut aliased as *mut ViemTableSelectionV1;
+    let p = &mut aliased as *mut ViemTableSelection;
     assert_eq!(
         unsafe {
             viem_core_view_copy_table_selection_text(
@@ -671,11 +643,10 @@ fn selected_ranges_include_offscreen_cells_and_failed_copies_do_not_write() {
 #[test]
 fn selection_reaching_into_a_table_exports_its_complete_cells() {
     let f = table_ffi_fixture(b"before\n\n| A | longer header |\n| - | - |\n| x | y |\n\nafter", VIEM_FORMAT_MARKDOWN);
-    let mut outcome = ViemCoreOutcomeV1::default();
+    let mut outcome = ViemCoreOutcome::default();
     // From "fore" into "longer header" in the formatted text "before\nA\nlonger header\nx\ny\nafter".
     for (text_offset, flags) in [(2, 0), (12, VIEM_PLACE_CURSOR_EXTEND_SELECTION)] {
-        let place = ViemPlaceCursorV1 {
-            struct_size: VIEM_PLACE_CURSOR_V1_SIZE,
+        let place = ViemPlaceCursor {
             document_revision: state(&f).document_revision,
             text_offset,
             affinity: VIEM_BOUNDARY_AFFINITY_DOWNSTREAM,
@@ -684,11 +655,11 @@ fn selection_reaching_into_a_table_exports_its_complete_cells() {
         };
         assert_eq!(unsafe { viem_core_view_place_cursor(f.handle, f.view, &place, &mut outcome) }, ViemStatus::Ok);
     }
-    let mut info = ViemVisualSelectionInfoV1::default();
+    let mut info = ViemVisualSelectionInfo::default();
     assert_eq!(unsafe { viem_core_view_visual_selection_info(f.handle, f.view, &mut info) }, ViemStatus::Ok);
-    let mut segments = vec![ViemVisualSelectionSegmentV1::default(); info.segment_count as usize];
-    let mut rectangles = vec![ViemVisualSelectionRectangleV1::default(); info.rectangle_count as usize];
-    let mut copied = ViemVisualSelectionInfoV1::default();
+    let mut segments = vec![ViemVisualSelectionSegment::default(); info.segment_count as usize];
+    let mut rectangles = vec![ViemVisualSelectionRectangle::default(); info.rectangle_count as usize];
+    let mut copied = ViemVisualSelectionInfo::default();
     assert_eq!(
         unsafe {
             viem_core_view_copy_visual_selection(f.handle, f.view, &info.identity, segments.as_mut_ptr(),
@@ -699,7 +670,7 @@ fn selection_reaching_into_a_table_exports_its_complete_cells() {
     assert_eq!((segments[0].text_start, segments[0].text_end), (2, 26), "the whole table is selected");
     let cells = cells(&f);
     assert_eq!(cells.len(), 4);
-    let inside = |inner: &ViemLayoutRectV1, outer: &ViemLayoutRectV1| inner.x >= outer.x && inner.y >= outer.y
+    let inside = |inner: &ViemLayoutRect, outer: &ViemLayoutRect| inner.x >= outer.x && inner.y >= outer.y
         && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height;
     for cell in &cells {
         let painted = rectangles.iter().filter(|rectangle| inside(&rectangle.rect, &cell.rect)).collect::<Vec<_>>();
@@ -711,8 +682,7 @@ fn selection_reaching_into_a_table_exports_its_complete_cells() {
 
 fn select_cells(f: &TableFfiFixture, anchor: (u64, u64), active: (u64, u64)) {
     let c = context(f);
-    let request = ViemTableSelectionV1 {
-        struct_size: VIEM_TABLE_SELECTION_V1_SIZE,
+    let request = ViemTableSelection {
         active: 1,
         document_id: c.selection.document_id,
         document_revision: c.selection.document_revision,
@@ -722,14 +692,14 @@ fn select_cells(f: &TableFfiFixture, anchor: (u64, u64), active: (u64, u64)) {
         active_row: active.0,
         active_column: active.1,
     };
-    let mut out = ViemCoreOutcomeV1::default();
+    let mut out = ViemCoreOutcome::default();
     assert_eq!(
         unsafe { viem_core_view_select_table_cells(f.handle, f.view, &request, &mut out) },
         ViemStatus::Ok
     );
 }
 fn selected_cells(f: &TableFfiFixture) -> Option<((u64, u64), (u64, u64))> {
-    let mut value = ViemTableSelectionV1::default();
+    let mut value = ViemTableSelection::default();
     assert_eq!(
         unsafe { viem_core_view_table_selection(f.handle, f.view, &mut value) },
         ViemStatus::Ok
@@ -739,11 +709,11 @@ fn selected_cells(f: &TableFfiFixture) -> Option<((u64, u64), (u64, u64))> {
         (value.active_row, value.active_column),
     ))
 }
-fn perform(f: &TableFfiFixture, expected: ViemTableContextV1, kind: u32) -> ViemStatus {
-    let mut out = ViemCoreOutcomeV1::default();
+fn perform(f: &TableFfiFixture, expected: ViemTableContext, kind: u32) -> ViemStatus {
+    let mut out = ViemCoreOutcome::default();
     unsafe { viem_core_view_table_action(f.handle, f.view, &action(expected, kind), &mut out) }
 }
-fn span(c: &ViemTableContextV1) -> (u64, u64, u64, u64) {
+fn span(c: &ViemTableContext) -> (u64, u64, u64, u64) {
     (c.row, c.row_end, c.column, c.column_end)
 }
 
@@ -761,8 +731,8 @@ fn selected_complete_rows_are_one_target_and_insertions_keep_the_selection() {
     assert_eq!(rows.flags, VIEM_TABLE_IN_TABLE | VIEM_TABLE_ROW_SELECTION);
     assert_eq!(span(&rows), (1, 3, 0, 3));
     for stale in [
-        ViemTableContextV1 { row_end: 2, ..rows },
-        ViemTableContextV1 { flags: rows.flags | VIEM_TABLE_COLUMN_SELECTION, ..rows },
+        ViemTableContext { row_end: 2, ..rows },
+        ViemTableContext { flags: rows.flags | VIEM_TABLE_COLUMN_SELECTION, ..rows },
     ] {
         assert_eq!(perform(&f, stale, VIEM_TABLE_DELETE_ROW), ViemStatus::StaleRevision);
     }
@@ -846,21 +816,21 @@ fn single_cell_contexts_reject_group_spans() {
     let f = table_ffi_fixture(TABLE, VIEM_FORMAT_MARKDOWN);
     let single = context(&f);
     for invalid in [
-        ViemTableContextV1 { row_end: 2, ..single },
-        ViemTableContextV1 { column_end: 0, ..single },
+        ViemTableContext { row_end: 2, ..single },
+        ViemTableContext { column_end: 0, ..single },
     ] {
         assert_eq!(perform(&f, invalid, VIEM_TABLE_INSERT_ROW_BELOW), ViemStatus::InvalidArgument);
     }
     assert_eq!(
-        perform(&f, ViemTableContextV1 { flags: single.flags | VIEM_TABLE_ROW_SELECTION, ..single }, VIEM_TABLE_DELETE_ROW),
+        perform(&f, ViemTableContext { flags: single.flags | VIEM_TABLE_ROW_SELECTION, ..single }, VIEM_TABLE_DELETE_ROW),
         ViemStatus::StaleRevision
     );
     assert_eq!(source(&f), TABLE);
 }
 
-fn align(f: &TableFfiFixture, expected: ViemTableContextV1, alignment: u32) -> ViemStatus {
-    let mut out = ViemCoreOutcomeV1::default();
-    let request = ViemTableActionV1 { alignment, ..action(expected, VIEM_TABLE_SET_ALIGNMENT) };
+fn align(f: &TableFfiFixture, expected: ViemTableContext, alignment: u32) -> ViemStatus {
+    let mut out = ViemCoreOutcome::default();
+    let request = ViemTableAction { alignment, ..action(expected, VIEM_TABLE_SET_ALIGNMENT) };
     unsafe { viem_core_view_table_action(f.handle, f.view, &request, &mut out) }
 }
 
@@ -871,7 +841,7 @@ fn selected_column_groups_share_one_alignment_and_keep_the_selection() {
     let columns = context(&f);
     assert_eq!(columns.alignment, VIEM_TABLE_ALIGN_MIXED);
     assert_eq!(align(&f, columns, VIEM_TABLE_ALIGN_MIXED), ViemStatus::InvalidArgument);
-    assert_eq!(align(&f, ViemTableContextV1 { alignment: VIEM_TABLE_ALIGN_RIGHT, ..columns }, VIEM_TABLE_ALIGN_LEFT),
+    assert_eq!(align(&f, ViemTableContext { alignment: VIEM_TABLE_ALIGN_RIGHT, ..columns }, VIEM_TABLE_ALIGN_LEFT),
         ViemStatus::StaleRevision);
     assert_eq!(align(&f, columns, VIEM_TABLE_ALIGN_RIGHT), ViemStatus::Ok);
     assert_eq!(

@@ -93,7 +93,6 @@ struct CoreTextMeasurementProviderTests {
     let provider = CoreTextMeasurementProvider(measurementEnvironmentID: 712, initialMetricsGeneration: 1,
       shapingDidBegin: { try fault.begin() })
     var options = ViemDocumentOptions()
-    options.struct_size = UInt32(MemoryLayout<ViemDocumentOptions>.size)
     options.encoding = UInt32(VIEM_ENCODING_UTF8)
     options.format = UInt32(VIEM_FORMAT_PLAIN_TEXT)
     var core: UInt64 = 0, revision: UInt64 = 0
@@ -104,17 +103,14 @@ struct CoreTextMeasurementProviderTests {
     #expect(opened == VIEM_STATUS_OK)
     defer { #expect(viem_core_destroy(core) == VIEM_STATUS_OK) }
     var table = provider.makeProviderTable()
-    var viewOptions = ViemViewOptionsV1()
-    viewOptions.struct_size = UInt32(MemoryLayout<ViemViewOptionsV1>.size)
+    var viewOptions = ViemViewOptions()
     viewOptions.execution_context = UInt32(VIEM_LAYOUT_EXECUTION_FRONTEND_MAIN)
     viewOptions.width = 500; viewOptions.height = 200
     var view: UInt64 = 0
-    var outcome = ViemCoreOutcomeV1()
-    outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+    var outcome = ViemCoreOutcome()
     #expect(viem_core_view_add(core, &viewOptions, &table, &view, &outcome) == VIEM_STATUS_OK)
     #expect(fault.calls == 2)
-    var info = ViemLayoutSnapshotInfoV1()
-    info.struct_size = UInt32(MemoryLayout<ViemLayoutSnapshotInfoV1>.size)
+    var info = ViemLayoutSnapshotInfo()
     #expect(viem_core_view_layout_snapshot_info(core, view, &info) == VIEM_STATUS_OK)
     #expect(info.cluster_count > 0)
     var required: UInt64 = 0
@@ -408,7 +404,7 @@ struct CoreTextMeasurementProviderTests {
     let table = provider.makeProviderTable()
     let retain = try #require(table.retain_render_runs)
     let release = try #require(table.release_render_runs)
-    var kept: [(lease: UnsafeMutableRawPointer, handles: [ViemRenderRunHandleV1])] = []
+    var kept: [(lease: UnsafeMutableRawPointer, handles: [ViemRenderRunHandle])] = []
     defer { for item in kept { release(item.lease) } }
     for index in 0..<512 {
       let result = try shape(provider: provider, text: "lease \(index) 👩🏽‍💻",
@@ -527,7 +523,7 @@ struct CoreTextMeasurementProviderTests {
     let table = provider.makeProviderTable()
     let retain = try #require(table.retain_render_runs)
     let release = try #require(table.release_render_runs)
-    func retainedShape() throws -> (UnsafeMutableRawPointer, [ViemRenderRunHandleV1]) {
+    func retainedShape() throws -> (UnsafeMutableRawPointer, [ViemRenderRunHandle]) {
       let result = try shape(provider: provider, text: "same glyphs", globalStart: 0,
         purpose: UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA))
       let handles = result.clusters.filter { $0.hasRenderRun == 1 }.map(\.renderRun)
@@ -716,21 +712,21 @@ private final class NativeShapingFault: @unchecked Sendable {
 }
 
 private struct OwnedCluster {
-  let value: ViemShapedClusterV1
-  let carets: [ViemClusterCaretStopV1]
+  let value: ViemShapedCluster
+  let carets: [ViemClusterCaretStop]
 
   var textStart: UInt64 { value.text_start }
   var textEnd: UInt64 { value.text_end }
   var advance: Float { value.advance }
-  var metrics: ViemTextMetricsV1 { value.metrics }
+  var metrics: ViemTextMetrics { value.metrics }
   var bidiLevel: UInt32 { value.bidi_level }
   var caretStopCount: UInt64 { value.caret_stop_count }
   var hasRenderRun: UInt32 { value.has_render_run }
-  var renderRun: ViemRenderRunHandleV1 { value.render_run }
+  var renderRun: ViemRenderRunHandle { value.render_run }
 }
 
 private struct ShapeResult {
-  let response: ViemShapeResponseV1
+  let response: ViemShapeResponse
   let clusters: [OwnedCluster]
   let visualOrder: [Int]
 }
@@ -757,14 +753,14 @@ private func shape(
   let beforeBytes = Array(contextBefore.utf8)
   let afterBytes = Array(contextAfter.utf8)
   let familyBytes = Array(fontFamily.utf8)
-  var featureValues: [ViemOpenTypeFeatureV1] = []
+  var featureValues: [ViemOpenTypeFeature] = []
   if let openTypeFeature {
-    var feature = ViemOpenTypeFeatureV1()
+    var feature = ViemOpenTypeFeature()
     feature.tag = openTypeFeature.tag
     feature.value = openTypeFeature.value
     featureValues.append(feature)
   }
-  var response = ViemShapeResponseV1()
+  var response = ViemShapeResponse()
 
   let status: UInt32 = textBytes.withUnsafeBufferPointer { textBuffer in
     beforeBytes.withUnsafeBufferPointer { beforeBuffer in
@@ -775,8 +771,7 @@ private func shape(
             family.data = familyBuffer.baseAddress
             family.length = UInt64(familyBuffer.count)
 
-            var style = ViemResolvedTextStyleV1()
-            style.struct_size = UInt32(MemoryLayout<ViemResolvedTextStyleV1>.size)
+            var style = ViemResolvedTextStyle()
             style.slant = UInt32(VIEM_FONT_SLANT_UPRIGHT)
             style.direction = UInt32(VIEM_TEXT_DIRECTION_AUTO)
             style.size = fontSize
@@ -788,8 +783,7 @@ private func shape(
             style.features = featureBuffer.baseAddress
             style.feature_count = UInt64(featureBuffer.count)
 
-            var request = ViemShapeRequestV1()
-            request.struct_size = UInt32(MemoryLayout<ViemShapeRequestV1>.size)
+            var request = ViemShapeRequest()
             request.purpose = purpose
             request.document_id = 7
             request.document_revision = 9
@@ -815,8 +809,7 @@ private func shape(
             if let styleRun {
               var largeStyle = style
               largeStyle.size = styleRun.size
-              var run = ViemShapeStyleRunV1()
-              run.struct_size = UInt32(MemoryLayout<ViemShapeStyleRunV1>.size)
+              var run = ViemShapeStyleRun()
               run.text_start = styleRun.range.lowerBound
               run.text_end = styleRun.range.upperBound
               run.style = largeStyle

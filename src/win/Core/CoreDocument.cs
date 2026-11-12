@@ -51,9 +51,9 @@ internal sealed unsafe partial class CoreDocument : IDisposable
     private string? editingConfigurationKey;
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void StartupDiagnostic(nint context, ulong line, byte* message, ulong length);
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate void StyleDefaultsDiagnostic(nint context, byte* message, ulong length);
-    public ViemDocumentStateV1 State
+    public ViemDocumentState State
     {
-        get { var state = New<ViemDocumentStateV1>(); Check(viem_core_document_state(Handle, &state), "Read document"); return state; }
+        get { var state = new ViemDocumentState(); Check(viem_core_document_state(Handle, &state), "Read document"); return state; }
     }
     public bool IsDirty => (State.flags & VIEM_DOCUMENT_STATE_IS_DIRTY) != 0;
     public bool IsReadOnly => (State.flags & VIEM_DOCUMENT_STATE_READ_ONLY) != 0;
@@ -65,7 +65,7 @@ internal sealed unsafe partial class CoreDocument : IDisposable
         using var startup = Diagnostics.StartupPerformance.Measure("document.create");
         if (viem_core_abi_version() != VIEM_CORE_ABI_VERSION) throw new InvalidOperationException("Rebuild Viem and its Rust library together: the ABI versions differ.");
         FilePath = path;
-        var options = New<ViemDocumentOptions>();
+        var options = new ViemDocumentOptions();
         options.format = format ?? FormatForPath(path);
         // Markdown Preview off opens literal Code; filename detection selects Markdown.
         if (format == null && options.format == VIEM_FORMAT_MARKDOWN && !markdownFormattedView)
@@ -104,16 +104,16 @@ internal sealed unsafe partial class CoreDocument : IDisposable
     public string FormattedRange(ulong start, ulong end)
     {
         var state = State;
-        var request = New<ViemFormattedUtf8RangeV1>();
-        request.identity = New<ViemFormattedSnapshotIdentityV1>();
+        var request = new ViemFormattedUtf8Range();
+        request.identity = new ViemFormattedSnapshotIdentity();
         request.identity.document_id = state.document_id; request.identity.document_revision = state.document_revision;
         request.utf8_start = start; request.utf8_end = end;
         // Capture by value; lambda locals may safely have their addresses taken.
         return Encoding.UTF8.GetString(Copy((p, n, r) => { var q = request; return viem_core_copy_formatted_utf8_range(Handle, &q, p, n, r); }));
     }
-    public void MarkSaved(ViemDocumentStateV1 state)
+    public void MarkSaved(ViemDocumentState state)
     {
-        var saved = New<ViemMarkSavedV1>(); saved.document_id = state.document_id; saved.document_revision = state.document_revision;
+        var saved = new ViemMarkSaved(); saved.document_id = state.document_id; saved.document_revision = state.document_revision;
         Check(viem_core_mark_saved(Handle, &saved), "Mark saved"); NotifyChanged();
     }
     public void MarkRecovered() { var s = State; Check(viem_core_mark_recovered(Handle, s.document_id, s.document_revision), "Restore recovery state"); NotifyChanged(); }

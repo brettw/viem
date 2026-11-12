@@ -9,9 +9,9 @@ namespace Viem.Windows.Shell;
 
 internal sealed partial class EditorWindow
 {
-    private static unsafe ViemViewRestorationV1 CaptureReloadPosition(EditorPane pane)
+    private static unsafe ViemViewRestoration CaptureReloadPosition(EditorPane pane)
     {
-        var state = New<ViemViewRestorationV1>();
+        var state = new ViemViewRestoration();
         Check(viem_core_view_capture_restoration(pane.Document.Handle, pane.View!.Id, &state), "Capture reload test");
         return state;
     }

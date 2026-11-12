@@ -53,7 +53,6 @@ enum EVChromeStyleResolver {
       background: theme.background.color, padding: NSEdgeInsets(top: 5, left: 10.5, bottom: 5, right: 10.5))
     let emergency = EVChromeStyles(statusBar: fallback, statusCommand: fallback)
     var options = ViemDocumentOptions()
-    options.struct_size = UInt32(MemoryLayout<ViemDocumentOptions>.size)
     options.encoding = UInt32(VIEM_ENCODING_UTF8)
     options.format = UInt32(VIEM_FORMAT_PLAIN_TEXT)
     options.file_format = UInt32(VIEM_FILE_FORMAT_UNIX)
@@ -67,19 +66,17 @@ enum EVChromeStyleResolver {
           UInt64(raw.count), nil, nil)
       }
     }
-    var info = ViemStyleSheetInfoV1()
-    info.struct_size = UInt32(MemoryLayout<ViemStyleSheetInfoV1>.size)
+    var info = ViemStyleSheetInfo()
     guard viem_core_style_sheet_info(core, 0, &info) == UInt32(VIEM_STATUS_OK),
           info.definition_count <= 4096, info.property_count <= 200_000,
           info.value_item_count <= 200_000, info.dependency_count <= 200_000,
           info.string_bytes <= 4 * 1024 * 1024 else { return emergency }
-    var definitions = Array(repeating: ViemStyleDefinitionV1(), count: Int(info.definition_count))
-    var properties = Array(repeating: ViemStylePropertyV1(), count: Int(info.property_count))
-    var items = Array(repeating: ViemStyleValueItemV1(), count: Int(info.value_item_count))
-    var dependencies = Array(repeating: ViemStyleDependencyV1(), count: Int(info.dependency_count))
+    var definitions = Array(repeating: ViemStyleDefinition(), count: Int(info.definition_count))
+    var properties = Array(repeating: ViemStyleProperty(), count: Int(info.property_count))
+    var items = Array(repeating: ViemStyleValueItem(), count: Int(info.value_item_count))
+    var dependencies = Array(repeating: ViemStyleDependency(), count: Int(info.dependency_count))
     var strings = Array(repeating: UInt8(0), count: Int(info.string_bytes))
-    var copied = ViemStyleSheetInfoV1()
-    copied.struct_size = UInt32(MemoryLayout<ViemStyleSheetInfoV1>.size)
+    var copied = ViemStyleSheetInfo()
     var expected = info.identity
     let status = definitions.withUnsafeMutableBufferPointer { d in
       properties.withUnsafeMutableBufferPointer { p in
@@ -95,7 +92,7 @@ enum EVChromeStyleResolver {
       }
     }
     guard status == UInt32(VIEM_STATUS_OK) else { return emergency }
-    func string(_ ref: ViemStyleStringRefV1) -> String {
+    func string(_ ref: ViemStyleStringRef) -> String {
       guard ref.offset <= UInt64(strings.count), ref.length <= UInt64(strings.count) - ref.offset else { return "" }
       return String(decoding: strings[Int(ref.offset)..<Int(ref.offset + ref.length)], as: UTF8.self)
     }
