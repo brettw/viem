@@ -1282,8 +1282,12 @@ final class EVFallbackFontsController: NSViewController, NSTableViewDataSource, 
     }
     func numberOfRows(in tableView: NSTableView) -> Int { fallbacks.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let label = NSTextField(labelWithString: "\(row + 1).  \(fallbacks[row])")
+        // Reused labels stay alive while the table's key-view links can name them.
+        let identifier = NSUserInterfaceItemIdentifier("fallback")
+        let label = tableView.makeView(withIdentifier: identifier, owner: nil) as? NSTextField ?? NSTextField(labelWithString: "")
+        label.identifier = identifier
         label.lineBreakMode = .byTruncatingTail
+        label.stringValue = "\(row + 1).  \(fallbacks[row])"
         return label
     }
     func tableViewSelectionDidChange(_ notification: Notification) { refreshSelection() }

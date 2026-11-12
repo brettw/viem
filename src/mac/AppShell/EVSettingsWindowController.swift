@@ -172,18 +172,25 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   func numberOfRows(in tableView: NSTableView) -> Int { 3 }
   func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView?
   {
-    let image = NSImageView(
-      image: NSImage(
-        systemSymbolName: ["rectangle.inset.filled", "paintpalette", "text.cursor"][row], accessibilityDescription: nil)
-        ?? NSImage())
-    image.contentTintColor = .secondaryLabelColor
-    let label = NSTextField(labelWithString: ["View", "Theme", "Editing"][row])
-    label.font = .systemFont(ofSize: 13, weight: .medium)
-    let row = NSStackView(views: [image, label])
-    row.spacing = 9
-    row.alignment = .centerY
-    image.widthAnchor.constraint(equalToConstant: 18).isActive = true
-    return row
+    // Reused cells stay alive while the table's key-view links can name them.
+    let identifier = NSUserInterfaceItemIdentifier("category")
+    let cell = tableView.makeView(withIdentifier: identifier, owner: nil) as? NSStackView ?? {
+      let image = NSImageView()
+      image.contentTintColor = .secondaryLabelColor
+      image.widthAnchor.constraint(equalToConstant: 18).isActive = true
+      let label = NSTextField(labelWithString: "")
+      label.font = .systemFont(ofSize: 13, weight: .medium)
+      let cell = NSStackView(views: [image, label])
+      cell.identifier = identifier
+      cell.spacing = 9
+      cell.alignment = .centerY
+      return cell
+    }()
+    (cell.arrangedSubviews[0] as? NSImageView)?.image = NSImage(
+      systemSymbolName: ["rectangle.inset.filled", "paintpalette", "text.cursor"][row], accessibilityDescription: nil)
+      ?? NSImage()
+    (cell.arrangedSubviews[1] as? NSTextField)?.stringValue = ["View", "Theme", "Editing"][row]
+    return cell
   }
   func tableViewSelectionDidChange(_ notification: Notification) {
     guard sidebar.selectedRow >= 0 else { return }

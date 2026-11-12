@@ -51,7 +51,11 @@ final class EVDiffCommitPicker: NSObject, NSTableViewDataSource, NSTableViewDele
   func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
     let commit = commits[row]
     let hash = commit.short.padding(toLength: hashWidth, withPad: " ", startingAt: 0)
-    let label = NSTextField(labelWithString: "\(hash)  \(commit.title)")
+    // Reused labels stay alive while the table's key-view links can name them.
+    let identifier = NSUserInterfaceItemIdentifier("commit")
+    let label = tableView.makeView(withIdentifier: identifier, owner: nil) as? NSTextField ?? NSTextField(labelWithString: "")
+    label.identifier = identifier
+    label.stringValue = "\(hash)  \(commit.title)"
     let text = NSMutableAttributedString(attributedString: label.attributedStringValue)
     let size = label.font?.pointSize ?? NSFont.systemFontSize
     text.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: size, weight: .regular),
