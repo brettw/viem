@@ -106,7 +106,7 @@ fn abi_create_validates_pointers_and_every_option_domain() {
         unsafe { viem_core_create(ptr::null(), 0, ptr::null(), &mut handle, &mut revision) };
     assert_eq!(status, ViemStatus::NullPointer);
 
-    for (mut invalid, expected) in [
+    for (invalid, expected) in [
         (
             ViemDocumentOptions {
                 encoding: 99,
@@ -131,14 +131,10 @@ fn abi_create_validates_pointers_and_every_option_domain() {
     ] {
         handle = 99;
         revision = 99;
-        // Keep the value mutable to demonstrate that the implementation only
-        // reads the versioned options prefix.
-        let options_pointer = &mut invalid as *mut ViemDocumentOptions;
         // SAFETY: All pointers refer to live values. Each options value is
         // structurally readable but contains one intentionally invalid field.
-        let status = unsafe {
-            viem_core_create(ptr::null(), 0, options_pointer, &mut handle, &mut revision)
-        };
+        let status =
+            unsafe { viem_core_create(ptr::null(), 0, &invalid, &mut handle, &mut revision) };
         assert_eq!(status, expected);
         assert_eq!((handle, revision), (0, 0));
     }

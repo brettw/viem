@@ -615,13 +615,17 @@ fn highlighting_settles_when_a_collapsed_diff_spans_background_chunks() {
         assert!(0 < visible.start && visible.start < chunk_end && chunk_end < visible.end);
         // Enter the idle phase without waiting for the edit-pause timer.
         core.syntax.input_changed = Some((input.identity(), Instant::now() - COMPLETE_SYNTAX_EDIT_PAUSE));
+        // Frames before the idle phase request the visible text as layout
+        // settles, a number that depends on scheduling.
+        let before = core.syntax_statistics().requests;
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let (_, wait) = core.prepare_view_syntax_wait(view, deadline).unwrap();
             if let Some(wait) = wait { wait.wait_until(deadline); }
             if core.syntax.complete_progress == Some((input.identity(), input.byte_len()))
                 && !core.syntax.service.has_pending_work() { break; }
-            assert!(core.syntax_statistics().requests <= 6, "idle highlighting repeatedly requested the same bytes");
+            // One request for each of the two background chunks.
+            assert!(core.syntax_statistics().requests - before <= 2, "idle highlighting repeatedly requested the same bytes");
             assert!(Instant::now() < deadline, "background highlighting did not finish");
             std::thread::yield_now();
         }
