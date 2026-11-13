@@ -215,7 +215,7 @@ fn exercise_syntax_finishing_during_layout(
         assert!(core.poll_syntax(), "the completed syntax remains ready for the next publication");
     }
     assert_eq!(core.syntax_statistics().publications, 1);
-    assert_eq!(core.syntax.service.runs(core.syntax_input().identity()).len(), 2);
+    assert_eq!(core.syntax.code.service.runs(core.syntax_input().identity()).len(), 2);
     assert_eq!(core.syntax_style_names(), ["@provider.undefined", "Keyword"]);
     let sheet = core.document.projection().style_sheet();
     let generated = code_style::resolve_name(sheet, "@provider.undefined")
@@ -582,12 +582,12 @@ fn complete_highlighting_is_requested_in_bounded_chunks_once_each() {
     // Polling after completion requests nothing further. Earlier requests
     // can outnumber the analyzed ranges: while the shared workers are busy,
     // a newer pending request replaces one no worker has started.
-    let requests = core.syntax.service.statistics.requests;
+    let requests = core.syntax.code.service.statistics.requests;
     for _ in 0..20 {
         core.poll_syntax();
         std::thread::sleep(Duration::from_millis(2));
     }
-    assert_eq!(core.syntax.service.statistics.requests, requests);
+    assert_eq!(core.syntax.code.service.statistics.requests, requests);
 }
 
 #[test]
@@ -614,7 +614,7 @@ fn highlighting_settles_when_a_collapsed_diff_spans_background_chunks() {
         let visible = core.visible_syntax_range(&input, &core.views[&view]);
         assert!(0 < visible.start && visible.start < chunk_end && chunk_end < visible.end);
         // Enter the idle phase without waiting for the edit-pause timer.
-        core.syntax.input_changed = Some((input.identity(), Instant::now() - COMPLETE_SYNTAX_EDIT_PAUSE));
+        core.syntax.code.input_changed = Some((input.identity(), Instant::now() - COMPLETE_SYNTAX_EDIT_PAUSE));
         // Frames before the idle phase request the visible text as layout
         // settles, a number that depends on scheduling.
         let before = core.syntax_statistics().requests;
@@ -622,15 +622,15 @@ fn highlighting_settles_when_a_collapsed_diff_spans_background_chunks() {
         loop {
             let (_, wait) = core.prepare_view_syntax_wait(view, deadline).unwrap();
             if let Some(wait) = wait { wait.wait_until(deadline); }
-            if core.syntax.complete_progress == Some((input.identity(), input.byte_len()))
-                && !core.syntax.service.has_pending_work() { break; }
+            if core.syntax.code.complete_progress == Some((input.identity(), input.byte_len()))
+                && !core.syntax.code.service.has_pending_work() { break; }
             // One request for each of the two background chunks.
             assert!(core.syntax_statistics().requests - before <= 2, "idle highlighting repeatedly requested the same bytes");
             assert!(Instant::now() < deadline, "background highlighting did not finish");
             std::thread::yield_now();
         }
         assert!(!core.poll_syntax());
-        assert!(!core.syntax.service.has_pending_work(), "another frame must stay idle");
+        assert!(!core.syntax.code.service.has_pending_work(), "another frame must stay idle");
     }
 }
 
@@ -685,14 +685,14 @@ fn complete_highlighting_of_a_large_rust_file_keeps_tree_sitter_styles() {
         core.poll_syntax();
         let _ = core.prepare_view_syntax_wait(view, Instant::now());
         let identity = core.syntax_input().identity();
-        if core.syntax.complete_progress == Some((identity, len)) && !core.syntax.service.has_pending_work() {
+        if core.syntax.code.complete_progress == Some((identity, len)) && !core.syntax.code.service.has_pending_work() {
             break;
         }
         assert!(Instant::now() < deadline, "complete highlighting did not finish");
         std::thread::sleep(Duration::from_millis(5));
     }
     core.poll_syntax();
-    let runs = core.syntax.service.runs(core.syntax_input().identity());
+    let runs = core.syntax.code.service.runs(core.syntax_input().identity());
     let first = runs.iter().find(|run| run.range.start == 0).expect("the module comment is highlighted");
     assert!(first.name.0.starts_with("Comment"), "Tree-sitter capture, not a Vim group: {:?}", first.name);
     let last_comment = core.document().text().rfind("/// Doc for item").unwrap();

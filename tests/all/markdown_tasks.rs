@@ -421,9 +421,6 @@ fn preview_switching_preserves_task_source_and_body_anchor() {
         if target == Format::Markdown { assert_eq!(states(&document), [Some(true), Some(false)]); }
         else { assert!(states(&document).iter().all(Option::is_none)); }
     }
-    assert!(document.undo());
-    assert_eq!(document.format(), Format::Code);
-    assert!(document.undo());
     assert_eq!(document.format(), Format::Markdown);
     assert_eq!(states(&document), [Some(true), Some(false)]);
     assert_eq!(document.source_bytes(), source.as_bytes());

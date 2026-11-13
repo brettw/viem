@@ -266,14 +266,14 @@ fn shadow_limit() -> usize {
 
 /// Whether a regional candidate for a source of `source_len` bytes should be
 /// compared with complete reprojection.
-pub(super) fn shadow_enabled(source_len: usize) -> bool {
+pub(crate) fn shadow_enabled(source_len: usize) -> bool {
     !SUSPENDED.with(Cell::get)
         && source_len <= shadow_limit()
         && (SHADOW.with(|shadow| shadow.borrow().is_some()) || process_policy() != ShadowPolicy::Off)
 }
 
 /// Run shadow work without recording work statistics or candidate events.
-pub(super) fn unobserved<T>(operation: impl FnOnce() -> T) -> T {
+pub(crate) fn unobserved<T>(operation: impl FnOnce() -> T) -> T {
     struct Restore(bool);
     impl Drop for Restore {
         fn drop(&mut self) {

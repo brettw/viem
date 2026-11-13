@@ -275,7 +275,7 @@ impl Document {
         let PreparedPublication::State(state) = &first.publication else {
             return Ok((first, caret, start, None));
         };
-        scratch.history = super::super::history::History::transient(state.clone());
+        scratch.install_transient_state(state.clone());
         scratch.next_revision = first
             .after_revision
             .0

@@ -3,7 +3,7 @@
 //! controller cursor/anchor validation without copying the undo tree.
 
 use super::{
-    ArtifactBinding, ArtifactWriteToken, Document, DocumentId, PendingArtifactWrite, PositionMap,
+    ArtifactBinding, ArtifactWriteToken, Document, DocumentId, PendingArtifactWrite,
 };
 use std::collections::HashMap;
 
@@ -14,9 +14,10 @@ pub(crate) struct DocumentCommandCheckpoint {
     next_projected_block_id: u64,
     edit_group_depth: usize,
     edit_group_generation: u64,
-    position_map_capture: Option<PositionMap>,
-    code_presentation: Option<super::code_presentation::CodePresentation>,
-    configuration_state: Option<super::DocumentState>,
+    lineages: super::lineage::Lineages,
+    markdown: bool,
+    default_presentation: super::ViewPresentation,
+    literal_style: super::LiteralStyle,
     artifact_binding: Option<ArtifactBinding>,
     pending_artifact_writes: HashMap<ArtifactWriteToken, PendingArtifactWrite>,
     next_artifact_write_token: u64,
@@ -45,9 +46,10 @@ impl Document {
             next_projected_block_id: self.next_projected_block_id,
             edit_group_depth: self.edit_group_depth,
             edit_group_generation: self.edit_group_generation,
-            position_map_capture: self.position_map_capture.clone(),
-            code_presentation: self.code_presentation.clone(),
-            configuration_state: self.configuration_state.clone(),
+            lineages: self.lineages.clone(),
+            markdown: self.markdown,
+            default_presentation: self.default_presentation,
+            literal_style: self.literal_style,
             artifact_binding: self.artifact_binding.clone(),
             pending_artifact_writes: self.pending_artifact_writes.clone(),
             next_artifact_write_token: self.next_artifact_write_token,
@@ -88,9 +90,10 @@ impl Document {
         self.edit_group_depth = checkpoint.edit_group_depth;
         self.edit_group_generation = checkpoint.edit_group_generation;
         self.suspended_edit_group = None;
-        self.position_map_capture = checkpoint.position_map_capture;
-        self.code_presentation = checkpoint.code_presentation;
-        self.configuration_state = checkpoint.configuration_state;
+        self.lineages = checkpoint.lineages;
+        self.markdown = checkpoint.markdown;
+        self.default_presentation = checkpoint.default_presentation;
+        self.literal_style = checkpoint.literal_style;
         self.artifact_binding = checkpoint.artifact_binding;
         self.pending_artifact_writes = checkpoint.pending_artifact_writes;
         self.next_artifact_write_token = checkpoint.next_artifact_write_token;
@@ -99,6 +102,7 @@ impl Document {
         self.read_only = checkpoint.read_only;
         self.modifiable = checkpoint.modifiable;
         self.recovered_dirty = checkpoint.recovered_dirty;
+        self.refresh_code_base();
     }
 
     /// Unwinding can abandon nested preparation checkpoints. They have not

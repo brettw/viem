@@ -579,17 +579,24 @@ public final class EVDocument: NSDocument {
         addEditorWindowController()
     }
 
-    public func addEditorWindowController() {
-        let controller = EVDocumentWindowController(
-            document: self,
-            editorSurface: editorBackend.makeEditorSurface()
-        )
+    public func addEditorWindowController(display: EVViewDisplay = .default) {
+        let surface = editorBackend.makeEditorSurface()
+        surface.requestedDisplay = display
+        let controller = EVDocumentWindowController(document: self, editorSurface: surface)
         addWindowController(controller)
     }
 
+    /// Another ordinary window of this buffer. A Markdown buffer shows the
+    /// remembered Preview choice there; existing views keep theirs.
     public func showAdditionalWindow() {
-        addEditorWindowController()
+        addEditorWindowController(display: newWindowDisplay)
         windowControllers.last?.showWindow(nil)
+    }
+
+    /// What a new window of this buffer shows.
+    var newWindowDisplay: EVViewDisplay {
+        guard editorBackend.isMarkdownBuffer else { return .default }
+        return editorBackend.prefersMarkdownFormattedView ? .preview : .source
     }
 
     public override nonisolated func read(from data: Data, ofType typeName: String) throws {

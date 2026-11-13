@@ -393,6 +393,19 @@ public enum EVWindowRequest: Equatable, Sendable {
 
 /// One view onto an editor document. Its NSView is a projection, never storage.
 @MainActor
+/// What one view shows of its buffer (`VIEM_VIEW_DISPLAY_*`). Views of one
+/// Markdown buffer may differ: one in Preview beside another of its source.
+public enum EVViewDisplay: UInt32, Sendable {
+  /// The buffer's default, as a new view of it shows.
+  case `default` = 0
+  /// The literal source: Text or Code, and a Markdown buffer's source.
+  case source = 1
+  /// Markdown Preview.
+  case preview = 2
+  /// A diff's live side, always Code.
+  case diff = 3
+}
+
 public protocol EVEditorSurface: AnyObject {
   var viewController: NSViewController { get }
   var statusBarState: EVStatusBarState { get }
@@ -410,6 +423,11 @@ public protocol EVEditorSurface: AnyObject {
   var lineNumberGutterWidth: CGFloat { get }
   var lineNumberGutterWidthWillChange: ((CGFloat, CGFloat) -> Void)? { get set }
   func inheritLineNumberOption(from surface: any EVEditorSurface)
+  /// What this surface's view shows when it attaches to its buffer. Set it
+  /// before the surface's view loads; afterwards use `currentDisplay`.
+  var requestedDisplay: EVViewDisplay { get set }
+  /// What the attached view shows now, or `requestedDisplay` before it attaches.
+  var currentDisplay: EVViewDisplay { get }
 
   func perform(menuCommand: EVMenuCommand, sender: Any?)
   func presentation(for menuCommand: EVMenuCommand) -> EVMenuItemPresentation
@@ -445,6 +463,11 @@ extension EVEditorSurface {
     set {}
   }
   public func inheritLineNumberOption(from surface: any EVEditorSurface) {}
+  public var requestedDisplay: EVViewDisplay {
+    get { .default }
+    set {}
+  }
+  public var currentDisplay: EVViewDisplay { requestedDisplay }
   public func perform(statusOption: EVStatusBarOption) {}
   public func selectCommandLine(atUTF8Offset offset: Int, extending: Bool) {}
   public func showDocumentMessage(_ message: String) {}
@@ -480,6 +503,8 @@ public protocol EVDocumentBackend: AnyObject {
   var persistenceState: EVDocumentPersistenceState { get }
   var sourceFormat: EVSourceFormat { get }
   var prefersMarkdownFormattedView: Bool { get }
+  /// The buffer is Markdown, shown in Preview or as its source.
+  var isMarkdownBuffer: Bool { get }
 
   func makeEditorSurface() -> any EVEditorSurface
   func read(source: Data, typeName: String, origin: EVSourceOrigin) throws
@@ -495,6 +520,7 @@ public protocol EVDocumentBackend: AnyObject {
 
 extension EVDocumentBackend {
   public var prefersMarkdownFormattedView: Bool { true }
+  public var isMarkdownBuffer: Bool { sourceFormat == .markdown }
   public func updateFilename(_ filename: String) {}
   public func readUntitled(source: Data, typeName: String) throws {
     try read(source: source, typeName: typeName, origin: .untitled)

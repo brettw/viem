@@ -4,8 +4,11 @@ import ViemAppShell
 
 @MainActor
 extension EVEditorSurfaceController: EVDocumentModeMenuProviding {
+    /// The mode as this view shows the buffer: its revision, and Preview or
+    /// source, since views of one Markdown buffer may differ.
     public func currentDocumentMode() -> EVDocumentModeState? {
-        try? EVDocumentModeJSON.read { viem_core_copy_document_mode_json(backend.core, $0, $1, $2) }
+        if let session { return session.documentModeState() }
+        return try? EVDocumentModeJSON.read { viem_core_copy_document_mode_json(backend.core, $0, $1, $2) }
     }
 
     public func selectDocumentMode(_ choice: EVDocumentModeChoice, expected: EVDocumentModeState) {

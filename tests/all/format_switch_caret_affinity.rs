@@ -1,5 +1,5 @@
 use viem_core::command::{InputEvent, Key, Mode};
-use viem_core::document::{BoundaryAffinity, Encoding, Format, HistoryNavigationRequest};
+use viem_core::document::{BoundaryAffinity, Encoding, Format};
 use viem_core::layout::MockTextMeasurementProvider;
 use viem_core::{Core, CoreEvent, Document, DocumentMode, ViewId};
 
@@ -72,29 +72,7 @@ fn switch_and_check(core: &mut Editor, view: ViewId, target: Format, retained_pr
         core.document().text()
     );
     assert_eq!(state.boundary_affinity(), BoundaryAffinity::Upstream);
-    let converted = core.document().source_bytes();
-    core.handle(
-        view,
-        CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo),
-    )
-    .unwrap();
     assert_eq!(core.document().source_bytes(), original);
-    // Native history deliberately returns to Normal mode, whose cursor at
-    // hard-line end addresses the preceding grapheme rather than the Insert
-    // boundary. Format switching itself above retains Insert mode exactly.
-    assert_eq!(core.command_state(view).unwrap().mode(), Mode::Normal);
-    core.document()
-        .text_point(core.command_state(view).unwrap().cursor())
-        .unwrap();
-    core.handle(
-        view,
-        CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo),
-    )
-    .unwrap();
-    assert_eq!(core.document().source_bytes(), converted);
-    core.document()
-        .text_point(core.command_state(view).unwrap().cursor())
-        .unwrap();
 }
 
 #[test]

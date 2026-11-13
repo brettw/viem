@@ -97,15 +97,15 @@ mod tests {
 
 impl Document {
     pub(crate) fn code_presentation_change_map(&self) -> Option<&PositionMap> {
-        self.code_presentation.as_ref().map(|p| &p.transition)
+        self.live().code_presentation.as_ref().map(|p| &p.transition)
     }
 
     pub(super) fn advance_code_presentation(&mut self, map: &PositionMap) {
-        if !self.format().is_code() {
-            self.code_presentation = None;
+        if self.state().kind != super::ProjectionKind::Literal {
+            self.live_mut().code_presentation = None;
             return;
         }
-        let Some(presentation) = self.code_presentation.as_mut() else {
+        let Some(presentation) = self.live_mut().code_presentation.as_mut() else {
             return;
         };
         if presentation
@@ -114,7 +114,7 @@ impl Document {
             .saturating_add(map.owned_heap_bytes())
             > MAX_PRESENTATION_MAP_BYTES
         {
-            self.code_presentation = None;
+            self.live_mut().code_presentation = None;
             return;
         }
         match presentation.transition.then(map) {
@@ -123,7 +123,7 @@ impl Document {
             }
             // No exact lineage means no presentation reuse. An old numeric
             // offset is never interpreted in an unrelated source revision.
-            Ok(_) | Err(_) => self.code_presentation = None,
+            Ok(_) | Err(_) => self.live_mut().code_presentation = None,
         }
     }
 }

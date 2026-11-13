@@ -179,9 +179,6 @@ final class EVEditingReliabilityTests: XCTestCase {
         XCTAssertEqual(surface.formattedText, "Heading\nbold café")
         surface.perform(menuCommand: .undo, sender: nil)
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
-        surface.perform(menuCommand: .undo, sender: nil)
-        XCTAssertEqual(backend.sourceFormat, .code)
-        XCTAssertEqual(surface.formattedText, source)
         XCTAssertEqual(surface.statusBarState.message, "")
     }
 

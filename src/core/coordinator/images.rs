@@ -8,6 +8,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         expected: LogicalSelectionIdentity,
         intent: ImageEditIntent,
     ) -> Result<CoreOutcome, CoreError> {
+        self.focus_view(view);
         if self.list_selection_identity(view)? != expected {
             return Err(CoreError::StaleLogicalSelection);
         }
@@ -43,6 +44,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         revision: Revision,
         offset: usize,
     ) -> Result<CoreOutcome, CoreError> {
+        self.focus_view(view);
         if document != self.document.id() {
             return Err(DocumentError::WrongDocument.into());
         }
@@ -98,6 +100,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         previous_generation: crate::layout::MetricsGeneration,
         geometry_changed: bool,
     ) -> Result<(), CoreError> {
+        self.focus_view(view_id);
         let view = self.views.get_mut(&view_id).ok_or(CoreError::UnknownView(view_id))?;
         let requirements = inspect_layout_provider(&view.engine);
         let verified = view.observed_metrics_generation == previous_generation
@@ -299,6 +302,7 @@ pub struct ImageContext {
 
 impl<P: TextMeasurementProvider> Core<P> {
     pub fn image_context(&self, view_id: ViewId) -> Result<ImageContext, CoreError> {
+        self.focus_view(view_id);
         let selection = self.list_selection_identity(view_id)?;
         let cursor = self.command_state(view_id).ok_or(CoreError::UnknownView(view_id))?.cursor();
         let range = selection.range();

@@ -16,6 +16,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         &self,
         view_id: ViewId,
     ) -> Result<Option<CompletionPopupAnchor>, CoreError> {
+        self.focus_view(view_id);
         let view = self
             .views
             .get(&view_id)

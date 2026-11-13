@@ -146,7 +146,7 @@ final class EVFormattingToolbarTests: XCTestCase {
     }
   }
 
-  func testMarkdownPreviewTogglePreservesSourceTracksSharedHistoryAndRestoresFocus() throws {
+  func testMarkdownPreviewTogglePreservesSourceChangesOnlyItsViewAndRestoresFocus() throws {
     let source = Data("# Heading\n\n**Words**".utf8)
     let (backend, first) = try surface(String(decoding: source, as: UTF8.self), type: EVDocument.codeType)
     let second = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
@@ -157,7 +157,6 @@ final class EVFormattingToolbarTests: XCTestCase {
     firstWindow.showWindow(nil)
     secondWindow.showWindow(nil)
     let button = first.formattingToolbar.formattedView
-    let otherButton = second.formattingToolbar.formattedView
     let titleBarPreview = firstWindow.formattingToolbar.previewButton
     // Literal Markdown has no toolbar; the title bar offers Preview in the
     // toolbar toggle's place. Preview restores the toolbar and its toggle.
@@ -180,29 +179,20 @@ final class EVFormattingToolbarTests: XCTestCase {
     XCTAssertEqual(titleBarPreview.accessibilityLabel(), "Markdown Preview")
     XCTAssertEqual(titleBarPreview.toolTip, "Markdown Preview")
 
+    // Preview is per view: only the first window's view changes.
     titleBarPreview.performClick(nil)
-    XCTAssertEqual(backend.sourceFormat, .markdown)
+    XCTAssertEqual(first.viewFormat, .markdown)
+    XCTAssertEqual(second.viewFormat, .code)
     XCTAssertEqual(button.state, .on)
-    XCTAssertEqual(otherButton.state, .on)
     XCTAssertTrue(showsPreviewChrome(firstWindow, first))
-    XCTAssertTrue(showsPreviewChrome(secondWindow, second))
-    XCTAssertEqual(try backend.formattedText(), "Heading\nWords")
+    XCTAssertTrue(showsLiteralChrome(secondWindow, second), "the other window keeps the source")
+    XCTAssertEqual(first.formattedText, "Heading\nWords")
     XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
     XCTAssertTrue(firstWindow.window?.firstResponder === first.editorView)
     XCTAssertTrue(button.image === image)
 
-    // Detached toolbars refresh when Preview installs them again.
-    second.perform(menuCommand: .undo, sender: nil)
-    XCTAssertEqual(backend.sourceFormat, .code)
-    XCTAssertTrue(showsLiteralChrome(firstWindow, first), "undoing a view switch removes the toolbar again")
-    XCTAssertTrue(showsLiteralChrome(secondWindow, second))
-    second.perform(menuCommand: .redo, sender: nil)
-    XCTAssertEqual(button.state, .on)
-    XCTAssertEqual(otherButton.state, .on)
-    XCTAssertTrue(showsPreviewChrome(firstWindow, first), "redoing a view switch restores the toolbar")
-    XCTAssertTrue(showsPreviewChrome(secondWindow, second))
     button.performClick(nil)
-    XCTAssertEqual(backend.sourceFormat, .code)
+    XCTAssertEqual(first.viewFormat, .code)
     XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
     XCTAssertTrue(showsLiteralChrome(firstWindow, first), "Preview off hides the toolbar and offers Preview in the title bar")
     XCTAssertTrue(showsLiteralChrome(secondWindow, second))

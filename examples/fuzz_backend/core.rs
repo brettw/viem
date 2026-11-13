@@ -230,23 +230,24 @@ fn generate(
             });
         }
         11 => {
-            if !core.document().format().is_literal() || core.document().format().is_code() {
+            // Each view shows its own projection; ask the view.
+            let shown = core.view_document(views[view]).format();
+            if !shown.is_literal() || shown.is_code() {
                 queue.push_back(Action::Preview {
                     view,
-                    enabled: !core.document().format().is_markdown(),
+                    enabled: !shown.is_markdown(),
                 });
             } else {
                 queue.push_back(Action::Reopen);
             }
         }
         12 => {
-            let mut boundaries = core
-                .document()
-                .text()
+            let text = core.view_document(views[view]).text().to_owned();
+            let mut boundaries = text
                 .grapheme_indices(true)
                 .map(|(i, _)| i)
                 .collect::<Vec<_>>();
-            boundaries.push(core.document().text().len());
+            boundaries.push(text.len());
             queue.push_back(Action::Place {
                 view,
                 offset: boundaries[rng.usize(boundaries.len())],
@@ -314,14 +315,14 @@ fn dispatch(
     recorder: &mut Recorder,
 ) -> Result<(), String> {
     let before = core.document().source_bytes();
-    let revision = core.document().revision();
-    let before_context = json!({"source":String::from_utf8_lossy(&before),"text":core.document().text(),
-        "format":format!("{:?}",core.document().format()),
+    let revision = core.view_document(view).revision();
+    let before_context = json!({"source":String::from_utf8_lossy(&before),"text":core.view_document(view).text(),
+        "format":format!("{:?}",core.view_document(view).format()),
         "cursor":core.command_state(view).map(|s|s.cursor()),
         "mode":core.command_state(view).map(|s|format!("{:?}",s.mode()))});
     match core.handle(view, event) {
         Err(error) if allowed_policy(&error) => {
-            if core.document().source_bytes() != before || core.document().revision() != revision {
+            if core.document().source_bytes() != before || core.view_document(view).revision() != revision {
                 return Err(format!("rejected operation changed source: {error:?}"));
             }
             stats.expected_rejections += 1;
@@ -341,7 +342,7 @@ fn dispatch(
                     | CommandStatus::SearchNotFound => {}
                     status if expected_status(&status) => {
                         if core.document().source_bytes() != before
-                            || core.document().revision() != revision
+                            || core.view_document(view).revision() != revision
                         {
                             return Err(format!("rejected command changed source: {status:?}"));
                         }
@@ -363,8 +364,8 @@ fn dispatch(
 }
 
 fn validate(core: &Core<MockTextMeasurementProvider>, views: &[ViewId]) -> Result<(), String> {
-    let doc = core.document();
     for &view in views {
+        let doc = core.view_document(view);
         let cursor = core
             .command_state(view)
             .ok_or("missing view command state")?
@@ -510,7 +511,7 @@ pub fn run(
                     *view,
                     Some(CoreEvent::SetDocumentMode {
                         document: core.document().id(),
-                        revision: core.document().revision(),
+                        revision: core.view_document(*views.get(*view).ok_or("invalid view slot")?).revision(),
                         mode: if *enabled {
                             viem_core::DocumentMode::Markdown
                         } else {
@@ -526,7 +527,7 @@ pub fn run(
                 } => (
                     *view,
                     Some(CoreEvent::PlaceCursor {
-                        document_revision: core.document().revision(),
+                        document_revision: core.view_document(*views.get(*view).ok_or("invalid view slot")?).revision(),
                         text_offset: *offset,
                         affinity: BoundaryAffinity::Downstream,
                         extend_selection: *extend,
@@ -549,7 +550,7 @@ pub fn run(
                 Action::UndoRedo { view } => {
                     let id = *views.get(*view).ok_or("invalid view slot")?;
                     if core.document().history_status().can_undo {
-                        let original = core.document().text().to_string();
+                        let original = core.view_document(id).text().to_string();
                         dispatch(
                             core,
                             id,
@@ -565,7 +566,7 @@ pub fn run(
                             recorder,
                         )?;
                         if core.document().source_bytes() != before
-                            || core.document().text() != original
+                            || core.view_document(id).text() != original
                         {
                             return Err("undo/redo did not restore exact source and text".into());
                         }
@@ -573,7 +574,7 @@ pub fn run(
                     (*view, None, true)
                 }
                 Action::Reopen => {
-                    let doc = core.document();
+                    let doc = core.view_document(*views.first().ok_or("no view")?);
                     let reopened = Document::from_bytes_with_file_format(
                         before.clone(),
                         doc.encoding(),

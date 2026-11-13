@@ -61,7 +61,11 @@ fn markdown_tree_sitter_highlighting_requires_code_mode_and_preserves_native_vie
                 }
                 assert_eq!(core.document().source_bytes(), bytes);
                 assert!(!core.document().is_dirty());
-                key(&mut core, view, Key::Char('u'));
+                // Choosing Markdown again restores Preview.
+                core.handle(view, CoreEvent::SetDocumentMode {
+                    document: core.document().id(), revision: core.document().revision(),
+                    mode: DocumentMode::Markdown,
+                }).unwrap();
                 assert_eq!(core.document().format(), format);
                 assert_eq!(core.document().text(), native_text);
                 assert_eq!(core.document().projection().style_spans(), native_spans);

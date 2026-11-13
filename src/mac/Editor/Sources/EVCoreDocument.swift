@@ -78,6 +78,9 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     }
 
     public var prefersMarkdownFormattedView: Bool { configuration.markdownFormattedView }
+    public var isMarkdownBuffer: Bool {
+        currentDocumentState.flags & UInt32(VIEM_DOCUMENT_STATE_MARKDOWN_SOURCE) != 0
+    }
 
     private(set) var core: ViemCoreHandle = 0
     private var source = Data()
@@ -541,6 +544,9 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     /// Buffer presentation options and shared search state can change another
     /// pane without a source edit or a cursor move in the invoking pane.
     func notePresentationChange(originatingViewID: ViemViewId) {
+        // Choosing Text or Code, or what a view shows, is not a source change
+        // but can change the buffer's format and the file type it saves as.
+        _ = try? documentState()
         guard !isRefreshingLayoutSurfaces else { return }
         isRefreshingLayoutSurfaces = true
         defer { isRefreshingLayoutSurfaces = false }
@@ -865,6 +871,19 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         return output
     }
 
+    /// Remember the Preview toggle's explicit choice for views and documents
+    /// opened later. Only the toggle writes it: never a diff view, a split,
+    /// a reload or a language choice.
+    func rememberMarkdownPreview(_ enabled: Bool) {
+        guard !isStylePreview else { return }
+        do { try configuration.setMarkdownFormattedView(enabled) }
+        catch {
+            let warning = "Could not remember Markdown view. \(error.localizedDescription)"
+            configurationWarning = warning
+            for surface in surfaces.compactMap(\.value) { surface.showDocumentMessage(warning) }
+        }
+    }
+
     /// The effective Code language is Markdown, explicitly or by detection.
     public var codeLanguageIsMarkdown: Bool {
         guard core != 0, let mode: EVDocumentModeState = try? EVDocumentModeJSON.read({
@@ -877,25 +896,9 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         let oldPersistence = Self.persistenceState(from: currentDocumentState)
         let previousFormat = sourceFormat
         let nextFormat = Self.sourceFormat(from: state)
-        // Markdown Preview off is literal Code with the Markdown language.
-        let changedMarkdownView = !isStylePreview
-            && currentDocumentState.document_id != 0
-            && currentDocumentState.document_id == state.document_id
-            && Set([previousFormat, nextFormat]) == [.markdown, .code]
-            && codeLanguageIsMarkdown
         let changedFamily = currentDocumentState.document_id == state.document_id
             && previousFormat.defaultStyleName != nextFormat.defaultStyleName
         currentDocumentState = state
-        // Record actual transitions (including undo/redo), never attachment,
-        // reopening, recovery, or an unchanged background presentation refresh.
-        if changedMarkdownView {
-            do { try configuration.setMarkdownFormattedView(nextFormat == .markdown) }
-            catch {
-                let warning = "Could not remember Markdown view. \(error.localizedDescription)"
-                configurationWarning = warning
-                for surface in surfaces.compactMap(\.value) { surface.showDocumentMessage(warning) }
-            }
-        }
         // A source change refreshes every surface right after installing state.
         if changedFamily {
             applyThemeStyles(changedNames: [sourceFormat.defaultStyleName], refreshSurfaces: !isRefreshingSurfaces)
@@ -981,12 +984,13 @@ final class EVCoreViewSession {
     private var mappingTimer: Timer?
 
     init(document: EVCoreDocumentBackend, width: CGFloat, height: CGFloat,
-         margins: EVViewMargins = EVViewMargins(top: 0, left: 0, bottom: 0, right: 0)) throws {
+         margins: EVViewMargins = EVViewMargins(top: 0, left: 0, bottom: 0, right: 0),
+         display: EVViewDisplay = .default) throws {
         self.document = document
         coreHandle = document.core
         provider = CoreTextMeasurementProvider(documentImages: document.documentImages)
         EVStartupPerformance.mark("surface.provider.created")
-        try attach(width: width, height: height, margins: margins)
+        try attach(width: width, height: height, margins: margins, display: display)
         EVStartupPerformance.mark("surface.view.attached")
     }
 
@@ -1019,9 +1023,10 @@ final class EVCoreViewSession {
         provider.retireResources()
     }
 
-    func attach(width: CGFloat, height: CGFloat, margins: EVViewMargins) throws {
+    func attach(width: CGFloat, height: CGFloat, margins: EVViewMargins, display: EVViewDisplay = .default) throws {
         guard viewID == 0 else { return }
         var options = ViemViewOptions()
+        options.display = display.rawValue
         options.execution_context = UInt32(VIEM_LAYOUT_EXECUTION_FRONTEND_MAIN)
         options.width = Float(max(width, 1))
         options.height = Float(max(height, 1))
@@ -1039,6 +1044,37 @@ final class EVCoreViewSession {
         viewID = newView
         viewportSize = CGSize(width: max(width, 1), height: max(height, 1))
         lastOutcome = outcome
+    }
+
+    /// The document state as this view shows it: its projection's revision
+    /// and format. Also refreshes the buffer-wide state the backend keeps.
+    /// Document-level reads that follow answer for this view.
+    func viewDocumentState() throws -> ViemDocumentState {
+        _ = try document.documentState()
+        var state = ViemDocumentState()
+        try checked(viem_core_view_document_state(document.core, viewID, &state), operation: "Read view document state")
+        return state
+    }
+
+    /// What this view shows of its buffer.
+    func display() throws -> EVViewDisplay {
+        var value: UInt32 = 0
+        try checked(viem_core_view_display(document.core, viewID, &value), operation: "Read view display")
+        return EVViewDisplay(rawValue: value) ?? .source
+    }
+
+    /// Show Preview, the source or a diff's Code in this view only. Not an
+    /// edit: no source, history or other view changes.
+    @discardableResult
+    func setDisplay(_ display: EVViewDisplay) throws -> ViemCoreOutcome {
+        try performCoreOperation("Change view display") { outcome in
+            viem_core_view_set_display(document.core, viewID, display.rawValue, outcome)
+        }
+    }
+
+    /// The document mode as this view shows the buffer.
+    func documentModeState() -> EVDocumentModeState? {
+        try? EVDocumentModeJSON.read { viem_core_view_copy_document_mode_json(document.core, viewID, $0, $1, $2) }
     }
 
     func refreshState() throws -> ViemCoreOutcome {
@@ -1708,7 +1744,7 @@ final class EVCoreViewSession {
         var state = ViemViewRestoration()
         try checked(viem_core_view_capture_restoration(previous.document.core, previous.viewID, &state),
                     operation: "Capture document position")
-        let target = try document.documentState()
+        let target = try viewDocumentState()
         _ = try performCoreOperation("Restore document position") { outcome in
             viem_core_view_restore(document.core, viewID, target.document_id,
                                    target.document_revision, &state, outcome)
@@ -1893,7 +1929,7 @@ final class EVCoreViewSession {
 
     @discardableResult
     func goToLine(_ line: UInt64) throws -> ViemCoreOutcome {
-        let state = try document.documentState()
+        let state = try viewDocumentState()
         return try performCoreOperation("Go to physical line") { outcome in
             viem_core_view_go_to_line(document.core, viewID, state.document_id,
                 state.document_revision, line, outcome)
@@ -1901,7 +1937,7 @@ final class EVCoreViewSession {
     }
 
     func navigateToLinkFragment(_ fragment: String) throws -> Bool {
-        let state = try document.documentState()
+        let state = try viewDocumentState()
         let bytes = Array(fragment.utf8)
         var found: UInt8 = 0
         _ = try bytes.withUnsafeBufferPointer { buffer in
@@ -1916,7 +1952,7 @@ final class EVCoreViewSession {
 
     @discardableResult
     func selectAll() throws -> ViemCoreOutcome {
-        let state = try document.documentState()
+        let state = try viewDocumentState()
         return try performCoreOperation("Select all text") { outcome in
             viem_core_view_select_all(document.core, viewID, state.document_id,
                                       state.document_revision, outcome)

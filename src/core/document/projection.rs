@@ -38,12 +38,70 @@ pub enum Format {
 impl Format {
     pub const fn is_code(self) -> bool { matches!(self, Self::Code) }
 
+    /// The projection this format is shown through. Text and Code share the
+    /// Literal projection and differ only in their style layer.
+    pub const fn projection_kind(self) -> ProjectionKind {
+        match self {
+            Self::Markdown => ProjectionKind::Preview,
+            Self::PlainText | Self::Code => ProjectionKind::Literal,
+        }
+    }
+
     /// Formats with identity semantics after decoding and physical line endings.
     pub const fn is_literal(self) -> bool { matches!(self, Self::PlainText | Self::Code) }
 
     /// Markdown presented as formatted text.
     pub const fn is_markdown(self) -> bool {
         matches!(self, Self::Markdown)
+    }
+}
+
+/// The structure a document state holds: decoded text with one block per
+/// hard line, or the Markdown formatted projection. Styling is a separate
+/// layer, so Text and Code are both Literal.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ProjectionKind {
+    Literal,
+    Preview,
+}
+
+impl ProjectionKind {
+    /// The format whose adapter builds this structure.
+    pub const fn structure_format(self) -> Format {
+        match self {
+            Self::Literal => Format::PlainText,
+            Self::Preview => Format::Markdown,
+        }
+    }
+}
+
+/// Whether a literal view is styled as Text or as Code. It is buffer state,
+/// never part of history, and changing it reprojects nothing.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum LiteralStyle {
+    #[default]
+    Text,
+    Code,
+}
+
+/// What one view asks of the buffer. A diff's live view is always Code.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct ViewPresentation {
+    /// The view compares its text with a base and so shows literal Code.
+    pub diff: bool,
+    /// The view shows a Markdown buffer in Preview. Ignored by a buffer that
+    /// is not Markdown and by a diff view.
+    pub preview: bool,
+}
+
+impl ViewPresentation {
+    pub const fn diff() -> Self { Self { diff: true, preview: false } }
+    pub const fn preview() -> Self { Self { diff: false, preview: true } }
+    pub const fn literal() -> Self { Self { diff: false, preview: false } }
+
+    /// The projection a Markdown or other buffer shows to this view.
+    pub const fn wanted_kind(self, markdown: bool) -> ProjectionKind {
+        if markdown && self.preview && !self.diff { ProjectionKind::Preview } else { ProjectionKind::Literal }
     }
 }
 
@@ -3837,6 +3895,16 @@ impl FormattedDocument {
         self.document_style = document_style;
     }
 
+    /// The literal structure with the Code sheet and no syntax spans: what a
+    /// Code view shows before highlighting is published. Persistent, so O(1).
+    pub(crate) fn with_code_sheet(&self, sheet: Arc<StyleSheet>) -> Self {
+        let mut projection = self.clone();
+        projection.document_style = DocumentStyleAssignment::new(sheet.base_paragraph.clone());
+        projection.styles = IntervalRangeStore::new(Vec::new());
+        projection.style_sheet = sheet;
+        projection
+    }
+
     pub(crate) fn install_code_styles(&mut self, sheet: Arc<StyleSheet>, runs: &[super::syntax::SyntaxRun]) {
         self.document_style = DocumentStyleAssignment::new(sheet.base_paragraph.clone());
         let names = code_style_names(&sheet);
@@ -4430,6 +4498,12 @@ impl FormattedDocument {
         )
     }
 
+    /// The primary source boundary of formatted offset `at`, preferring the
+    /// following content.
+    pub(crate) fn source_boundary_downstream(&self, at: usize) -> Option<usize> {
+        self.source_boundary(at, Side::Downstream)
+    }
+
     fn source_boundary(&self, at: usize, side: Side) -> Option<usize> {
         if at > self.text.byte_len() || !self.text.is_char_boundary(at).ok()? {
             return None;
@@ -4890,11 +4964,8 @@ fn project_with_start(
             source_content_start,
             source_content_end,
         ),
-        Format::Code => {
-            let mut projection = project_plain(normalized, revision, source_content_start, source_content_end);
-            projection.install_code_styles(super::code_style::snapshot(), &[]);
-            projection
-        }
+        // Code styling is a layer over the literal structure, never stored.
+        Format::Code => project_plain(normalized, revision, source_content_start, source_content_end),
         Format::Markdown => project_markdown(
             normalized,
             revision,

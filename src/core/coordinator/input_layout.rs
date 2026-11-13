@@ -43,6 +43,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         event: CoreEvent,
     ) -> Result<CoreOutcome, CoreError> {
+        self.focus_view(view_id);
         if !matches!(
             event,
             CoreEvent::Input(_) | CoreEvent::InputWithClipboard { .. }

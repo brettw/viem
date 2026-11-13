@@ -25,6 +25,8 @@ Each document has one of three source formats:
 
 Changing format, Preview or view mode reprojects the same source and never
 converts it: bytes, encoding, BOM, line endings, anchors and undo survive.
+Preview is a property of each view, so views of one buffer may show Preview
+and source side by side; the language, and Text versus Code, are per buffer.
 
 Legacy Vim script and Vim9 script are supported for configuration and
 automation within the host profile in [docs/vimscript.md](docs/vimscript.md).
@@ -121,6 +123,12 @@ automation within the host profile in [docs/vimscript.md](docs/vimscript.md).
   doing I/O, waiting, or calling callbacks or providers, and never nest cache or
   registry locks. Native render resources have explicit ownership and thread
   rules, including final release from a worker after their view closes.
+- The undo tree holds source only. Projections (Literal, shared by Text and
+  Code, and Preview) are derived lineages: each live lineage may cache its
+  projection on history nodes, and a node without one is reprojected from its
+  source. Every live lineage catches up with each edit and history move before
+  publication, as a regional candidate under the same proof rules with complete
+  reprojection as its last resort. A lineage no view shows is released.
 - A buffer's views share source and history, and every buffer shares the
   application-wide register bank. Each view owns its cursor, selection, mode,
   pending command, desired x, wrapping, line meaning and viewport. Closing a
@@ -134,7 +142,9 @@ automation within the host profile in [docs/vimscript.md](docs/vimscript.md).
   result never becomes current, and reusing an unchanged subresult requires
   validating all of its dependencies. Identifiers never wrap or get reused.
 - Source bytes, decoded text, formatted text and layout are separate coordinate
-  domains. A snapshot point is valid only in its document, domain and revision.
+  domains, and each projection lineage takes its own revisions, so a position
+  from one projection is rejected by another. A snapshot point is valid only in
+  its document, domain and revision.
   Reject mismatched identities, invalid Unicode boundaries and stale layout;
   never clamp or substitute the current revision. State that outlives an edit
   (cursors, selections, marks, jumps, viewports, history, caches) uses stable
@@ -414,10 +424,11 @@ Deliberate presentation differences from GitHub:
   insertion's undo unit. Protected and opaque content stays literal.
   Ctrl-Q/Ctrl-V literal-next bypasses it, and its literal protection survives
   later edits.
-- Toggling Preview is an undoable buffer transaction that keeps bytes and
-  recovers each view's caret and viewport. It must not reset scrolling or be
-  quadratic; after editing pauses, a background worker prepares the other
-  projection.
+- Toggling Preview changes only the active view. It is not an edit: bytes,
+  the other projection's revision, dirty state, history and registers are
+  unchanged, and undo never reverses it. The view's caret and viewport are
+  recovered. It must not reset scrolling or be quadratic; after editing
+  pauses, a background worker prepares the other projection.
 
 ## Code and syntax highlighting
 
@@ -463,6 +474,10 @@ Deliberate presentation differences from GitHub:
 - While new highlighting is pending, surviving text keeps its colors and
   inserted text takes the preceding character's style, so typing never flashes
   existing text unstyled.
+- A buffer has one language and one Code highlighting layer, shared by all
+  of its Code views (including a diff's live side). Styling is a layer over
+  the projection: Text and Code share one literal text tree, and a syntax
+  publication invalidates only Code views.
 - Code styles come from one application-wide stylesheet in the selected theme,
   edited with its own undo outside document history (F8 or Edit Styles).
   Providers supply character style names only. Names are case-sensitive;
@@ -480,6 +495,13 @@ Deliberate presentation differences from GitHub:
 - A window compares its editable live buffer with a protected Code base.
   Diff character styles layer over syntax. Incremental diffs may retain
   earlier line pairings when several valid alignments exist.
+- The live side is a view that always shows Code; the buffer's format and
+  its other views (including one in Preview) never change for a comparison.
+  Diff Mode has its own windows: turning it on opens a new diff window and
+  leaves the current one unchanged; turning it off shows the file in an
+  ordinary window and closes the diff window. Every view a diff window
+  creates is Code from its first frame. Windows support for diff windows is
+  pending; see [preview_diff.md](preview_diff.md).
 - The Git base source runs bounded, cancellable read-only Git commands with
   argument lists. See [diff mode](docs/diff_mode.md) for the base sources,
   comparison layout and navigation contracts.
@@ -667,7 +689,8 @@ Special register input and mark lifetime follow [registers and marks](docs/vim-r
   their key identity; never parse displayed `<Left>` notation. Putting a macro
   that contains non-text keys fails with `MacroContainsNonTextKeys`.
 - Undo/redo restores recorded source artifacts and metadata; it never reruns
-  edits or inverse commands. History branches and keeps abandoned futures, and
+  edits or inverse commands, and never reverses a view toggle (Preview, Text
+  or Code, wrap, line numbers, line meaning). History branches and keeps abandoned futures, and
   redo follows the preferred child. Finalized states are immutable. Derived
   layout and native objects are not history.
 - Each of these is one undo unit: a change with its count and all of its
@@ -785,7 +808,8 @@ text, excludes editor furniture, and needs no network resources.
   shown only while the app is in the foreground, and Keep Buffer acknowledges
   only that change. Every save path checks for external changes and asks
   Cancel or Save Anyway. Reload (`:e`, Revert or an external change)
-  installs verified bytes atomically and keeps each view's position and the
+  installs verified bytes atomically and keeps each view's position, what
+  each view shows (Preview or source) and the
   buffer's format and language choice. An automatic language redetects, and
   detected Text becomes Code when the new source declares a language; Text
   chosen by hand stays Text. Splits show the same buffer and never reload.
@@ -810,6 +834,11 @@ text, excludes editor furniture, and needs no network resources.
   centrally. Validate complete candidates, write atomically, preserve unknown
   keys (including nested ones), and leave invalid or unsupported files untouched
   with a diagnostic. Settings changes create no source edits or document undo.
+- `editing.markdownFormattedView` (on by default) is the last state set
+  explicitly with the Preview toggle, in any view of any document. Documents
+  opened later and new windows of a Markdown buffer use it; views that
+  already exist never change. Only the toggle writes it: never a diff view,
+  a split (which copies its source view), a reload or a language choice.
 - Themes hold application-wide appearance and per-format stylesheets, one file
   each in the profile's `themes` directory, with their own settings undo. Named
   themes save automatically; Default is editable in memory only.

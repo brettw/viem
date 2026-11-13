@@ -1511,8 +1511,25 @@ extension EVDocumentWindowController {
     document.close()
   }
 
+  /// A diff window compares every pane it shows; its views are Code from
+  /// their first frame, so a Markdown file never shows Preview first.
+  var isDiffWindow: Bool { opensForDiff || diffMode?.isEnabled == true }
+
+  /// Mark a window opened for comparison: its first pane and every later
+  /// one show Code.
+  func markOpensForDiff() {
+    opensForDiff = true
+    for pane in paneContainer.panes { pane.editorSurface.requestedDisplay = .diff }
+  }
+
   fileprivate func makePane(document: EVDocument, from source: EVDocumentContentViewController? = nil) -> EVDocumentContentViewController {
     let surface = document.editorBackend.makeEditorSurface()
+    // A diff window's panes are Code; a split shows what its source shows.
+    if isDiffWindow {
+      surface.requestedDisplay = .diff
+    } else if let source, source.document === document, source.editorSurface.currentDisplay != .diff {
+      surface.requestedDisplay = source.editorSurface.currentDisplay
+    }
     let pane = EVDocumentContentViewController(editorSurface: surface, configuration: configuration)
     pane.document = document
     let previous = source ?? documentContentController
@@ -2132,7 +2149,41 @@ extension EVDocumentWindowController: EVDiffModeHost {
     }
   }
 
-  @objc func toggleDiffMode(_ sender: Any?) { diffController.toggle() }
+  /// Diff Mode has its own window. From an ordinary window, compare the
+  /// active document in a new diff window, leaving this one unchanged; in a
+  /// diff window, show the document in an ordinary window and close this one.
+  @objc func toggleDiffMode(_ sender: Any?) {
+    if isDiffWindow { leaveDiffWindow() } else { openDiffWindow() }
+  }
+
+  private func openDiffWindow() {
+    guard let document = activeDocument else { return }
+    let target = EVDocumentWindowController(document: document, editorSurface: document.editorBackend.makeEditorSurface(),
+                                            diffPlacement: Self.folderDiffPlacement)
+    target.markOpensForDiff()
+    target.argumentDocumentOpener = argumentDocumentOpener
+    document.addWindowController(target)
+    target.showWindow(nil)
+    target.diffController.enable()
+  }
+
+  /// Show the active document in an ordinary window, reusing one that already
+  /// shows it, then close this diff window. The buffer stays open throughout,
+  /// so unsaved edits carry over without a save review.
+  private func leaveDiffWindow() {
+    if let document = activeDocument {
+      if let ordinary = Self.instances.compactMap(\.value).first(where: { controller in
+        controller !== self && !controller.isClosed && !controller.isDiffWindow
+          && controller.paneContainer.panes.contains { $0.document === document }
+      }) {
+        ordinary.showWindow(nil)
+      } else {
+        document.showAdditionalWindow()
+      }
+    }
+    diffMode?.disable()
+    window?.performClose(nil)
+  }
   @objc func toggleDiffAlignSides(_ sender: Any?) { diffMode?.toggleAlign() }
   @objc func toggleDiffCollapseContext(_ sender: Any?) { diffMode?.toggleCollapse() }
   @objc func refreshDiffBase(_ sender: Any?) { diffMode?.refresh() }
@@ -2202,6 +2253,7 @@ extension EVDocumentWindowController: EVDiffModeHost {
         if let controller, replacement != nil {
           // The pristine untitled buffer is already the empty buffer to show.
           target = controller
+          controller.markOpensForDiff()
           controller.adoptDiffPlacement()
         } else {
           guard let empty = folderDiffUntitledDocument?() ?? makeUntitledDiffDocument() else {
@@ -2212,7 +2264,7 @@ extension EVDocumentWindowController: EVDiffModeHost {
           target = EVDocumentWindowController(document: empty, editorSurface: empty.editorBackend.makeEditorSurface(),
                                               diffPlacement: folderDiffPlacement)
           target.argumentDocumentOpener = controller?.argumentDocumentOpener
-          target.opensForDiff = true
+          target.markOpensForDiff()
           empty.addWindowController(target)
           target.showWindow(nil)
         }
@@ -2229,14 +2281,19 @@ extension EVDocumentWindowController: EVDiffModeHost {
           return
         }
         let target: EVDocumentWindowController
+        // The reused window becomes a diff window before its new pane exists,
+        // so that pane is Code from its first frame.
+        let wasDiffWindow = controller?.opensForDiff ?? false
+        if replacement != nil { controller?.markOpensForDiff() }
         if let controller, let replacement, replacement.install(opened) {
           target = controller
           controller.adoptDiffPlacement()
         } else {
+          if replacement != nil { controller?.opensForDiff = wasDiffWindow }
           target = EVDocumentWindowController(document: opened, editorSurface: opened.editorBackend.makeEditorSurface(),
                                               diffPlacement: folderDiffPlacement)
           target.argumentDocumentOpener = controller?.argumentDocumentOpener
-          target.opensForDiff = true
+          target.markOpensForDiff()
           opened.addWindowController(target)
           target.showWindow(nil)
         }
@@ -2250,7 +2307,7 @@ extension EVDocumentWindowController: EVDiffModeHost {
   static func openFileDiff(_ document: EVDocument, initialLine: UInt64?) -> EVDocumentWindowController {
     let target = EVDocumentWindowController(document: document, editorSurface: document.editorBackend.makeEditorSurface(),
                                             diffPlacement: folderDiffPlacement)
-    target.opensForDiff = true
+    target.markOpensForDiff()
     document.addWindowController(target)
     target.showWindow(nil)
     target.diffController.enable(singleFile: true)

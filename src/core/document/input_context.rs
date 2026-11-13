@@ -229,7 +229,7 @@ impl Document {
             self.revision(),
         )?;
         let mut preview = self.scratch_document();
-        preview.history = super::super::history::History::transient(candidate);
+        preview.install_transient_state(candidate);
         let formatted = |source| {
             preview
                 .projection()

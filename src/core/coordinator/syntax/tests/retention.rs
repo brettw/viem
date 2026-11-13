@@ -66,7 +66,7 @@ fn edits_keep_mapped_highlighting_while_superseded_workers_are_blocked_until_emp
     core.poll_syntax();
     let input = core.syntax_input();
     core.syntax
-        .service
+        .code.service
         .request(input.clone(), 0..input.byte_len());
     gate.wait_for(1);
     gate.release(1);
@@ -193,7 +193,7 @@ fn cpp_with_blocked_replacement(
     })));
     core.poll_syntax();
     let input = core.syntax_input();
-    core.syntax.service.request(input.clone(), 0..input.byte_len());
+    core.syntax.code.service.request(input.clone(), 0..input.byte_len());
     gate.wait_for(1);
     gate.release(1);
     let deadline = Instant::now() + Duration::from_secs(5);

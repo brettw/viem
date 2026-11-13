@@ -105,7 +105,7 @@ final class EVTableInteraction: NSObject, NSMenuDelegate {
     }
 
     func moved(to point: NSPoint) {
-        guard let editor, let surface, let snapshot = surface.layoutSnapshot, surface.backend.sourceFormat == .markdown,
+        guard let editor, let surface, let snapshot = surface.layoutSnapshot, surface.viewFormat == .markdown,
               editor.bounds.contains(point) else { hide(); return }
         if !widget.isHidden && (widget.frame.contains(point) || popupTracking || targetKind?.isSelection == true) { return }
         for cell in snapshot.tableCells {
@@ -141,7 +141,7 @@ final class EVTableInteraction: NSObject, NSMenuDelegate {
     /// active row or column, independent of hovering.
     private func refreshSelectionWidget() {
         guard !popupTracking else { return }
-        guard let editor, let surface, let session = surface.session, surface.backend.sourceFormat == .markdown,
+        guard let editor, let surface, let session = surface.session, surface.viewFormat == .markdown,
               !editor.gutterSelectionDragging, columnGesture == nil, let snapshot = surface.layoutSnapshot,
               let selection = try? session.tableSelection(), selection.active != 0,
               selection.document_revision == snapshot.info.identity.document_revision,
@@ -227,7 +227,7 @@ final class EVTableInteraction: NSObject, NSMenuDelegate {
 
     /// The table cell whose column owns the strip along the table's top edge.
     func columnSelectionCell(at point: NSPoint) -> ViemTableCell? {
-        guard let editor, let surface, surface.backend.sourceFormat == .markdown, let snapshot = surface.layoutSnapshot,
+        guard let editor, let surface, surface.viewFormat == .markdown, let snapshot = surface.layoutSnapshot,
               editor.bounds.contains(point), !ownsPointerInteraction(at: point) else { return nil }
         return snapshot.tableCells.first { Self.ownsColumn(point, cell: editor.viewRect($0.rect), table: editor.viewRect($0.table_rect)) }
     }
@@ -301,7 +301,7 @@ final class EVTableInteraction: NSObject, NSMenuDelegate {
         return menu
     }
     func appendMenu(to menu: NSMenu, event: NSEvent) {
-        guard let editor, let surface, let session = surface.session, surface.backend.sourceFormat == .markdown else { return }
+        guard let editor, let surface, let session = surface.session, surface.viewFormat == .markdown else { return }
         var context: ViemTableContext?
         let selection = try? session.tableContext()
         if event.type == .keyDown { context = selection }
@@ -344,7 +344,7 @@ final class EVTableInteraction: NSObject, NSMenuDelegate {
 
     func beginDrag(at point: NSPoint) {
         cellDrag = false; dragAnchor = nil; dragIdentity = nil; dragOrigin = point
-        guard let editor, let surface, surface.backend.sourceFormat == .markdown, let snapshot = surface.layoutSnapshot else { return }
+        guard let editor, let surface, surface.viewFormat == .markdown, let snapshot = surface.layoutSnapshot else { return }
         dragAnchor = snapshot.tableCells.first { editor.viewRect($0.rect).contains(point) }; dragIdentity = snapshot.info.identity
     }
     func endDrag() { dragAnchor = nil; dragIdentity = nil; cellDrag = false }
@@ -384,7 +384,7 @@ final class EVTableInteraction: NSObject, NSMenuDelegate {
     }
     func accessibilityTables() -> [NSAccessibilityElement] {
         guard let editor, let window = editor.window, let surface, let session = surface.session,
-              surface.backend.sourceFormat == .markdown, let snapshot = surface.layoutSnapshot else { return [] }
+              surface.viewFormat == .markdown, let snapshot = surface.layoutSnapshot else { return [] }
         let selection = try? session.tableSelection()
         var tables: [NSAccessibilityElement] = []
         for (_, cells) in Dictionary(grouping: snapshot.tableCells, by: \.table_id).sorted(by: { $0.key < $1.key }) {

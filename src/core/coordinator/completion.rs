@@ -58,6 +58,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         &self,
         view_id: ViewId,
     ) -> Result<Option<&CompletionPresentation>, CoreError> {
+        self.focus_view(view_id);
         let view = self
             .views
             .get(&view_id)
@@ -72,6 +73,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// Cooperative background work: each host callback does one bounded Rust
     /// search slice and returns. No worker has mutable document or UI access.
     pub fn poll_completion(&mut self, view_id: ViewId) -> Result<bool, CoreError> {
+        self.focus_view(view_id);
         let had_session = self
             .views
             .get(&view_id)
@@ -193,6 +195,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// last-insert register. Macro recording sees the resolved text, never the
     /// timing-dependent candidate navigation or intermediate previews.
     pub fn accept_completion(&mut self, view_id: ViewId) -> Result<CoreOutcome, CoreError> {
+        self.focus_view(view_id);
         self.retire_stale_completion(view_id)?;
         let view = self
             .views

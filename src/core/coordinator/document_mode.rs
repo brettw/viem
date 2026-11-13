@@ -35,7 +35,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         DocumentModeState {
             document_id: self.document.id().0,
             document_revision: self.document.revision().0,
-            format: if self.document.format().is_code() { "code" } else if self.document.format().is_markdown() { "markdown" } else { "plainText" },
+            format: match self.document.buffer_format() { Format::Code => "code", Format::Markdown => "markdown", Format::PlainText => "plainText" },
             automatic: self.syntax.automatic_mode,
             language: match &self.syntax.selection { LanguageSelection::Language(id) => Some(id.clone()), _ => None },
             detected_name: detected.as_deref().map(languages::display_name).unwrap_or_else(|| "Plain Text".into()),
@@ -43,11 +43,21 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
     }
 
+    /// [`Self::document_mode_state`] as `view` shows the buffer: its
+    /// projection's revision, and Preview or source.
+    pub fn view_document_mode_state(&self, view: ViewId) -> Result<DocumentModeState, CoreError> {
+        let format = self.view_format(view)?;
+        let mut state = self.document_mode_state();
+        state.document_revision = self.view_document(view).revision().0;
+        state.format = match format { Format::Code => "code", Format::Markdown => "markdown", Format::PlainText => "plainText" };
+        Ok(state)
+    }
+
     /// Markdown Preview, or literal Code whose language is Markdown: the
     /// explicit language, otherwise the detected one. Frontends read this from
     /// the document state instead of exporting the mode on every refresh.
     pub fn is_markdown_source(&self) -> bool {
-        match self.document.format() {
+        match self.document.buffer_format() {
             Format::Markdown => true,
             Format::Code => match &self.syntax.selection {
                 LanguageSelection::Language(id) => id == "markdown",
@@ -62,7 +72,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// prepare a switch to each other once editing pauses. Other formats and
     /// any change retire the preparation immediately.
     pub(super) fn poll_view_format_prefetch(&mut self) {
-        let target = match self.document.format() {
+        let target = match self.document.buffer_format() {
             Format::Markdown => Some(Format::Code),
             Format::Code if self.reflow_language().as_deref() == Some("markdown") => Some(Format::Markdown),
             _ => None,
@@ -123,7 +133,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             prepared.service.request(input, range);
             return;
         }
-        let mut service = self.syntax.service.for_export();
+        let mut service = self.syntax.code.service.for_export();
         service.set_language(Some("markdown".into()));
         service.request(input.clone(), range);
         self.syntax.prepared_code = Some(PreparedCodeSyntax { source_revision, identity: input.identity(), service });
@@ -135,7 +145,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// take the switch's predicted revision number, but not in Code.
     fn retire_stale_prepared_code(&mut self) {
         let (document, revision) = (self.document.id().0, self.document.revision().0);
-        let markdown = self.document.format() == Format::Markdown;
+        let markdown = self.document.projection_kind() == crate::document::ProjectionKind::Preview;
         let current = self.syntax.prepared_code.as_ref().is_some_and(|prepared| prepared.identity.document == document
             && if markdown { prepared.source_revision == revision } else { prepared.identity.revision == revision });
         if !current { self.syntax.prepared_code = None; }
@@ -145,18 +155,19 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// the installed input and the service's current configuration.
     pub(super) fn adopt_prepared_code_syntax(&mut self, input: SyntaxInputIdentity) {
         let Some(prepared) = &self.syntax.prepared_code else { return };
-        let (current, candidate) = (&self.syntax.service.configuration, &prepared.service.configuration);
-        if !self.document.format().is_code() || prepared.identity != input
+        let (current, candidate) = (&self.syntax.code.service.configuration, &prepared.service.configuration);
+        if !self.code_layer_wanted() || prepared.identity != input
             || current.language != candidate.language || current.filename != candidate.filename
             || current.vim_directory != candidate.vim_directory
             || current.registry_generation != candidate.registry_generation {
             return;
         }
-        self.syntax.service = self.syntax.prepared_code.take().expect("checked preparation").service;
+        self.syntax.code.service = self.syntax.prepared_code.take().expect("checked preparation").service;
     }
 
     pub(super) fn set_document_mode(&mut self, view: ViewId, document: DocumentId, revision: Revision,
                                    mode: DocumentMode) -> Result<CoreOutcome, CoreError> {
+        use crate::document::ModelTransactionError;
         let previous_filetype = self.reflow_language();
         let automatic = self.detect_code_language(&LanguageSelection::Automatic);
         let target = match &mode {
@@ -173,9 +184,37 @@ impl<P: TextMeasurementProvider> Core<P> {
                 if automatic.language.is_some() { Format::Code } else { Format::PlainText }
             }
         };
-        // Validate and publish the reprojection before changing syntax policy.
-        // This preserves stale-operation atomicity and maps every shared view.
-        let mut outcome = self.apply_native_model_request(view, ModelRequest::SetViewFormat { document, revision, target })?;
+        // Showing another format is never an edit: no source, revision of
+        // another view's projection, history or dirty state changes. A stale
+        // request changes nothing.
+        let current = self.with_view_focus(view, |core| (core.document.id(), core.document.revision()));
+        if document != current.0 {
+            return Err(command_model_transaction_error(ModelTransactionError::WrongDocument { expected: current.0, actual: document }));
+        }
+        if revision != current.1 {
+            return Err(command_model_transaction_error(ModelTransactionError::StaleRevision { expected: revision, actual: current.1 }));
+        }
+        if !self.views.contains_key(&view) { return Err(CoreError::UnknownView(view)); }
+        // The language and Text or Code styling are buffer-wide; Preview is
+        // per view. Choosing Markdown shows Preview in this view, choosing
+        // the Markdown language shows its source here, and any other language
+        // or Text makes the buffer non-Markdown, so every view shows it
+        // literally while keeping its own Preview choice for later.
+        let markdown = match &mode {
+            DocumentMode::Markdown => true,
+            DocumentMode::Code(id) => id == "markdown",
+            DocumentMode::PlainText => false,
+            DocumentMode::CodeFormat => self.document.is_markdown_buffer(),
+            DocumentMode::Automatic => automatic.language.as_deref() == Some("markdown"),
+        };
+        let before = self.capture_presentations()?;
+        self.finalize_open_edit_group(view)?;
+        self.document.adopt_literal_style_of(target);
+        self.document.set_markdown_buffer(markdown);
+        if markdown { self.document.set_default_presentation(crate::document::ViewPresentation { preview: target.is_markdown(), ..Default::default() }); }
+        self.views.get_mut(&view).expect("validated view").presentation.preview = target.is_markdown();
+        let restyled = self.reconcile_presentations(before)?;
+        let mut outcome = CoreOutcome { layout_changed: restyled, ..Default::default() };
         self.syntax.automatic_detection = Some(automatic);
         self.syntax.automatic_mode = mode == DocumentMode::Automatic;
         match mode {
@@ -184,12 +223,12 @@ impl<P: TextMeasurementProvider> Core<P> {
             DocumentMode::Automatic => self.set_code_language(LanguageSelection::Automatic),
             _ => {}
         }
-        self.syntax.detected_for_code = self.document.format().is_code();
+        self.syntax.detected_for_code = self.code_layer_wanted();
         // The switch's materialization may already have adopted it; a later
         // language choice can still match. Either way the switch retires it.
         self.adopt_prepared_code_syntax(self.syntax_input().identity());
         self.syntax.prepared_code = None;
-        self.syntax.published = None;
+        self.syntax.code.published = None;
         // Syntax changes are presentation only, including selecting another
         // language while already in Code. Native observers still refresh.
         outcome.layout_changed = true;
@@ -260,7 +299,7 @@ mod tests {
         wait_for_prepared_code(&mut core);
         let prepared = calls.load(Ordering::SeqCst);
         assert!(prepared > 0, "visible Code lines were analyzed before the switch");
-        assert_eq!(core.syntax.service.statistics.publications, 0, "nothing is published in Preview");
+        assert_eq!(core.syntax.code.service.statistics.publications, 0, "nothing is published in Preview");
 
         let (document, revision) = (core.document.id(), core.document.revision());
         core.set_document_mode(view, document, revision, DocumentMode::Code("markdown".into())).unwrap();
@@ -268,7 +307,7 @@ mod tests {
         let (_, wait) = core.prepare_view_syntax_wait(view, Instant::now() + Duration::from_secs(5)).unwrap();
         assert!(wait.is_none(), "the visible Code text needs no grace-period wait");
         assert_eq!(calls.load(Ordering::SeqCst), prepared, "the switch reuses the prepared analysis");
-        assert!(!core.syntax.service.runs(core.syntax_input().identity()).is_empty());
+        assert!(!core.syntax.code.service.runs(core.syntax_input().identity()).is_empty());
         assert!(!core.document.is_dirty(), "switching views changes no source");
     }
 
@@ -286,8 +325,8 @@ mod tests {
         wait_for_prepared_code(&mut core);
         let (document, revision) = (core.document.id(), core.document.revision());
         core.set_document_mode(view, document, revision, DocumentMode::Code("rust".into())).unwrap();
-        assert_eq!(core.syntax.service.configuration.language.as_deref(), Some("rust"));
-        assert!(core.syntax.service.runs(core.syntax_input().identity()).is_empty(),
+        assert_eq!(core.syntax.code.service.configuration.language.as_deref(), Some("rust"));
+        assert!(core.syntax.code.service.runs(core.syntax_input().identity()).is_empty(),
             "a different language never adopts Markdown analysis");
     }
 }

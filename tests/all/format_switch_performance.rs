@@ -57,16 +57,6 @@ fn large_switches_preserve_source_anchors_styles_and_refresh_after_edit() {
     assert_eq!(document.source_bytes(), edited_source);
     document.set_view_format(Format::Markdown).unwrap();
     assert!(document.text().contains("Authored Continuation 1499"));
-    for _ in 0..3 {
-        assert!(document.undo());
-    }
-    assert_eq!(document.format(), Format::Markdown);
-    assert_eq!(document.source_bytes(), source.as_bytes());
-    assert!(!document.text().contains("Authored"));
-    for _ in 0..3 {
-        assert!(document.redo());
-    }
-    assert_eq!(document.source_bytes(), edited_source);
 }
 
 #[test]
@@ -89,9 +79,6 @@ fn preview_and_code_switches_keep_encoding_and_grapheme_boundaries() {
         assert_eq!(document.text(), "café\ntail and text");
         document.set_view_format(Format::Code).unwrap();
         assert_eq!(document.text(), "# café\n\n__tail__ and text\n");
-        assert_eq!(document.source_bytes(), bytes);
-        assert!(document.undo());
-        assert!(document.undo());
         assert_eq!(document.source_bytes(), bytes);
     }
 }

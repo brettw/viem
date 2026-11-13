@@ -54,6 +54,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         property: StyleProperty,
     ) -> Result<SemanticStyleState, CoreError> {
+        self.focus_view(view_id);
         if !matches!(
             property,
             StyleProperty::CharacterUnderline

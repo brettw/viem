@@ -41,8 +41,20 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     let backend: EVCoreDocumentBackend
     private(set) var session: EVCoreViewSession?
     var alternateFilePath: String?
-    var makeCoreViewSession: @MainActor (EVCoreDocumentBackend, CGSize, EVViewMargins) throws -> EVCoreViewSession = { document, size, margins in
-        try EVCoreViewSession(document: document, width: size.width, height: size.height, margins: margins)
+    var makeCoreViewSession: @MainActor (EVCoreDocumentBackend, CGSize, EVViewMargins, EVViewDisplay) throws -> EVCoreViewSession = { document, size, margins, display in
+        try EVCoreViewSession(document: document, width: size.width, height: size.height, margins: margins, display: display)
+    }
+    /// What this surface's view shows when it attaches: the buffer's default,
+    /// a split's source view's choice, or a diff's Code.
+    public var requestedDisplay: EVViewDisplay = .default
+    public var currentDisplay: EVViewDisplay { (try? session?.display()) ?? requestedDisplay }
+
+    /// Show this view as Preview, its source or a diff's Code. Only this view
+    /// changes; nothing is recorded in history.
+    func setDisplay(_ display: EVViewDisplay) {
+        guard let session else { requestedDisplay = display; return }
+        guard (try? session.display()) != display else { return }
+        performInput { _ = try session.setDisplay(display) }
     }
     private(set) var formattedSnapshot: EVFormattedSnapshot?
     private(set) var layoutTextSlices: [EVFormattedTextSlice] = []
@@ -240,7 +252,13 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 
     func prepareReplacementSession(for replacement: EVCoreDocumentBackend) throws -> EVCoreViewSession {
         let viewport = try session?.viewportState()
-        let prepared = try prepareSession(for: replacement, initialScale: viewport?.scale)
+        // Reloading keeps what this view showed, and a diff view stays Code.
+        // Another kind of buffer (Markdown for Text, say) starts from its
+        // own default.
+        let previous = (try? session?.display()) ?? requestedDisplay
+        let display: EVViewDisplay = previous == .diff || replacement.isMarkdownBuffer == backend.isMarkdownBuffer
+            ? previous : .default
+        let prepared = try prepareSession(for: replacement, initialScale: viewport?.scale, display: display)
         if let session, let viewport {
             _ = try prepared.setWrap(viewport.flags & UInt32(VIEM_VIEWPORT_STATE_WRAP) != 0)
             try prepared.setNumber(session.number())
@@ -252,14 +270,15 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         return prepared
     }
 
-    private func prepareSession(for document: EVCoreDocumentBackend, initialScale: Float? = nil) throws -> EVCoreViewSession {
+    private func prepareSession(for document: EVCoreDocumentBackend, initialScale: Float? = nil,
+                                display: EVViewDisplay? = nil) throws -> EVCoreViewSession {
         EVStartupPerformance.mark("surface.session.begin")
         defer { EVStartupPerformance.mark("surface.session.end") }
         let size = isViewLoaded ? view.bounds.size : NSSize(width: 920, height: 655)
         let viewportSize = isViewLoaded ? editorView.layoutViewportSize : EVEditorView.layoutViewportSize(for: size)
         // Initial padding belongs in the first layout request. Applying it
         // afterward discards measured heights and reshapes the opening viewport.
-        let prepared = try makeCoreViewSession(document, viewportSize, viewPreferences.margins)
+        let prepared = try makeCoreViewSession(document, viewportSize, viewPreferences.margins, display ?? requestedDisplay)
         do {
             let scale = initialScale ?? document.configuration.zoomScale
             if scale != 1 { _ = try prepared.setScale(CGFloat(scale)) }
@@ -438,7 +457,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 // geometry and colors only after installing the same result.
                 try session.refreshLayoutIfNeeded()
             }
-            let nextDocumentState = try backend.documentState()
+            // This view's projection: its revision and format.
+            let nextDocumentState = try session.viewDocumentState()
             let nextFormattedSnapshot = try backend.formattedSnapshot()
             let nextPresentation = try session.presentation()
             let nextViewport = try session.viewportState()
@@ -671,7 +691,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             // Input mode and scroll capabilities remain current independently
             // of optional drawing exports. In particular, never send a stale
             // expected viewport back to core after a failed refresh.
-            if let state = try? backend.documentState(),
+            if let state = try? session.viewDocumentState(),
                let presentation = try? session.presentation(),
                let viewport = try? session.viewportState(),
                state.document_id == presentation.document_id,
@@ -924,15 +944,33 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         }
     }
 
-    /// Markdown documents: Preview on, or literal Code with the Markdown language.
-    var isMarkdownDocument: Bool {
-        backend.sourceFormat == .markdown || (backend.sourceFormat == .code && backend.codeLanguageIsMarkdown)
+    /// The format this surface's view shows: Preview is per view, so views
+    /// of one Markdown buffer may differ. The buffer's own format is
+    /// `backend.sourceFormat`.
+    public var viewFormat: EVSourceFormat {
+        guard documentState.document_id != 0 else { return backend.sourceFormat }
+        switch documentState.format {
+        case UInt32(VIEM_FORMAT_MARKDOWN): return .markdown
+        case UInt32(VIEM_FORMAT_CODE): return .code
+        default: return .plainText
+        }
     }
 
+    /// Markdown documents: Preview on, or literal Code with the Markdown language.
+    var isMarkdownDocument: Bool {
+        viewFormat == .markdown || backend.sourceFormat == .markdown
+            || (viewFormat == .code && backend.codeLanguageIsMarkdown)
+    }
+
+    /// The Preview toggle: this view only. Its explicit choice is remembered
+    /// for views opened later; existing views never change.
     func setMarkdownPreview(_ enabled: Bool) {
         guard isMarkdownDocument, acceptCompletionForNativeInput(), let session else { return }
         let expected = documentState
+        let wasPreview = viewFormat == .markdown
         performInput { _ = try session.setMarkdownPreview(enabled, expected: expected) }
+        // Remember only a choice that changed this view, not a no-op request.
+        if (viewFormat == .markdown) != wasPreview { backend.rememberMarkdownPreview(enabled) }
     }
 
     public func perform(menuCommand: EVMenuCommand, sender: Any?) {
@@ -951,7 +989,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             return
         default: break
         }
-        if backend.sourceFormat == .code {
+        if viewFormat == .code {
             if (300..<400).contains(menuCommand.rawValue) { return }
         }
         switch menuCommand {
@@ -1037,7 +1075,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             guard layoutSnapshot?.whitespace.applicable == true else { return }
             performInput { try session.setVisibleWhitespace(!(self.layoutSnapshot?.whitespace.enabled ?? true)) }
         case .alignIndentsToPreviousLine:
-            guard backend.sourceFormat == .code else { return }
+            guard viewFormat == .code else { return }
             performInput { try session.setAlignIndentsToPreviousLine(!(self.layoutSnapshot?.whitespace.alignIndentsToPreviousLine ?? false)) }
         case .zoomIn:
             setZoom(adjacentTo: zoomScale, increasing: true, session: session)
@@ -1126,7 +1164,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         if isViewLoaded, let presentation = editorView.statusBar?.commandOutputPresentation(for: menuCommand) {
             return presentation
         }
-        if backend.sourceFormat == .code, (300..<400).contains(menuCommand.rawValue) {
+        if viewFormat == .code, (300..<400).contains(menuCommand.rawValue) {
             if [.editStyles, .reloadStyleSheet].contains(menuCommand) {
                 return .enabled
             }
@@ -1135,7 +1173,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         if let action = menuCommand.formattingAction { return formattingPresentation(action) }
         return switch menuCommand {
         case .paragraphStyles, .characterStyles:
-            EVMenuItemPresentation(isEnabled: session != nil && backend.sourceFormat != .plainText)
+            EVMenuItemPresentation(isEnabled: session != nil && viewFormat != .plainText)
         case .save, .saveAs, .exportHTML, .pageSetup, .selectAll:
             .enabled
         case .selectWord: EVMenuItemPresentation(isEnabled: session?.nativeActionAvailable(UInt32(VIEM_NATIVE_SELECT_WORD)) == true)
@@ -1191,8 +1229,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             EVMenuItemPresentation(isEnabled: layoutSnapshot?.whitespace.applicable == true,
                                   state: layoutSnapshot?.whitespace.enabled == true ? .on : .off)
         case .alignIndentsToPreviousLine:
-            EVMenuItemPresentation(isEnabled: backend.sourceFormat == .code,
-                                  state: backend.sourceFormat == .code && layoutSnapshot?.whitespace.alignIndentsToPreviousLine == true ? .on : .off)
+            EVMenuItemPresentation(isEnabled: viewFormat == .code,
+                                  state: viewFormat == .code && layoutSnapshot?.whitespace.alignIndentsToPreviousLine == true ? .on : .off)
         case .useSelectionForFind:
             EVMenuItemPresentation(
                 isEnabled: selectedUTF8Ranges().contains(where: { !$0.isEmpty })
@@ -1210,11 +1248,11 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .actualSize:
             .enabled
         case .insertLink:
-            backend.sourceFormat.isMarkdown ? linkPopover.editorPresentation : .disabled
+            viewFormat.isMarkdown ? linkPopover.editorPresentation : .disabled
         case .reloadStyleSheet:
             .enabled
         case .editStyles:
-            EVMenuItemPresentation(isEnabled: backend.sourceFormat != .code)
+            EVMenuItemPresentation(isEnabled: viewFormat != .code)
         case .printDocument:
             .disabled
         default:
@@ -1743,7 +1781,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 extension EVEditorSurfaceController: EVCommandTurnHost {
     func clipboardSnapshotsForCommandTurn() -> [EVClipboardTurnSnapshot] {
         let text = pasteboard.viemString()
-        let fragment = pasteMatchesStyle || backend.sourceFormat == .code ? nil : pasteboard.viemData(forType: EVClipboardRepresentations.fragmentType)
+        let fragment = pasteMatchesStyle || viewFormat == .code ? nil : pasteboard.viemData(forType: EVClipboardRepresentations.fragmentType)
         let generation = text == nil ? 0 : pasteboard.viemGeneration
         let writable = pasteboard.viemIsWritable
         return [
@@ -1833,7 +1871,8 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
             }
         }
         defer { if !dispatched { complete(false) } }
-        let state = try backend.documentState()
+        guard let session else { throw EVCoreFrontendError.staleHostEffect }
+        let state = try session.viewDocumentState()
         guard state.document_id == batch.documentID,
               state.document_revision == batch.documentRevision
         else { throw EVCoreFrontendError.staleHostEffect }

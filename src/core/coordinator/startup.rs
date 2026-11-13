@@ -36,6 +36,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// Drain application settings and first-view event effects once the native
     /// window exists. The frontend applies process settings on its first buffer.
     pub fn take_startup_effects(&mut self, view: ViewId) -> Result<CoreOutcome, CoreError> {
+        self.focus_view(view);
         if !self.views.contains_key(&view) { return Err(CoreError::UnknownView(view)); }
         let mut command = crate::command::mappings::empty_mapping_output();
         if !self.startup_effects.is_empty() {
@@ -49,12 +50,14 @@ impl<P: TextMeasurementProvider> Core<P> {
     }
 
     pub fn has_pending_mapping(&self, view_id: ViewId) -> bool {
+        self.focus_view(view_id);
         self.views
             .get(&view_id)
             .is_some_and(|view| view.commands.has_pending_mapping())
     }
 
     pub fn flush_mapping_prefix(&mut self, view_id: ViewId) -> Result<CoreOutcome, CoreError> {
+        self.focus_view(view_id);
         self.handle(view_id, CoreEvent::FlushMappingPrefix)
     }
 }

@@ -1044,6 +1044,78 @@ fn ex_info_effects_capture_marks_registers_jumps_and_printed_text() {
 }
 
 #[test]
+fn views_of_one_markdown_buffer_show_preview_and_source_independently() {
+    let options = ViemDocumentOptions { format: VIEM_FORMAT_MARKDOWN, ..Default::default() };
+    let mut core = create_core(b"# Title\n\n*body*\n", options);
+    let mut context = Box::new(FakeProviderContext::new(core.handle));
+    let provider = provider((&mut *context as *mut FakeProviderContext).cast(), fake_shape_batch);
+    let add = |display| {
+        let options = ViemViewOptions { display, ..Default::default() };
+        let (mut view, mut outcome) = (0, ViemCoreOutcome::default());
+        assert_eq!(unsafe { viem_core_view_add(core.handle, &options, &provider, &mut view, &mut outcome) }, ViemStatus::Ok);
+        view
+    };
+    let preview = add(VIEM_VIEW_DISPLAY_DEFAULT);
+    let source = add(VIEM_VIEW_DISPLAY_SOURCE);
+    let state = |view| {
+        let mut state = ViemDocumentState::default();
+        assert_eq!(unsafe { viem_core_view_document_state(core.handle, view, &mut state) }, ViemStatus::Ok);
+        state
+    };
+    let display = |view| {
+        let mut display = u32::MAX;
+        assert_eq!(unsafe { viem_core_view_display(core.handle, view, &mut display) }, ViemStatus::Ok);
+        display
+    };
+    assert_eq!(display(preview), VIEM_VIEW_DISPLAY_PREVIEW);
+    assert_eq!(display(source), VIEM_VIEW_DISPLAY_SOURCE);
+    assert_eq!(state(preview).format, VIEM_FORMAT_MARKDOWN);
+    assert_eq!(state(source).format, VIEM_FORMAT_CODE);
+    assert_ne!(state(preview).document_revision, state(source).document_revision,
+        "each projection has its own revisions");
+    // A formatted snapshot names its own projection, whichever view the core
+    // addressed last.
+    let read = |state: ViemDocumentState| {
+        let request = ViemFormattedUtf8Range {
+            identity: ViemFormattedSnapshotIdentity { document_id: state.document_id, document_revision: state.document_revision },
+            utf8_start: 0, utf8_end: 5,
+        };
+        let (mut bytes, mut required) = ([0u8; 5], 0);
+        assert_eq!(unsafe { viem_core_copy_formatted_utf8_range(core.handle, &request, bytes.as_mut_ptr(), 5, &mut required) },
+            ViemStatus::Ok);
+        bytes
+    };
+    let (preview_state, source_state) = (state(preview), state(source));
+    assert_eq!(&read(preview_state), b"Title");
+    assert_eq!(&read(source_state), b"# Tit");
+    assert_eq!(&read(preview_state), b"Title");
+    let mut outcome = ViemCoreOutcome::default();
+    assert_eq!(unsafe { viem_core_view_set_display(core.handle, preview, VIEM_VIEW_DISPLAY_SOURCE, &mut outcome) }, ViemStatus::Ok);
+    assert_eq!(state(preview).format, VIEM_FORMAT_CODE);
+    assert_eq!(state(source).document_revision, state(preview).document_revision);
+    assert_eq!(unsafe { viem_core_view_set_display(core.handle, preview, 99, &mut outcome) }, ViemStatus::InvalidArgument);
+    assert_eq!(viem_core_destroy(core.handle), ViemStatus::Ok);
+    core.handle = 0;
+}
+
+#[test]
+fn preview_display_is_unsupported_for_a_buffer_that_is_not_markdown() {
+    let mut core = create_core(b"plain text\n", ViemDocumentOptions::default());
+    let mut context = Box::new(FakeProviderContext::new(core.handle));
+    let provider = provider((&mut *context as *mut FakeProviderContext).cast(), fake_shape_batch);
+    let (mut view, mut outcome) = (0, ViemCoreOutcome::default());
+    assert_eq!(unsafe { viem_core_view_add(core.handle, &ViemViewOptions::default(), &provider, &mut view, &mut outcome) }, ViemStatus::Ok);
+    assert_eq!(unsafe { viem_core_view_set_display(core.handle, view, VIEM_VIEW_DISPLAY_PREVIEW, &mut outcome) },
+        ViemStatus::UnsupportedOperation);
+    assert_eq!(unsafe { viem_core_view_set_display(core.handle, view, VIEM_VIEW_DISPLAY_DIFF, &mut outcome) }, ViemStatus::Ok);
+    let mut state = ViemDocumentState::default();
+    assert_eq!(unsafe { viem_core_view_document_state(core.handle, view, &mut state) }, ViemStatus::Ok);
+    assert_eq!(state.format, VIEM_FORMAT_CODE, "a diff view shows Code");
+    assert_eq!(viem_core_destroy(core.handle), ViemStatus::Ok);
+    core.handle = 0;
+}
+
+#[test]
 fn view_creation_applies_initial_padding_and_rejects_invalid_values() {
     let mut core = create_core(b"first\nsecond", ViemDocumentOptions::default());
     let mut context = Box::new(FakeProviderContext::new(core.handle));

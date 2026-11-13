@@ -417,7 +417,7 @@ impl Document {
             .collect::<Result<Vec<_>, _>>()?;
         let state = DocumentState {
             transient_list_separator: None, revision, source, projection, source_hard_lines,
-            encoding: self.encoding(), format: self.format(), file_format: self.file_format(),
+            encoding: self.encoding(), kind: self.state().kind, file_format: self.file_format(),
             file_format_origin: self.file_format_origin(), line_ending_evidence: self.line_ending_evidence(),
             has_bom: self.state().has_bom,
         };
@@ -662,7 +662,7 @@ impl Document {
             .collect::<Result<Vec<_>, _>>()?;
         let state = DocumentState {
             transient_list_separator: None, revision, source, projection, source_hard_lines,
-            encoding: self.encoding(), format: self.format(), file_format: self.file_format(),
+            encoding: self.encoding(), kind: self.state().kind, file_format: self.file_format(),
             file_format_origin: self.file_format_origin(), line_ending_evidence: self.line_ending_evidence(),
             has_bom: self.state().has_bom,
         };

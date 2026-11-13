@@ -33,6 +33,11 @@ pub struct DocumentWorkStatistics {
     pub comment_context_lexed_lines: usize,
     pub model_requests: usize,
     pub transaction_commits: usize,
+    /// Lineages other than the acting one reprojected (regionally or
+    /// completely) to catch up with a transaction because no cached
+    /// projection applied. Diagnoses slow typing with Code and Preview views
+    /// of one buffer open.
+    pub follower_reprojections: usize,
     pub full_projection_candidates: usize,
     pub regional_projection_candidates: usize,
     pub projected_formatted_bytes: usize,
@@ -88,6 +93,7 @@ impl DocumentWorkStatistics {
             comment_context_lexed_lines,
             model_requests,
             transaction_commits,
+            follower_reprojections,
             full_projection_candidates,
             regional_projection_candidates,
             projected_formatted_bytes,

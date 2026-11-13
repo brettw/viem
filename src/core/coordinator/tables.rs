@@ -26,6 +26,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         &mut self,
         view_id: ViewId,
     ) -> Result<Option<crate::layout::LayoutJobRequest>, CoreError> {
+        self.focus_view(view_id);
         let view = self
             .views
             .get_mut(&view_id)
@@ -72,6 +73,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         candidate: LayoutJobCandidate,
     ) -> Result<bool, CoreError> {
+        self.focus_view(view_id);
         let view = self
             .views
             .get(&view_id)
@@ -272,6 +274,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     }
 
     pub fn table_selection(&self, view: ViewId) -> Result<Option<TableSelectionExtent>, CoreError> {
+        self.focus_view(view);
         Ok(self
             .views
             .get(&view)
@@ -287,6 +290,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         revision: Revision,
         extent: Option<TableSelectionExtent>,
     ) -> Result<CoreOutcome, CoreError> {
+        self.focus_view(view);
         if document != self.document.id() || revision != self.document.revision() {
             return Err(CoreError::StaleLogicalSelection);
         }

@@ -200,11 +200,20 @@ pub unsafe extern "C" fn viem_diff_session_create(
         }
         let base = checkout_core(base_core)?;
         let new = checkout_core(new_core)?;
-        let mut session = crate::coordinator::DiffSession::new(
-            base.core().document(),
-            new.core().document(),
-            flags & VIEM_DIFF_SESSION_ALIGNED != 0,
-        );
+        // Both sides are compared as literal source, whatever another view
+        // of either buffer shows.
+        let literal = crate::document::ProjectionKind::Literal;
+        let (base_document, new_document) = (base.core().document(), new.core().document());
+        if !base_document.has_lineage(literal) || !new_document.has_lineage(literal) {
+            return Err(ViemStatus::UnsupportedOperation);
+        }
+        let mut session = base_document.with_lineage_focus(literal, |base_document| {
+            new_document.with_lineage_focus(literal, |new_document| crate::coordinator::DiffSession::new(
+                base_document,
+                new_document,
+                flags & VIEM_DIFF_SESSION_ALIGNED != 0,
+            ))
+        });
         session.set_collapsed(flags & VIEM_DIFF_SESSION_COLLAPSED != 0);
         drop((base, new));
         let mut registry = lock()?;

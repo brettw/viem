@@ -34,6 +34,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// Fire a native lifecycle event after its host action has reached the
     /// corresponding boundary. An omitted match uses the current filename.
     pub fn fire_autocmd(&mut self, view_id: ViewId, event: &str, matched: Option<&str>) -> Result<CoreOutcome, CoreError> {
+        self.focus_view(view_id);
         self.fire_autocmd_with_clipboard(view_id, event, matched, None)
     }
 

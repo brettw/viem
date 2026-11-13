@@ -853,6 +853,9 @@ struct View<P: TextMeasurementProvider> {
     /// The next immediate layout follows a Preview/Code projection switch:
     /// nothing is cached, so it lays out only visible rows.
     fresh_projection: bool,
+    /// What this view shows of the buffer; the document answers for it while
+    /// the coordinator acts for this view.
+    presentation: crate::document::ViewPresentation,
     immediate_layout_context: LayoutExecutionContext,
     observed_metrics_generation: MetricsGeneration,
     active_layout_work: Option<ActiveLayoutWork>,
@@ -862,6 +865,27 @@ struct View<P: TextMeasurementProvider> {
     /// Each value carries every dependency identity; obsolete values are
     /// discarded before lookup and this cache has a fixed entry limit.
     long_line_checkpoints: LongLineCheckpointCache,
+}
+
+trait IntoOwnedIfTranslated<T> {
+    fn into_owned_if_translated(self) -> Option<T>;
+}
+
+impl<T: Clone> IntoOwnedIfTranslated<T> for std::borrow::Cow<'_, T> {
+    fn into_owned_if_translated(self) -> Option<T> {
+        match self {
+            std::borrow::Cow::Borrowed(_) => None,
+            std::borrow::Cow::Owned(value) => Some(value),
+        }
+    }
+}
+
+/// One view as it was before a presentation change.
+pub(crate) struct PresentationBefore {
+    id: ViewId,
+    kind: crate::document::ProjectionKind,
+    format: Format,
+    anchors: crate::command::CommandPositionAnchors,
 }
 
 #[derive(Clone, Debug)]
@@ -949,6 +973,8 @@ mod syntax;
 pub use syntax::CodeLanguagePolicy;
 mod markdown_code;
 mod document_mode;
+#[cfg(test)]
+mod presentation_tests;
 pub use document_mode::{DocumentMode, DocumentModeState};
 mod whitespace;
 
@@ -973,6 +999,12 @@ pub struct Core<P: TextMeasurementProvider> {
     /// continuation to the iterative runner through `queued_replay`.
     replay_undo_floor: Option<usize>,
     queued_replay: Option<ReplayPlan>,
+    /// The projection `buffer_commands`' marks are offsets in: that of the
+    /// view that last published them.
+    buffer_marks_kind: crate::document::ProjectionKind,
+    /// Views of a follower lineage whose positions a native edit captured
+    /// before committing; their lineage's map exists only after the commit.
+    deferred_follower_anchors: Vec<(ViewId, crate::command::CommandPositionAnchors)>,
     pending_scripts: BTreeMap<ViewId, scripting::PendingReplay>,
     /// Buffer-open autocommands have fired (first view attached).
     buffer_opened: bool,
@@ -1120,17 +1152,18 @@ impl<P: TextMeasurementProvider> Core<P> {
     pub fn selection_options(&self) -> &crate::command::SelectionOptions { &self.buffer_commands.selection_options }
     pub fn set_selection_option(&mut self, keymodel: bool, value: &str) -> bool {
         if !self.buffer_commands.selection_options.set(keymodel, value) { return false; }
-        for view in self.views.values_mut() { view.commands.install_buffer_state(&self.buffer_commands); }
+        self.install_buffer_commands_everywhere();
         true
     }
 
     pub fn set_autoselect(&mut self, enabled: bool) {
         self.buffer_commands.selection_options.autoselect = enabled;
-        for view in self.views.values_mut() { view.commands.install_buffer_state(&self.buffer_commands); }
+        self.install_buffer_commands_everywhere();
     }
 
     /// Apply the configured initiation policy to an existing exact selection.
     pub fn set_selection_origin(&mut self, view_id: ViewId, origin: crate::command::SelectionOrigin, return_mode: Mode) -> Result<(), CoreError> {
+        self.focus_view(view_id);
         let view = self.views.get_mut(&view_id).ok_or(CoreError::UnknownView(view_id))?;
         if !matches!(view.commands.mode(), Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock) { return Err(CoreError::NoVisualSelection); }
         view.commands.set_native_selection_origin(&self.document, origin, return_mode);
@@ -1154,6 +1187,8 @@ impl<P: TextMeasurementProvider> Core<P> {
             style_edit_group: None,
             replay_undo_floor: None,
             queued_replay: None,
+            buffer_marks_kind: crate::document::ProjectionKind::Literal,
+            deferred_follower_anchors: Vec::new(),
             pending_scripts: BTreeMap::new(),
             buffer_opened: false,
             firing_autocmds: false,
@@ -1201,6 +1236,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         &self,
         view_id: ViewId,
     ) -> Result<crate::document::ResolvedCharacterStyle, CoreError> {
+        self.focus_view(view_id);
         let view = self
             .views
             .get(&view_id)
@@ -1240,6 +1276,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         style: SemanticInlineStyle,
     ) -> Result<SemanticStylePresentation, CoreError> {
+        self.focus_view(view_id);
         if let Some(presentation) = self.table_semantic_style_presentation(view_id, style)? { return Ok(presentation); }
         let view = self
             .views
@@ -1383,6 +1420,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         &self,
         view_id: ViewId,
     ) -> Result<SemanticStyleState, CoreError> {
+        self.focus_view(view_id);
         if let Some(state) = self.table_strikethrough_state(view_id)? { return Ok(state); }
         if self.active_linear_selection_identity(view_id)?.is_none() {
             let view = self.views.get(&view_id).ok_or(CoreError::UnknownView(view_id))?;
@@ -1409,6 +1447,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     }
 
     pub fn can_insert_list_paragraph(&self, view_id: ViewId) -> Result<bool, CoreError> {
+        self.focus_view(view_id);
         let view = self.views.get(&view_id).ok_or(CoreError::UnknownView(view_id))?;
         Ok(self.document.is_modifiable() && !self.document.is_read_only() && view.composition.is_none() && view.commands.can_insert_list_paragraph(&self.document)
             && self.list_selection_identity(view_id).is_ok_and(|selection|
@@ -1417,6 +1456,7 @@ impl<P: TextMeasurementProvider> Core<P> {
 
     /// Structural toolbar/menu query, like `can_set_task_list`.
     pub fn can_set_alert(&self, view_id: ViewId) -> Result<bool, CoreError> {
+        self.focus_view(view_id);
         let view = self.views.get(&view_id).ok_or(CoreError::UnknownView(view_id))?;
         if view.composition.is_some() || !self.document.is_modifiable() {
             return Ok(false);
@@ -1427,6 +1467,7 @@ impl<P: TextMeasurementProvider> Core<P> {
 
     /// Structural toolbar/menu query: no layout, source parsing or trial edit.
     pub fn can_set_task_list(&self, view_id: ViewId) -> Result<bool, CoreError> {
+        self.focus_view(view_id);
         let view = self.views.get(&view_id).ok_or(CoreError::UnknownView(view_id))?;
         if view.composition.is_some() || !self.document.is_modifiable() {
             return Ok(false);
@@ -1439,6 +1480,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         &self,
         view_id: ViewId,
     ) -> Result<LogicalSelectionIdentity, CoreError> {
+        self.focus_view(view_id);
         if let Some(selection) = self.table_logical_selection(view_id)? { return Ok(selection); }
         if let Some(selection) = self.active_linear_selection_identity(view_id)? {
             return Ok(selection);
@@ -1468,6 +1510,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         &self,
         view_id: ViewId,
     ) -> Result<crate::document::SelectedNamedStyles, CoreError> {
+        self.focus_view(view_id);
         if let Some(styles) = self.table_named_styles(view_id)? { return Ok(styles); }
         let selection = self.list_selection_identity(view_id)?;
         let commands = &self.views[&view_id].commands;
@@ -1551,6 +1594,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         revision: Revision,
         style_sheet_revision: StyleSheetRevision,
     ) -> Result<StyleEditGroup, CoreError> {
+        self.focus_view(view_id);
         if !self.views.contains_key(&view_id) {
             return Err(CoreError::UnknownView(view_id));
         }
@@ -1600,6 +1644,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         group: StyleEditGroup,
     ) -> Result<(), CoreError> {
+        self.focus_view(view_id);
         self.validate_style_edit_group(view_id, group)?;
         self.finalize_style_edit_group()?;
         Ok(())
@@ -1945,12 +1990,45 @@ impl<P: TextMeasurementProvider> Core<P> {
     pub(crate) fn try_add_view_with_initial_layout(
         &mut self,
         provider: P,
+        layout: ViewLayout,
+        immediate_layout_context: LayoutExecutionContext,
+    ) -> Result<ViewId, CoreError> {
+        let presentation = self.document.default_presentation();
+        self.try_add_view_with_presentation(provider, layout, immediate_layout_context, presentation)
+    }
+
+    /// Attach a view that shows the buffer with `presentation`, for example
+    /// a diff's live side, which is always Code.
+    pub fn try_add_view_with_presentation(
+        &mut self,
+        provider: P,
+        layout: ViewLayout,
+        immediate_layout_context: LayoutExecutionContext,
+        presentation: crate::document::ViewPresentation,
+    ) -> Result<ViewId, CoreError> {
+        // A view asking for a projection no other view shows builds it, at
+        // the current history node, before its first layout.
+        let wanted = self.document.wanted_kind(presentation);
+        if !self.document.has_lineage(wanted) {
+            self.document.add_lineage(wanted).map_err(command_model_transaction_error)?;
+        }
+        let previous_focus = self.document.focus();
+        self.document.set_focus(presentation);
+        let result = self.try_add_view_focused(provider, layout, immediate_layout_context, presentation);
+        self.document.set_focus(previous_focus);
+        result
+    }
+
+    fn try_add_view_focused(
+        &mut self,
+        provider: P,
         mut layout: ViewLayout,
         immediate_layout_context: LayoutExecutionContext,
+        presentation: crate::document::ViewPresentation,
     ) -> Result<ViewId, CoreError> {
         let id = self.allocate_view_id()?;
         let mut commands = CommandInterpreter::new();
-        commands.install_buffer_state(&self.buffer_commands);
+        commands.install_buffer_state(&self.buffer_state_for(presentation));
         commands.set_reflow_language(self.reflow_language());
         commands.note_document_revision(self.document.revision());
         commands.follow_format_line_mode(self.document.format());
@@ -1960,6 +2038,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             layout.set_wrap(options.0);
         }
         layout.set_regional_cache_retains_document(prelayout::retains_complete_presentation(&self.document));
+        if presentation.diff { self.document.set_code_views(true); }
         let engine = LayoutEngine::new(provider);
         let observed_metrics_generation = inspect_layout_provider(&engine).metrics_generation;
         self.views.insert(
@@ -1978,6 +2057,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 viewport_anchor: None,
                 diff_edit_viewport: None,
                 fresh_projection: false,
+                presentation,
                 immediate_layout_context,
                 observed_metrics_generation,
                 active_layout_work: None,
@@ -2008,6 +2088,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// open undo group is closed. Any worker request owned by this view is
     /// cooperatively cancelled before the view state is dropped.
     pub fn remove_view(&mut self, view_id: ViewId) -> Result<ViewRemovalOutcome, CoreError> {
+        self.focus_view(view_id);
         self.cancel_pending_script(view_id);
         if !self.views.contains_key(&view_id) {
             return Err(CoreError::UnknownView(view_id));
@@ -2027,6 +2108,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             .views
             .remove(&view_id)
             .expect("view existence checked before style-group finalization");
+        self.document.set_code_views(self.views.values().any(|view| view.presentation.diff));
         let layout_work_cancelled = cancel_active_layout_work(&mut view);
         let composition_discarded = view.composition.take().is_some();
         let command_group_closed = self.edit_group_owner == Some(view_id);
@@ -2044,11 +2126,11 @@ impl<P: TextMeasurementProvider> Core<P> {
 
     fn install_buffer_commands(&mut self, view_id: ViewId) {
         self.sync_register_filename();
-        self.views
+        let state = self.buffer_state_for(self.views[&view_id].presentation).into_owned_if_translated();
+        let view = self.views
             .get_mut(&view_id)
-            .expect("view existence checked by serial coordinator")
-            .commands
-            .install_buffer_state(&self.buffer_commands);
+            .expect("view existence checked by serial coordinator");
+        view.commands.install_buffer_state(state.as_ref().unwrap_or(&self.buffer_commands));
     }
 
     fn publish_buffer_commands(&mut self, source: ViewId) {
@@ -2059,13 +2141,259 @@ impl<P: TextMeasurementProvider> Core<P> {
             .commands
             .export_buffer_state();
         self.buffer_commands = next;
-        for view in self.views.values_mut() {
-            view.commands.install_buffer_state(&self.buffer_commands);
+        self.buffer_marks_kind = self.document.kind_for(self.views[&source].presentation);
+        self.install_buffer_commands_everywhere();
+    }
+
+    /// The buffer's shared command state as a view with `presentation` uses
+    /// it: marks are offsets in the projection that published them, so a
+    /// view of the other projection receives them translated through their
+    /// source boundaries.
+    pub(super) fn buffer_state_for(&self, presentation: crate::document::ViewPresentation) -> std::borrow::Cow<'_, BufferCommandState> {
+        let kind = self.document.kind_for(presentation);
+        if kind == self.buffer_marks_kind || self.buffer_commands.marks.is_empty()
+            || !self.document.has_lineage(self.buffer_marks_kind) {
+            return std::borrow::Cow::Borrowed(&self.buffer_commands);
+        }
+        let mut state = self.buffer_commands.clone();
+        state.marks = state.marks.iter()
+            .filter_map(|(name, offset)| self.document.translate_offset(self.buffer_marks_kind, kind, *offset)
+                .map(|offset| (*name, offset)))
+            .collect();
+        std::borrow::Cow::Owned(state)
+    }
+
+    fn install_buffer_commands_everywhere(&mut self) {
+        let ids = self.views.keys().copied().collect::<Vec<_>>();
+        for id in ids {
+            let state = self.buffer_state_for(self.views[&id].presentation).into_owned_if_translated();
+            match &state {
+                Some(state) => self.views.get_mut(&id).expect("listed view").commands.install_buffer_state(state),
+                None => {
+                    let view = self.views.get_mut(&id).expect("listed view");
+                    view.commands.install_buffer_state(&self.buffer_commands);
+                }
+            }
         }
     }
 
     pub fn command_state(&self, view: ViewId) -> Option<&CommandInterpreter> {
+        self.focus_view(view);
         self.views.get(&view).map(|view| &view.commands)
+    }
+
+    /// Answer document queries for `view`'s presentation. An unknown view
+    /// leaves the buffer default.
+    pub(crate) fn focus_view(&self, view: ViewId) {
+        let presentation = self.views.get(&view).map(|view| view.presentation)
+            .unwrap_or_else(|| self.document.default_presentation());
+        self.document.set_focus(presentation);
+    }
+
+    /// Answer document queries for the buffer as a whole: its default
+    /// presentation. Source-level identities (save, source copies, read-only
+    /// and recovery) use this revision, whatever view was addressed last.
+    pub fn focus_buffer(&self) {
+        self.document.set_focus(self.document.default_presentation());
+    }
+
+    /// Run `work` for `view`'s presentation, then restore the previous focus,
+    /// so a pass over other views never leaves the acting view misfocused.
+    pub(crate) fn with_view_focus<R>(&mut self, view: ViewId, work: impl FnOnce(&mut Self) -> R) -> R {
+        let previous = self.document.focus();
+        self.focus_view(view);
+        let result = work(self);
+        self.document.set_focus(previous);
+        result
+    }
+
+    /// Rebase views of a follower lineage that a native edit deferred, now
+    /// that their lineage has followed the commit.
+    pub(crate) fn rebase_deferred_follower_views(&mut self, acting: &PositionMap) -> Result<(), CoreError> {
+        for (id, anchors) in std::mem::take(&mut self.deferred_follower_anchors) {
+            if !self.views.contains_key(&id) { continue; }
+            let transition = self.view_transition(id, acting, anchors.revision());
+            let mut commands = self.views[&id].commands.clone();
+            if !commands.apply_position_map(&anchors, &transition)? {
+                return Err(CoreError::Position(PositionError::WrongSnapshot {
+                    expected: transition.source_revision(),
+                    actual: anchors.revision(),
+                }));
+            }
+            let previous = self.document.focus();
+            self.focus_view(id);
+            let recovered = commands.recover_physical_cursor_display(&self.document);
+            commands.follow_format_line_mode(self.document.format());
+            self.document.set_focus(previous);
+            recovered?;
+            self.views.get_mut(&id).expect("checked").commands = commands;
+        }
+        Ok(())
+    }
+
+    /// Capture every listed view's anchors under its own presentation.
+    pub(crate) fn capture_view_anchors(
+        &self,
+        views: impl Iterator<Item = ViewId>,
+        capture: fn(&CommandInterpreter, &Document) -> Result<crate::command::CommandPositionAnchors, DocumentError>,
+    ) -> Result<Vec<(ViewId, crate::command::CommandPositionAnchors)>, CoreError> {
+        let previous = self.document.focus();
+        let result = views.map(|id| {
+            self.focus_view(id);
+            capture(&self.views[&id].commands, &self.document).map(|anchors| (id, anchors)).map_err(CoreError::from)
+        }).collect();
+        self.document.set_focus(previous);
+        result
+    }
+
+    /// The exact map that carries `view`'s positions, captured at `from`,
+    /// across the last publication: the acting lineage's `acting` map, or the
+    /// map its own lineage followed by (the composed per-event capture or the
+    /// last single commit), or identity when its lineage did not move.
+    pub(crate) fn view_transition(&self, view: ViewId, acting: &PositionMap, from: Revision) -> PositionMap {
+        let Some(kind) = self.views.get(&view).map(|view| self.document.kind_for(view.presentation)) else {
+            return acting.clone();
+        };
+        let current = self.document.revision_of(kind);
+        let exact = |map: &&PositionMap| map.source_revision() == from && map.target_revision() == current;
+        if exact(&acting) { return acting.clone(); }
+        if let Some(map) = self.document.last_captured_map(kind).filter(exact)
+            .or_else(|| self.document.last_follow_map(kind).filter(exact)) {
+            return map.clone();
+        }
+        if from == current {
+            return self.document.with_lineage_focus(kind, |document| PositionMap::identity(document.id(),
+                crate::document::PositionDomain::FormattedText, current, document.projection().text_tree().byte_len()));
+        }
+        acting.clone()
+    }
+
+    /// The buffer as `view` shows it: projection, format and revision
+    /// queries answer for that view until another view is addressed.
+    pub fn view_document(&self, view: ViewId) -> &Document {
+        self.focus_view(view);
+        &self.document
+    }
+
+    pub fn view_presentation(&self, view: ViewId) -> Result<crate::document::ViewPresentation, CoreError> {
+        self.views.get(&view).map(|view| view.presentation).ok_or(CoreError::UnknownView(view))
+    }
+
+    /// The format `view` shows: the buffer's, except that a diff view of a
+    /// literal buffer is always Code.
+    pub fn view_format(&self, view: ViewId) -> Result<Format, CoreError> {
+        Ok(self.document.format_for(self.view_presentation(view)?))
+    }
+
+    /// Change what one view shows. No source, revision, history, dirty
+    /// state or other view changes; this view lays out again.
+    pub fn set_view_presentation(&mut self, view_id: ViewId, presentation: crate::document::ViewPresentation) -> Result<CoreOutcome, CoreError> {
+        let view = self.views.get(&view_id).ok_or(CoreError::UnknownView(view_id))?;
+        if view.presentation == presentation { return Ok(CoreOutcome::default()); }
+        let before = self.capture_presentations()?;
+        self.views.get_mut(&view_id).expect("validated view").presentation = presentation;
+        let changed = self.reconcile_presentations(before)?;
+        Ok(CoreOutcome { layout_changed: changed, ..Default::default() })
+    }
+
+    /// Every view's projection, format and positions before a presentation
+    /// change, captured under its own presentation.
+    pub(crate) fn capture_presentations(&self) -> Result<Vec<PresentationBefore>, CoreError> {
+        let ids = self.views.keys().copied().collect::<Vec<_>>();
+        let anchors = self.capture_view_anchors(ids.into_iter(), CommandInterpreter::capture_format_position_anchors)?;
+        Ok(anchors.into_iter().map(|(id, anchors)| {
+            let presentation = self.views[&id].presentation;
+            PresentationBefore {
+                id,
+                kind: self.document.kind_for(presentation),
+                format: self.document.format_for(presentation),
+                anchors,
+            }
+        }).collect())
+    }
+
+    /// After view presentations or the buffer's format choice changed, carry
+    /// each view whose projection changed into it: through the switch map
+    /// when its lineage is built now, otherwise through the translation
+    /// between two live projections of the same source. Release lineages no
+    /// view shows. No source, revision of another lineage, history, dirty
+    /// state or register changes. Returns whether any view changed.
+    pub(crate) fn reconcile_presentations(&mut self, before: Vec<PresentationBefore>) -> Result<bool, CoreError> {
+        let mut changed = Vec::new();
+        for entry in &before {
+            let Some(view) = self.views.get(&entry.id) else { continue };
+            let wanted = self.document.wanted_kind(view.presentation);
+            if wanted != entry.kind {
+                let map = if self.document.has_lineage(wanted) {
+                    self.document.lineage_translation_from(entry.kind, wanted)
+                } else {
+                    self.document.add_lineage_from(entry.kind, wanted)
+                        .map(|map| map.expect("a missing lineage is built"))
+                }.map_err(command_model_transaction_error)?;
+                let mut commands = self.views[&entry.id].commands.clone();
+                if !commands.apply_position_map(&entry.anchors, &map)? {
+                    return Err(CoreError::Position(PositionError::WrongSnapshot {
+                        expected: map.source_revision(),
+                        actual: entry.anchors.revision(),
+                    }));
+                }
+                let view = self.views.get_mut(&entry.id).expect("listed view");
+                view.viewport_anchor = view.viewport_anchor.and_then(|current| match map.map_text_anchor(current.anchor) {
+                    Ok(MappingOutcome::Exact(anchor) | MappingOutcome::Moved(anchor)
+                        | MappingOutcome::CollapsedByDeletion(anchor) | MappingOutcome::RecoveredFromProvenance(anchor)) =>
+                        Some(ViewportTextAnchor { anchor, ..current }),
+                    _ => None,
+                });
+                view.commands = commands;
+                view.fresh_projection = true;
+                changed.push(entry.id);
+            } else if self.document.format_for(view.presentation) != entry.format {
+                changed.push(entry.id);
+            }
+        }
+        let shown = self.views.values().map(|view| self.document.kind_for(view.presentation)).collect::<Vec<_>>();
+        if !self.views.is_empty() {
+            // Shared marks are offsets in the projection that published them;
+            // move them to a surviving one before that lineage is released.
+            if !shown.contains(&self.buffer_marks_kind) && self.document.has_lineage(self.buffer_marks_kind) {
+                let (from, to) = (self.buffer_marks_kind, shown[0]);
+                self.buffer_commands.marks = self.buffer_commands.marks.iter()
+                    .filter_map(|(name, offset)| self.document.translate_offset(from, to, *offset).map(|offset| (*name, offset)))
+                    .collect();
+                self.buffer_marks_kind = to;
+            }
+            for kind in [crate::document::ProjectionKind::Literal, crate::document::ProjectionKind::Preview] {
+                if !shown.contains(&kind) { self.document.release_lineage(kind); }
+            }
+        }
+        self.restyle_views(|id| changed.contains(&id));
+        for id in &changed {
+            let id = *id;
+            self.with_view_focus(id, |core| {
+                let view = core.views.get_mut(&id).expect("listed view");
+                view.commands.retire_table_selection(&core.document);
+                view.commands.follow_format_line_mode(core.document.format());
+            });
+            if let Err(error) = self.materialize_immediate_viewport(id, ImmediateLayoutIntent::PreserveViewport) {
+                self.record_presentation_error(id, error);
+            }
+        }
+        Ok(!changed.is_empty())
+    }
+
+    /// Discard the styled layout of the selected views after their styling
+    /// changed without a new revision. Geometry is rebuilt on the next frame.
+    pub(crate) fn restyle_views(&mut self, mut selected: impl FnMut(ViewId) -> bool) {
+        self.document.set_code_views(self.views.values().any(|view| view.presentation.diff));
+        for (id, view) in &mut self.views {
+            if !selected(*id) { continue; }
+            update_viewport_anchor(&self.document, view);
+            cancel_active_layout_work(view);
+            if let Some(previous) = view.active_prelayout_work.take() { previous.cancellation.cancel(); }
+            view.layout.invalidate_syntax_presentation(true);
+            view.long_line_checkpoints = LongLineCheckpointCache::default();
+            view.fresh_projection = true;
+        }
     }
 
     /// The buffer's `textwidth` state shared by every view.
@@ -2095,11 +2423,13 @@ impl<P: TextMeasurementProvider> Core<P> {
 
     /// Status coordinates always refer to the physical source artifact.
     pub fn physical_line_location(&self, view: ViewId) -> Result<crate::command::LineLocation, CoreError> {
+        self.focus_view(view);
         let state = self.views.get(&view).ok_or(CoreError::UnknownView(view))?;
         state.commands.physical_line_location(&self.document)
     }
 
     pub fn line_location(&self, view: ViewId) -> Result<crate::command::LineLocation, CoreError> {
+        self.focus_view(view);
         let state = self.views.get(&view).ok_or(CoreError::UnknownView(view))?;
         state
             .commands
@@ -2107,6 +2437,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     }
 
     pub fn layout(&self, view: ViewId) -> Option<&ViewLayout> {
+        self.focus_view(view);
         self.views.get(&view).map(|view| &view.layout)
     }
 
@@ -2120,6 +2451,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         insets: crate::layout::EdgeInsets,
     ) -> Result<(), CoreError> {
+        self.focus_view(view_id);
         if [insets.top, insets.left, insets.bottom, insets.right]
             .iter()
             .any(|value| !value.is_finite() || *value < 0.0)
@@ -2152,6 +2484,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     }
 
     pub fn presentation_layout(&self, view: ViewId) -> Option<&ViewLayout> {
+        self.focus_view(view);
         self.views
             .get(&view)
             .map(|view| view.composition_layout.as_ref().unwrap_or(&view.layout))
@@ -2160,6 +2493,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// Return the current absolute presentation origin and only those bounds
     /// proven exact for the current document/configuration/provider identity.
     pub fn viewport_state(&self, view_id: ViewId) -> Result<ViewportState, CoreError> {
+        self.focus_view(view_id);
         let view = self
             .views
             .get(&view_id)
@@ -2211,6 +2545,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// A Vim window-width column is the zoomed Base Paragraph `0` advance.
     /// This bounded metrics-only request never resolves or shapes document text.
     pub fn default_column_width(&mut self, view_id: ViewId) -> Result<f32, CoreError> {
+        self.focus_view(view_id);
         let (style, _) = self.default_paragraph_metrics()?;
         let (document, revision) = (self.document.id(), self.document.revision());
         let view = self.views.get_mut(&view_id).ok_or(CoreError::UnknownView(view_id))?;
@@ -2255,6 +2590,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         &self,
         view: ViewId,
     ) -> Result<LayoutProviderRequirements, CoreError> {
+        self.focus_view(view);
         let view = self.views.get(&view).ok_or(CoreError::UnknownView(view))?;
         Ok(inspect_layout_provider(&view.engine))
     }
@@ -2266,6 +2602,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         mut region: LayoutJobRegion,
         cancellation: LayoutCancellationToken,
     ) -> Result<crate::layout::LayoutJobRequest, CoreError> {
+        self.focus_view(view_id);
         self.poll_syntax();
         if !self.views.contains_key(&view_id) {
             return Err(CoreError::UnknownView(view_id));
@@ -2372,6 +2709,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         demand: &LayoutDemand,
         cancellation: LayoutCancellationToken,
     ) -> Result<crate::layout::LayoutJobRequest, CoreError> {
+        self.focus_view(view_id);
         let (viewport_top, viewport_height) = self.validate_view_layout_demand(view_id, demand)?;
         let mut viewport = ViewportLayoutRegion::new(
             demand.requested_hard_lines(),
@@ -2427,6 +2765,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         candidate: LayoutJobCandidate,
     ) -> Result<InstalledLayoutJob, CoreError> {
+        self.focus_view(view_id);
         // Validate against already-published presentation state. Publishing a
         // newly completed syntax result here would cancel this very candidate
         // during synchronous shaping. Syntax is published before preparation
@@ -2517,6 +2856,15 @@ impl<P: TextMeasurementProvider> Core<P> {
         allow_automatic_horizontal_focus: bool,
     ) -> Result<(), CoreError> {
         self.poll_syntax();
+        self.with_view_focus(view_id, |core| core.materialize_immediate_viewport_focused(view_id, intent, allow_automatic_horizontal_focus))
+    }
+
+    fn materialize_immediate_viewport_focused(
+        &mut self,
+        view_id: ViewId,
+        intent: ImmediateLayoutIntent,
+        allow_automatic_horizontal_focus: bool,
+    ) -> Result<(), CoreError> {
         self.synchronize_whitespace(view_id)?;
         let _ = self.open_collapsed_at_caret(view_id)?;
         // Font registration can advance metrics during shaping. Publishing
@@ -3267,6 +3615,16 @@ impl<P: TextMeasurementProvider> Core<P> {
         requested_top: f32,
         horizontal_focus: Option<(usize, Option<f32>)>,
     ) -> Result<(), CoreError> {
+        self.with_view_focus(view_id, |core| core.materialize_requested_viewport_focused(view_id, left, requested_top, horizontal_focus))
+    }
+
+    fn materialize_requested_viewport_focused(
+        &mut self,
+        view_id: ViewId,
+        left: f32,
+        requested_top: f32,
+        horizontal_focus: Option<(usize, Option<f32>)>,
+    ) -> Result<(), CoreError> {
         // A wheel tick usually stays inside the already materialized overscan.
         // Reuse that exact document-coordinate geometry without cloning caches,
         // publishing another layout revision or cancelling its background job.
@@ -3604,11 +3962,21 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
     }
 
-    fn rebase_viewport_anchors(&mut self, map: &PositionMap) -> Result<(), CoreError> {
-        let local_change = (map.source_revision() != map.target_revision())
-            .then(|| self.document.layout_change_between(map.source_revision(), map.target_revision()))
-            .flatten();
-        for view in self.views.values_mut() {
+    fn rebase_viewport_anchors(&mut self, acting: &PositionMap) -> Result<(), CoreError> {
+        let previous_focus = self.document.focus();
+        let ids = self.views.keys().copied().collect::<Vec<_>>();
+        for id in ids {
+            // Each view follows its own lineage's transition, under its own
+            // presentation.
+            let from = self.views[&id].layout.snapshot().map(|snapshot| snapshot.document_revision)
+                .or_else(|| self.views[&id].viewport_anchor.map(|anchor| anchor.anchor.revision()))
+                .unwrap_or_else(|| acting.source_revision());
+            let map = &self.view_transition(id, acting, from);
+            self.focus_view(id);
+            let local_change = (map.source_revision() != map.target_revision())
+                .then(|| self.document.layout_change_between(map.source_revision(), map.target_revision()))
+                .flatten();
+            let view = self.views.get_mut(&id).expect("listed view");
             if map.source_revision() != map.target_revision() {
                 if let Some(edit) = view.diff_edit_viewport.take() {
                     edit.continue_edit(view, map)?;
@@ -3651,6 +4019,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 MappingOutcome::Ambiguous(_) | MappingOutcome::Unresolvable(_) => None,
             };
         }
+        self.document.set_focus(previous_focus);
         Ok(())
     }
 
@@ -3698,6 +4067,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         &self,
         view: ViewId,
     ) -> Result<Option<CompositionOverlay>, CoreError> {
+        self.focus_view(view);
         let view = self.views.get(&view).ok_or(CoreError::UnknownView(view))?;
         if let Some(session) = &view.composition {
             return session.overlay(&self.document).map(Some).map_err(CoreError::from);
@@ -4498,18 +4868,17 @@ impl<P: TextMeasurementProvider> Core<P> {
             &Document,
         ) -> Result<crate::command::CommandPositionAnchors, DocumentError>,
     ) -> Result<BTreeMap<ViewId, CommandInterpreter>, CoreError> {
-        let anchors = self
-            .views
-            .iter()
-            .map(|(id, view)| {
-                capture_anchors(&view.commands, &self.document).map(|anchors| (*id, anchors))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let anchors = self.capture_view_anchors(self.views.keys().copied().collect::<Vec<_>>().into_iter(), capture_anchors)?;
         let mut next_commands = self
             .views
             .iter()
             .map(|(id, view)| (*id, view.commands.clone()))
             .collect::<BTreeMap<_, _>>();
+        // Views of another live lineage follow it, whose map exists only
+        // once the transaction publishes.
+        let (anchors, deferred): (Vec<_>, Vec<_>) = anchors.into_iter()
+            .partition(|(_, captured)| captured.revision() == map.source_revision());
+        self.deferred_follower_anchors = deferred;
         for (id, captured) in &anchors {
             let commands = next_commands
                 .get_mut(id)
@@ -4573,10 +4942,13 @@ impl<P: TextMeasurementProvider> Core<P> {
             .commands
             .capture_history_restoration(&self.document)?;
         let parent = self.document.history_status().current;
-        self.document.attach_history_restoration(
-            parent.node,
-            HistoryRestoration::new(before, after.clone()),
-        )?;
+        // Showing another projection creates no history node to restore.
+        if committed.summary().kind() != crate::document::ModelChangeKind::Presentation {
+            self.document.attach_history_restoration(
+                parent.node,
+                HistoryRestoration::new(before, after.clone()),
+            )?;
+        }
         if resumes_typing {
             self.edit_group_owner = Some(view);
             self.edit_group_restoration = Some(OpenGroupRestoration {
@@ -4634,12 +5006,17 @@ impl<P: TextMeasurementProvider> Core<P> {
         active_intent: ImmediateLayoutIntent,
     ) -> Result<Vec<ViewCompositionChange>, CoreError> {
         self.cancel_all_active_layout_work();
+        self.rebase_deferred_follower_views(map)?;
         self.rebase_viewport_anchors(map)?;
         self.publish_buffer_commands(view_id);
         let current_revision = self.document.revision();
         let mut composition_changes = Vec::new();
+        let previous_focus = self.document.focus();
         for (id, view) in &mut self.views {
-            view.commands.recover_physical_cursor_display(&self.document)?;
+            self.document.set_focus(view.presentation);
+            let recovered = view.commands.recover_physical_cursor_display(&self.document);
+            self.document.set_focus(previous_focus);
+            recovered?;
             if let Some(session) = view.composition.take() {
                 view.composition_layout = None;
                 composition_changes.push(ViewCompositionChange {
@@ -4788,6 +5165,14 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// its exact restoration endpoint. The verified candidate is then rebound
     /// only to the closed group, preserving all source/revision preconditions.
     fn apply_native_model_request(
+        &mut self,
+        view_id: ViewId,
+        request: ModelRequest,
+    ) -> Result<CoreOutcome, CoreError> {
+        self.with_view_focus(view_id, |core| core.apply_native_model_request_focused(view_id, request))
+    }
+
+    fn apply_native_model_request_focused(
         &mut self,
         view_id: ViewId,
         request: ModelRequest,
@@ -4965,6 +5350,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         style: StyleId,
         edit: StyleDefinitionFieldEdit,
     ) -> Result<CoreOutcome, CoreError> {
+        self.focus_view(view_id);
         self.validate_style_edit_group(view_id, group)?;
         self.edit_generated_style_with_history(
             view_id,
@@ -5144,16 +5530,8 @@ impl<P: TextMeasurementProvider> Core<P> {
             (commands.cursor(), commands.mode())
         };
         let invoking_positions = self.views[&view_id].commands.capture_position_anchors(&self.document)?;
-        let inactive_positions = self
-            .views
-            .iter()
-            .filter(|(id, _)| **id != view_id)
-            .map(|(id, view)| {
-                view.commands
-                    .capture_position_anchors(&self.document)
-                    .map(|anchors| (*id, anchors))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let others = self.views.keys().copied().filter(|id| *id != view_id).collect::<Vec<_>>();
+        let inactive_positions = self.capture_view_anchors(others.into_iter(), CommandInterpreter::capture_position_anchors)?;
         let request = ModelRequest::NavigateHistory {
             document: self.document.id(),
             revision: before_revision,
@@ -5204,14 +5582,19 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .expect("captured view remains attached")
                 .commands
                 .clone();
-            if !commands.apply_position_map(&anchors, &map)? {
+            let transition = self.view_transition(id, &map, anchors.revision());
+            if !commands.apply_position_map(&anchors, &transition)? {
                 return Err(CoreError::Position(PositionError::WrongSnapshot {
                     expected: before_revision,
                     actual: anchors.revision(),
                 }));
             }
-            commands.recover_physical_cursor_display(&self.document)?;
+            let previous = self.document.focus();
+            self.focus_view(id);
+            let recovered = commands.recover_physical_cursor_display(&self.document);
             commands.follow_format_line_mode(self.document.format());
+            self.document.set_focus(previous);
+            recovered?;
             rebased.push((id, commands));
         }
         self.views
@@ -5395,6 +5778,11 @@ impl<P: TextMeasurementProvider> Core<P> {
     }
 
     pub fn handle(&mut self, view_id: ViewId, event: CoreEvent) -> Result<CoreOutcome, CoreError> {
+        self.focus_view(view_id);
+        self.with_view_focus(view_id, |core| core.handle_focused(view_id, event))
+    }
+
+    fn handle_focused(&mut self, view_id: ViewId, event: CoreEvent) -> Result<CoreOutcome, CoreError> {
         let autocmd_clipboard = match &event {
             CoreEvent::InputWithClipboard { clipboard, .. } | CoreEvent::FlushMappingPrefixWithClipboard(clipboard) => Some(clipboard.clone()),
             _ => None,
@@ -6007,15 +6395,8 @@ impl<P: TextMeasurementProvider> Core<P> {
             .map(|(commands, anchors)| commands.substitute_confirmation_history(&self.document)
                 .cloned().unwrap_or_else(|| anchors.history_snapshot()));
         let inactive_positions = if matches!(&event, CoreEvent::Input(_) | CoreEvent::InsertListParagraph { .. }) {
-            self.views
-                .iter()
-                .filter(|(id, _)| **id != view_id)
-                .map(|(id, view)| {
-                    view.commands
-                        .capture_position_anchors(&self.document)
-                        .map(|anchors| (*id, anchors))
-                })
-                .collect::<Result<Vec<_>, _>>()?
+            let others = self.views.keys().copied().filter(|id| *id != view_id).collect::<Vec<_>>();
+            self.capture_view_anchors(others.into_iter(), CommandInterpreter::capture_position_anchors)?
         } else {
             Vec::new()
         };
@@ -6545,7 +6926,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                             .expect("captured view remains attached during serial dispatch")
                             .commands
                             .clone();
-                        if !commands.apply_position_map(&anchors, &map)? {
+                        let transition = self.view_transition(id, &map, anchors.revision());
+                        if !commands.apply_position_map(&anchors, &transition)? {
                             // Captures and the map are both prepared against
                             // `before`; a mismatch means the serial coordinator
                             // invariant was violated. Do not partially publish
@@ -6555,10 +6937,14 @@ impl<P: TextMeasurementProvider> Core<P> {
                                 actual: anchors.revision(),
                             }));
                         }
-                        commands.recover_physical_cursor_display(&self.document)?;
-                        commands.capture_position_anchors(&self.document)?;
-                        commands.recover_physical_cursor_display(&self.document)?;
+                        let previous = self.document.focus();
+                        self.focus_view(id);
+                        let recovered = commands.recover_physical_cursor_display(&self.document)
+                            .and_then(|_| commands.capture_position_anchors(&self.document).map(|_| ()))
+                            .and_then(|()| commands.recover_physical_cursor_display(&self.document));
                         commands.follow_format_line_mode(self.document.format());
+                        self.document.set_focus(previous);
+                        recovered?;
             rebased.push((id, commands));
                     }
                     let history_after = self.document.history_status().current;
@@ -6714,13 +7100,21 @@ impl<P: TextMeasurementProvider> Core<P> {
                         .expect("prepared view remains attached during serial dispatch")
                         .commands = commands;
                 }
+                // Offsets of the acting projection, translated into each view's.
+                let acting_kind = self.document.kind_for(self.views[&view_id].presentation);
+                let previous_focus = self.document.focus();
                 if let Some(range) = affected_range {
                     let continuing = edit_group_depth_before > 0
                         && self.document.edit_group_generation() == edit_group_generation_before
                         && matches!(self.views[&view_id].commands.mode(), Mode::Insert | Mode::Replace);
                     for view in self.views.values_mut() {
-                        view.commands.note_affected_range(&self.document, range.clone(), continuing, !history_navigation);
+                        let kind = self.document.kind_for(view.presentation);
+                        let translate = |offset| self.document.translate_offset(acting_kind, kind, offset);
+                        let (Some(start), Some(end)) = (translate(range.start), translate(range.end)) else { continue };
+                        self.document.set_focus(view.presentation);
+                        view.commands.note_affected_range(&self.document, start.min(end)..start.max(end), continuing, !history_navigation);
                     }
+                    self.document.set_focus(previous_focus);
                 }
                 if let Some(offset) = change_offset {
                     // Every view of the buffer shares the change list (`g;`).
@@ -6728,8 +7122,12 @@ impl<P: TextMeasurementProvider> Core<P> {
                     let generation = self.document.edit_group_generation();
                     let new_unit = !(edit_group_depth_before > 0 && generation == edit_group_generation_before);
                     for (id, view) in &mut self.views {
+                        let kind = self.document.kind_for(view.presentation);
+                        let Some(offset) = self.document.translate_offset(acting_kind, kind, offset) else { continue };
+                        self.document.set_focus(view.presentation);
                         view.commands.note_change(&self.document, offset, *id == view_id, generation, new_unit);
                     }
+                    self.document.set_focus(previous_focus);
                 }
                 if changed {
                     for (id, view) in &mut self.views {
@@ -7740,15 +8138,12 @@ impl<P: TextMeasurementProvider> Core<P> {
             .prepared_model_transaction()
             .text_position_map()
             .clone();
-        let anchors = self
-            .views
-            .iter()
-            .map(|(id, view)| {
-                view.commands
-                    .capture_position_anchors(&self.document)
-                    .map(|anchors| (*id, anchors))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let anchors = self.capture_view_anchors(self.views.keys().copied().collect::<Vec<_>>().into_iter(),
+            CommandInterpreter::capture_position_anchors)?;
+        // Views of another live lineage follow it after the commit.
+        let (anchors, deferred): (Vec<_>, Vec<_>) = anchors.into_iter()
+            .partition(|(_, captured)| captured.revision() == exact_position_map.source_revision());
+        self.deferred_follower_anchors = deferred;
 
         // Clone and validate every controller mapping before the authoritative
         // source pointer moves. The prepared map is the same owned map returned
@@ -7820,6 +8215,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .expect("prepared view remains attached during serial dispatch")
                 .commands = commands;
         }
+        self.rebase_deferred_follower_views(&exact_position_map)?;
         if changed {
             self.rebase_viewport_anchors(&exact_position_map)?;
         }

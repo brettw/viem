@@ -60,7 +60,7 @@ extension EVEditorSurfaceController {
 
     func reloadImage(at target: EVLinkMenuTarget) {
         do {
-            guard backend.sourceFormat == .markdown, let session,
+            guard viewFormat == .markdown, let session,
                   let location = try imageDestination(at: target) else { return }
             _ = session.provider.reloadImage(location)
         } catch { report(error) }

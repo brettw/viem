@@ -136,7 +136,7 @@ pub(super) struct DiffTypingLine {
 
 impl DiffTypingLine {
     fn for_caret<P: TextMeasurementProvider>(base: &Document, new: &Core<P>, view: ViewId, diff: &DiffState) -> Option<Self> {
-        if !new.document().format().is_code() { return None; }
+        if !new.view_format(view).is_ok_and(|format| format.is_code()) { return None; }
         let line = new.document().hard_line_at_offset(new.views[&view].commands.cursor())?;
         let base_text = |index| {
             let projection = base.projection();
@@ -437,6 +437,9 @@ impl DiffSession {
     pub fn sync_scroll<P: TextMeasurementProvider, Q: TextMeasurementProvider>(
         &mut self, base: &mut Core<P>, base_view: ViewId, new: &mut Core<Q>, new_view: ViewId, leader: Side,
     ) -> Result<(bool, bool), CoreError> {
+        // Each side answers for its own view: a diff's live view is Code.
+        base.focus_view(base_view);
+        new.focus_view(new_view);
         if !self.aligned || !self.is_current(Side::Base, base_view, base.document())
             || !self.is_current(Side::New, new_view, new.document()) {
             return Ok((false, false));
@@ -597,6 +600,9 @@ impl DiffSession {
         new: &mut Core<Q>,
         new_view: ViewId,
     ) -> Result<DiffSync, CoreError> {
+        // Each side answers for its own view: a diff's live view is Code.
+        base.focus_view(base_view);
+        new.focus_view(new_view);
         new.views.get_mut(&new_view).ok_or(CoreError::UnknownView(new_view))?.diff_typing_line = None;
         let live_changed = (self.new_document, self.new_revision) != (new.document().id(), new.document().revision())
             || new.views[&new_view].layout.awaits_live_diff(new.document().id(), new.document().revision());
@@ -680,6 +686,9 @@ impl DiffSession {
         new_view: ViewId,
         direction: ChangeDirection,
     ) -> Result<Option<ChangeNavigation>, CoreError> {
+        // Each side answers for its own view: a diff's live view is Code.
+        base.focus_view(base_view);
+        new.focus_view(new_view);
         self.sync(base, base_view, new, new_view)?;
         let hunks: Vec<Hunk> = self.state.hunks().collect();
         if hunks.is_empty() {
@@ -782,6 +791,7 @@ impl DiffSession {
     pub(crate) fn scrollbar_mark_info<P: TextMeasurementProvider>(
         &self, core: &Core<P>, view: ViewId, side: Side,
     ) -> Result<(usize, f32), CoreError> {
+        core.focus_view(view);
         let installed = self.installed(side);
         let layout = core.layout(view).ok_or(CoreError::UnknownView(view))?;
         let extent = if layout.has_shared_scroll_range() && layout.estimated_maximum_viewport_top() > 0.0 {
@@ -808,6 +818,7 @@ impl DiffSession {
         view: ViewId,
         side: Side,
     ) -> Result<(Vec<ScrollbarMark>, f32), CoreError> {
+        core.focus_view(view);
         let installed = self.installed(side);
         let count = core.document().line_count();
         let (mark_count, extent) = self.scrollbar_mark_info(core, view, side)?;
@@ -1366,6 +1377,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// session has not taken yet, so the host must sync to open it on the
     /// other side.
     pub fn has_opened_collapsed(&self, view_id: ViewId) -> Result<bool, CoreError> {
+        self.focus_view(view_id);
         Ok(self.views.get(&view_id).ok_or(CoreError::UnknownView(view_id))?.layout.elided().has_opened())
     }
 
@@ -1402,6 +1414,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// The unscaled height of one default Code row, which sizes aligned
     /// filler so that a filler line matches a text line.
     pub fn diff_filler_line_height(&mut self, view_id: ViewId) -> Result<f32, CoreError> {
+        self.focus_view(view_id);
         let advance = self.default_row_height(view_id)?;
         let scale = self.views[&view_id].layout.scale();
         Ok(if scale > 0.0 { advance / scale } else { advance })

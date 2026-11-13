@@ -677,7 +677,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     /// Quote classification and source-aware insertion remain entirely in core.
     private func synchronizeEditingPreferences() {
         guard let session = surface?.session else { return }
-        let enabled = editingPreferences.smartQuotes && surface?.backend.sourceFormat != .code
+        let enabled = editingPreferences.smartQuotes && surface?.viewFormat != .code
         let textWidth = editingPreferences.textWidth
         guard configuredEditingSession !== session || configuredSmartQuotes != enabled
             || configuredMarkdownAutodetect != editingPreferences.markdownAutodetect

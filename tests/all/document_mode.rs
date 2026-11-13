@@ -1,5 +1,5 @@
 use viem_core::{Core, CoreEvent, Document, DocumentMode, Format, ViewId};
-use viem_core::document::{BoundaryAffinity, Encoding, HistoryNavigationRequest};
+use viem_core::document::{BoundaryAffinity, Encoding};
 use viem_core::layout::MockTextMeasurementProvider;
 
 type Editor = Core<MockTextMeasurementProvider>;
@@ -10,7 +10,9 @@ fn editor(source: &[u8], format: Format, filename: &str) -> (Editor, ViewId) {
     (core, view)
 }
 fn select(core: &mut Editor, view: ViewId, mode: DocumentMode) {
-    core.handle(view, CoreEvent::SetDocumentMode { document: core.document().id(), revision: core.document().revision(), mode }).unwrap();
+    // Each projection has its own revision: name the one this view shows.
+    let revision = core.view_document(view).revision();
+    core.handle(view, CoreEvent::SetDocumentMode { document: core.document().id(), revision, mode }).unwrap();
 }
 
 #[test]
@@ -31,17 +33,14 @@ fn all_view_formats_preserve_bytes_dirty_state_shared_cursors_and_history() {
                     affinity: BoundaryAffinity::Downstream, extend_selection: false }).unwrap();
             }
             select(&mut core, first, mode);
-            assert_eq!(core.document().format(), target, "{from:?} -> {target:?}");
+            // Preview is per view; the language and Text or Code are
+            // buffer-wide. Every view keeps its caret on the same text.
+            assert_eq!(core.view_format(first).unwrap(), target, "{from:?} -> {target:?}");
             assert_eq!(core.document().source_bytes(), bytes);
             assert!(!core.document().is_dirty());
-            let expected = core.document().text().find("café").unwrap();
-            for view in [first, second] { assert_eq!(core.command_state(view).unwrap().cursor(), expected, "{from:?} -> {target:?}"); }
-            if from != target {
-                core.handle(first, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
-                assert_eq!(core.document().format(), from);
-                assert_eq!(core.document().source_bytes(), bytes);
-                core.handle(first, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
-                assert_eq!(core.document().format(), target);
+            for view in [first, second] {
+                let expected = core.view_document(view).text().find("café").unwrap();
+                assert_eq!(core.command_state(view).unwrap().cursor(), expected, "{from:?} -> {target:?}");
             }
         }
     }
@@ -84,9 +83,6 @@ fn code_format_without_a_detected_language_stays_code_and_retains_automatic_sele
     let revision = core.document().revision();
     select(&mut core, view, DocumentMode::CodeFormat);
     assert_eq!(core.document().revision(), revision);
-    core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
-    assert_eq!(core.document().format(), Format::PlainText);
-    assert_eq!(core.document().source_bytes(), bytes);
 }
 
 #[test]
@@ -229,23 +225,25 @@ fn views_follow_the_format_line_mode_default_unless_explicitly_changed() {
     assert!(core.handle(explicit, CoreEvent::SetLineMode(LineMode::Visual)).is_err(),
         "Code always uses physical source lines");
     assert_eq!(line_mode(&core, explicit), LineMode::PhysicalSource);
+    // Preview is per view: the other view keeps showing Code.
     select(&mut core, following, DocumentMode::Markdown);
     assert_eq!(line_mode(&core, following), LineMode::Visual);
+    assert_eq!(line_mode(&core, explicit), LineMode::PhysicalSource);
+    select(&mut core, explicit, DocumentMode::Markdown);
     assert_eq!(line_mode(&core, explicit), LineMode::Visual);
     core.handle(explicit, CoreEvent::SetLineMode(LineMode::PhysicalSource)).unwrap();
-    select(&mut core, following, DocumentMode::Code("markdown".into()));
-    assert_eq!(line_mode(&core, following), LineMode::PhysicalSource);
+    select(&mut core, explicit, DocumentMode::Code("markdown".into()));
     assert_eq!(line_mode(&core, explicit), LineMode::PhysicalSource);
-    // Undoing the switch restores the default of the restored format, and an
-    // explicit choice resumes outside Code.
-    core.handle(following, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
-    assert_eq!(core.document().format(), Format::Markdown);
     assert_eq!(line_mode(&core, following), LineMode::Visual);
+    // Leaving Code restores the default of the shown format, and an explicit
+    // choice resumes outside Code.
+    select(&mut core, explicit, DocumentMode::Markdown);
+    assert_eq!(core.view_format(explicit).unwrap(), Format::Markdown);
     assert_eq!(line_mode(&core, explicit), LineMode::PhysicalSource);
     // Choosing the default again resumes following it.
     core.handle(explicit, CoreEvent::SetLineMode(LineMode::Visual)).unwrap();
-    select(&mut core, following, DocumentMode::Code("markdown".into()));
+    select(&mut core, explicit, DocumentMode::Code("markdown".into()));
     assert_eq!(line_mode(&core, explicit), LineMode::PhysicalSource);
-    core.handle(following, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+    select(&mut core, explicit, DocumentMode::Markdown);
     assert_eq!(line_mode(&core, explicit), LineMode::Visual);
 }

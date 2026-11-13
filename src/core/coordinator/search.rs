@@ -69,6 +69,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// True also for stale query state, so inactive panes discover shared
     /// pattern/option changes before exporting another presentation snapshot.
     pub fn search_work_pending(&self, view_id: ViewId) -> Result<bool, CoreError> {
+        self.focus_view(view_id);
         let view = self
             .views
             .get(&view_id)
@@ -88,6 +89,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// One cooperative presentation turn. It never edits source, history,
     /// registers, the authoritative cursor, or the current Visual selection.
     pub fn poll_search(&mut self, view_id: ViewId) -> Result<bool, CoreError> {
+        self.focus_view(view_id);
         self.poll_search_with_match(view_id, None)
     }
 

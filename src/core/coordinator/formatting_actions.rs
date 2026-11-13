@@ -204,6 +204,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         requested: FormattingActionSet,
     ) -> Result<FormattingActions, CoreError> {
+        self.focus_view(view_id);
         use FormattingAction::*;
         let view = self.views.get(&view_id).ok_or(CoreError::UnknownView(view_id))?;
         let mut result = FormattingActions::default();

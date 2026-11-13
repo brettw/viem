@@ -12,6 +12,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         revision: Revision,
         fragment: &str,
     ) -> Result<Option<CoreOutcome>, CoreError> {
+        self.focus_view(view);
         if !self.views.contains_key(&view) {
             return Err(CoreError::UnknownView(view));
         }
@@ -106,6 +107,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         view: ViewId,
         expected: LogicalSelectionIdentity,
     ) -> Result<CoreOutcome, CoreError> {
+        self.focus_view(view);
         if expected.kind() != LogicalSelectionKind::None
             || self.list_selection_identity(view)? != expected
         {
@@ -122,6 +124,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         expected: LogicalSelectionIdentity,
         intent: LinkEditIntent,
     ) -> Result<CoreOutcome, CoreError> {
+        self.focus_view(view);
         if self.list_selection_identity(view)? != expected {
             return Err(CoreError::StaleLogicalSelection);
         }
@@ -266,6 +269,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         expected: LogicalSelectionIdentity,
         intent: crate::document::ReferenceRequest,
     ) -> Result<CoreOutcome, CoreError> {
+        self.focus_view(view);
         if self.list_selection_identity(view)? != expected {
             return Err(CoreError::StaleLogicalSelection);
         }
@@ -339,6 +343,7 @@ impl LinkContext {
 
 impl<P: TextMeasurementProvider> Core<P> {
     pub fn link_context(&self, view_id: ViewId) -> Result<LinkContext, CoreError> {
+        self.focus_view(view_id);
         let selection = self.list_selection_identity(view_id)?;
         let commands = self.command_state(view_id).ok_or(CoreError::UnknownView(view_id))?;
         let document = &self.document;

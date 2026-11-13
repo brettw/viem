@@ -25,6 +25,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         view: ViewId,
         path: Option<crate::document::ArtifactPath>,
     ) -> Result<(), CoreError> {
+        self.focus_view(view);
         self.views
             .get_mut(&view)
             .ok_or(CoreError::UnknownView(view))?
@@ -37,6 +38,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         view: ViewId,
         value: crate::command::RegisterValue,
     ) -> Result<(), CoreError> {
+        self.focus_view(view);
         if !self.views.contains_key(&view) {
             return Err(CoreError::UnknownView(view));
         }

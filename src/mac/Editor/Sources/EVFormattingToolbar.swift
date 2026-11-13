@@ -3,8 +3,8 @@ import CViemCore
 import ViemAppShell
 
 extension EVEditorSurfaceController: EVFormattingToolbarProviding {
-  public var formattingToolbarFormat: EVSourceFormat { backend.sourceFormat }
-  public var isLiteralMarkdown: Bool { backend.sourceFormat == .code && isMarkdownDocument }
+  public var formattingToolbarFormat: EVSourceFormat { viewFormat }
+  public var isLiteralMarkdown: Bool { viewFormat == .code && isMarkdownDocument }
   public var formattingToolbarView: NSView { formattingToolbar }
   public func refreshFormattingToolbar() { formattingToolbar.refresh() }
   public func showMarkdownPreview() {
@@ -238,7 +238,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
 
   func refresh() {
     guard let surface else { return }
-    let markdown = surface.backend.sourceFormat == .markdown
+    let markdown = surface.viewFormat == .markdown
     formattedView.state = markdown ? .on : .off
     formattedView.isEnabled = surface.isMarkdownDocument
     // Only Preview has formatting controls; with Preview off the title bar
@@ -300,7 +300,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     let definitions = Dictionary(uniqueKeysWithValues: (styleSnapshot?.definitions ?? []).map { ($0.key, $0) })
     let entries = catalogue?.entries.filter {
       guard $0.role == role && $0.actionKind == .assign else { return false }
-      guard role == .paragraph, surface?.backend.sourceFormat == .markdown else { return true }
+      guard role == .paragraph, surface?.viewFormat == .markdown else { return true }
       guard let definition = definitions[EVStyleKey(namespace: .block, id: EVStyleID(rawValue: $0.stableID))] else { return false }
       return definition.capabilities.contains(.assign)
         || $0.presentation.state == .on && definition.flags.contains(.internalList)
@@ -343,7 +343,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
                            id: String, catalogue: EVStyleMenuCatalogue?) {
     if button.state != presentation.state { button.state = presentation.state }
     if role == .character {
-      setHidden(surface?.backend.sourceFormat.hasSameSerialization(as: .markdown) != true
+      setHidden(surface?.viewFormat.hasSameSerialization(as: .markdown) != true
         || catalogue?.entries.contains { $0.role == role && $0.stableID == id } != true, for: button)
       button.isEnabled = presentation.isEnabled
       return
@@ -448,7 +448,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   @objc func toggleMarkdownPreview(_ sender: NSButton) {
     guard let surface else { return }
     let editorWindow = window
-    surface.setMarkdownPreview(surface.backend.sourceFormat != .markdown)
+    surface.setMarkdownPreview(surface.viewFormat != .markdown)
     refresh()
     // The target mode may remember a hidden toolbar and detach this view.
     editorWindow?.makeFirstResponder(surface.editorView)

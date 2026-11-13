@@ -7,7 +7,7 @@ use viem_core::layout::MockTextMeasurementProvider;
 use viem_core::{Core, CoreError, CoreEvent, DocumentMode};
 
 #[test]
-fn format_switch_with_identical_visible_text_including_empty_is_undoable() {
+fn format_switch_with_identical_visible_text_including_empty_round_trips() {
     for text in ["", "plain text", "__visible__"] {
         let mut document = Document::from_bytes(text.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
         document
@@ -16,15 +16,10 @@ fn format_switch_with_identical_visible_text_including_empty_is_undoable() {
         assert_eq!(document.text(), text);
         assert_eq!(document.source_bytes(), text.as_bytes());
         assert_eq!(document.format(), Format::Code);
-        assert!(document.undo());
+        document.set_view_format(Format::Markdown).unwrap();
         assert_eq!(document.format(), Format::Markdown);
         if !text.contains('_') {
-            document.set_view_format(Format::Code).unwrap();
-            document
-                .set_view_format(Format::Markdown)
-                .unwrap();
             assert_eq!(document.text(), text);
-            assert!(document.undo());
         }
     }
 }
@@ -69,10 +64,6 @@ fn format_switch_preserves_source_and_anchors_between_distant_markers() {
     assert_eq!(document.source_bytes(), original);
     assert_eq!(document.text(), "Heading\nbold middle tail");
     assert_eq!(mapped.offset(), document.text().find("middle").unwrap());
-    assert!(document.undo());
-    assert_eq!(document.format(), Format::Code);
-    assert_eq!(document.source_bytes(), original);
-    assert!(document.redo());
     document
         .set_view_format(Format::Code)
         .unwrap();
@@ -170,29 +161,18 @@ fn native_options_relayout_all_views_and_keep_undo_units_separate() {
         },
     )
     .unwrap();
-    assert_eq!(core.document().text(), "X__alpha__ beta");
+    assert_eq!(core.view_document(view).text(), "X__alpha__ beta");
     for attached in [view, observer] {
+        let revision = core.view_document(attached).revision();
         assert_eq!(
             core.layout(attached)
                 .unwrap()
                 .snapshot()
                 .unwrap()
                 .document_revision,
-            core.document().revision()
+            revision
         );
     }
-    core.handle(
-        view,
-        CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo),
-    )
-    .unwrap();
-    assert_eq!(core.document().text(), "X__alpha__ beta");
-    core.handle(
-        view,
-        CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo),
-    )
-    .unwrap();
-    assert_eq!(core.document().text(), "__alpha__ beta");
 }
 
 #[test]

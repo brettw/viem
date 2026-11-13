@@ -103,15 +103,18 @@ fn preview_switches_retain_empty_owner_boundaries_in_all_views_and_history() {
             place(&mut core, second, 7);
             for (mode, at) in [(DocumentMode::Code("markdown".into()), 8), (DocumentMode::Markdown, 7)] {
                 core.handle(first, CoreEvent::SetDocumentMode { document: core.document().id(),
-                    revision: core.document().revision(), mode }).unwrap();
-                for view in [first, second] { assert_eq!(core.command_state(view).unwrap().cursor(), at, "{fixture:?}"); }
+                    revision: core.view_document(first).revision(), mode }).unwrap();
+                // Only the switching view changes projection; the other view
+                // keeps Preview and its caret.
+                assert_eq!(core.command_state(first).unwrap().cursor(), at, "{fixture:?}");
+                assert_eq!(core.command_state(second).unwrap().cursor(), 7, "{fixture:?}");
                 assert_eq!(core.document().source_bytes(), fixture.bytes(source));
                 assert!(!core.document().is_dirty());
             }
-            core.handle(first, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+            // The boundaries survive repeated switches.
+            core.handle(first, CoreEvent::SetDocumentMode { document: core.document().id(),
+                revision: core.view_document(first).revision(), mode: DocumentMode::Code("markdown".into()) }).unwrap();
             assert_eq!(core.command_state(first).unwrap().cursor(), 8);
-            core.handle(first, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
-            assert_eq!(core.command_state(first).unwrap().cursor(), 7);
         }
     }
 }

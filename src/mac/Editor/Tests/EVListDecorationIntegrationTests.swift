@@ -51,7 +51,7 @@ final class EVListDecorationIntegrationTests: XCTestCase {
         _ = try session.setMarkdownPreview(false, expected: backend.documentState())
         XCTAssertTrue(try session.layoutExport().decorations.isEmpty)
         XCTAssertEqual(try backend.formattedText(), source)
-        _ = try session.undo()
+        _ = try session.setMarkdownPreview(true, expected: try session.viewDocumentState())
         XCTAssertEqual(String(decoding: try session.layoutExport().decorationLabels, as: UTF8.self), "9.10.11.")
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
     }

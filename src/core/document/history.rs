@@ -851,6 +851,7 @@ impl<T, M> History<T, M> {
         drop(previous);
     }
 
+    #[cfg(test)]
     pub(crate) fn current(&self) -> &Arc<T> {
         &self.nodes[self.current].state
     }
@@ -1666,7 +1667,43 @@ impl<T> History<T> {
     }
 }
 
-impl<T> History<T, PositionMap> {
+/// An edge's exact transition, composable along history paths.
+pub(crate) trait HistoryEdgeMap: Clone + Sized {
+    fn then(&self, next: &Self) -> Result<Self, PositionError>;
+    fn inverted(&self) -> Result<Self, PositionError>;
+    fn check_then(&self, next: &Self) -> Result<(), PositionError>;
+}
+
+impl HistoryEdgeMap for PositionMap {
+    fn then(&self, next: &Self) -> Result<Self, PositionError> { PositionMap::then(self, next) }
+    fn inverted(&self) -> Result<Self, PositionError> { PositionMap::inverted(self) }
+    fn check_then(&self, next: &Self) -> Result<(), PositionError> { PositionMap::check_then(self, next) }
+}
+
+impl<T, M: Clone> History<T, M> {
+    /// Replace a retained node's state record without changing the graph,
+    /// for example to attach or drop a disposable cache it carries. The
+    /// replacement is journaled like a grouped commit, so a rolled-back
+    /// command restores the original record and both memory ledgers.
+    pub(crate) fn replace_node_state(&mut self, node: HistoryNodeId, state: T) -> bool {
+        let Some(&index) = self.node_indexes.get(&node) else { return false };
+        let source_roots = capture_source(&mut self.source, self.accounting.as_ref(), &state);
+        self.checkpoint_node_content(index);
+        let previous = std::mem::replace(&mut self.nodes[index].state, Arc::new(state));
+        let replaced = std::mem::replace(&mut self.nodes[index].source_roots, source_roots);
+        self.source.release(replaced);
+        self.refresh_node_memory(index);
+        drop(previous);
+        true
+    }
+
+    /// Every retained node, for passes that rewrite each record.
+    pub(crate) fn node_ids(&self) -> Vec<HistoryNodeId> {
+        self.nodes.iter().map(|node| node.id).collect()
+    }
+}
+
+impl<T, M: HistoryEdgeMap> History<T, M> {
     /// Commit a document state together with both exact directions of the
     /// formatted transition from the current node.
     ///
@@ -1677,7 +1714,7 @@ impl<T> History<T, PositionMap> {
         &mut self,
         state: T,
         grouping: bool,
-        forward: PositionMap,
+        forward: M,
         transaction: HistoryTransactionSummary,
         restoration: HistoryRestoration,
     ) -> Result<(), PositionError> {
@@ -1759,8 +1796,8 @@ impl<T> History<T, PositionMap> {
         &self,
         from: HistoryNodeId,
         to: HistoryNodeId,
-        identity: PositionMap,
-    ) -> Result<PositionMap, PositionError> {
+        identity: M,
+    ) -> Result<M, PositionError> {
         let from = *self
             .node_indexes
             .get(&from)

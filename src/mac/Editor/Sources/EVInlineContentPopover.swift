@@ -320,7 +320,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
     func refresh() {
         guard !applying else { return }
         guard let surface, let session = surface.session, let window = surface.editorView.window,
-              surface.backend.sourceFormat == .markdown,
+              surface.viewFormat == .markdown,
               !session.hasActiveComposition, surface.commandLine?.prompt == nil,
               let selection = try? session.listSelection() else { close(); return }
         if kind == .link, !isEditing, (try? session.inlineContentContext(.image).item) != nil { close(); return }
@@ -462,7 +462,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         form.needsLayout = true
         form.layoutSubtreeIfNeeded()
         let formSize = form.fittingSize
-        let showsReload = kind == .image && surface.backend.sourceFormat == .markdown
+        let showsReload = kind == .image && surface.viewFormat == .markdown
         reloadButton.isHidden = !showsReload
         reloadButton.isEnabled = context?.item.map { surface.session?.provider.canReloadImage($0.destination) == true } ?? false
         referenceMenuButton.isHidden = context?.reference == nil

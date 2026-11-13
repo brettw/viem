@@ -20,7 +20,7 @@ impl Document {
     /// Publication reinstalls the last defaults when a view switch returns to
     /// their format, so a frontend reapplying the same theme has nothing to do.
     pub fn style_defaults_installed(&self, json: &[u8]) -> bool {
-        self.configuration.as_ref().is_some_and(|configuration| configuration.applies_to(self.format())
+        self.configuration.as_ref().is_some_and(|configuration| configuration.applies_to(self.state().structure_format())
             && *configuration.json == *json
             && self.state().projection.style_sheet().theme_generation == configuration.generation)
     }
@@ -32,6 +32,15 @@ impl Document {
         &mut self,
         json: &[u8],
     ) -> Result<Vec<String>, StyleDefaultsError> {
+        // A Markdown buffer whose views all show its source has no Preview
+        // projection to style yet: keep its theme for when one is built.
+        if self.markdown && !self.lineages.has(ProjectionKind::Preview) {
+            let generation = self.next_revision.checked_add(1)
+                .ok_or_else(|| StyleDefaultsError::Json("style generation exhausted".into()))?;
+            self.configuration = Some(Configuration { json: Arc::from(json), generation, format: Format::Markdown });
+            self.next_revision = generation;
+            return Ok(Vec::new());
+        }
         if self.format().is_code() {
             return Err(StyleDefaultsError::Json(
                 "Code uses its application-wide stylesheet".into(),
@@ -59,9 +68,10 @@ impl Document {
         self.configuration = Some(Configuration {
             json: Arc::from(json),
             generation,
-            format: state.format,
+            format: state.structure_format(),
         });
-        self.configuration_state = Some(state);
+        self.live_mut().configuration_state = Some(state);
+        self.refresh_code_base();
         self.next_revision = generation;
         Ok(diagnostics)
     }
@@ -70,12 +80,19 @@ impl Document {
     /// theme. Reapply only then; ordinary style edits to the current generation
     /// remain normal document operations and preserve their own declarations.
     pub(super) fn refresh_configuration(&mut self) {
-        self.configuration_state = None;
+        for kind in self.lineages.kinds().collect::<Vec<_>>() {
+            self.with_kind_focus_mut(kind, Self::refresh_configuration_state);
+        }
+        self.refresh_code_base();
+    }
+
+    fn refresh_configuration_state(&mut self) {
+        self.live_mut().configuration_state = None;
         let Some(configuration) = &self.configuration else {
             return;
         };
-        let state = self.history.current();
-        if !configuration.applies_to(state.format)
+        let state = &self.live().state;
+        if !configuration.applies_to(state.structure_format())
             || state.projection.style_sheet().theme_generation == configuration.generation
         {
             return;
@@ -85,7 +102,7 @@ impl Document {
         let Ok((mut sheet, _)) = state
             .projection
             .style_sheet()
-            .replacing_default_json(&configuration.json, &state.projection, state.format)
+            .replacing_default_json(&configuration.json, &state.projection, state.structure_format())
         else {
             return;
         };
@@ -98,6 +115,6 @@ impl Document {
         state
             .projection
             .install_configuration_styles(state.revision, sheet, assignment);
-        self.configuration_state = Some(state);
+        self.live_mut().configuration_state = Some(state);
     }
 }

@@ -1,10 +1,75 @@
 # Per-view presentation: plan
 
-Status: **plan only; nothing is implemented.** This document is the study and
-the staged plan for making Markdown Preview and Text/Code properties of a view
-instead of the buffer, so a diff can show literal source while another view of
-the same document shows Preview. The syntax language stays a buffer property,
-but moves into its own styling layer.
+Status: **phases 0–4 (core) and the ABI and macOS parts of phases 5–6 are
+implemented; the Windows frontend (section 7.3) remains.** This document is the
+study and the staged plan for making Markdown Preview and Text/Code properties
+of a view instead of the buffer, so a diff can show literal source while
+another view of the same document shows Preview. The syntax language stays a
+buffer property, but moves into its own styling layer.
+
+Implementation notes, where the code differs from the text below:
+
+- **D3 (domain tags):** each projection lineage takes its own revisions instead
+  of every point, anchor and map carrying a projection kind. A position from
+  one projection is rejected by the other's revision checks
+  (`STALE_REVISION`/`WrongSnapshot`). `Document::revision()` therefore answers
+  for the focused view, and callers name the revision of the view they act for
+  (`Core::view_document(view).revision()`).
+- **D1 (history):** the undo tree holds source only. Each node's small record
+  also caches the projection of every lineage live when it was committed or
+  visited; attaching or dropping one replaces the record through history's
+  journal, so rollback and the memory ledgers stay exact. These caches count
+  against the existing history budget rather than a separate one.
+- **Buffer-shared positions:** marks are tagged with the projection that
+  published them and translated through source boundaries for views of the
+  other projection; the change list and affected ranges are translated per view.
+- **D8:** the remembered choice is the existing `editing.markdownFormattedView`
+  setting rather than a new `markdown.preview` key; it already meant "the
+  Preview state for future opens". It is now written only by the explicit
+  Preview toggle.
+- **ABI (7.1):** additive only, so the Windows build keeps compiling.
+  `ViemViewOptions.display` (`VIEM_VIEW_DISPLAY_DEFAULT`, `SOURCE`, `PREVIEW`,
+  `DIFF`); `viem_core_view_display`, `viem_core_view_set_display`,
+  `viem_core_view_document_state` and `viem_core_view_copy_document_mode_json`
+  answer per view. Document-level source operations (`viem_core_document_state`,
+  `viem_core_revision`, `viem_core_mark_saved`, source copies, read-only,
+  recovery, style defaults, document mode JSON) answer for the buffer's
+  default presentation. Projection reads without a view
+  (`viem_core_formatted_snapshot_info`, formatted text, links) answer for the
+  last view addressed, so read a view's state first. `viem_diff_session_create`
+  keeps its signature and compares the buffers' Literal projections; each sync
+  answers for the views it names. `ViemFormattedSnapshotIdentity` needs no kind
+  because projections have distinct revisions. `Native.g.cs` is regenerated.
+- **macOS (7.2):** done as described, except that the backend keeps a
+  buffer-level state for persistence and themes while each surface reads its
+  own view's state and format (`EVEditorSurfaceController.viewFormat`).
+
+### Remaining Windows work (section 7.3)
+
+The core and `Native.g.cs` are ready; the C# callers still use the old
+buffer-wide behavior and need:
+
+- Per-view state: views read `viem_core_view_document_state` and
+  `viem_core_view_copy_document_mode_json` for their format, revision and mode
+  menu, and send that revision with view requests. The document-level state
+  is for persistence and themes only.
+- The Preview toggle changes the active view only (the existing
+  `SetDocumentMode` Markdown/Code-markdown request already does) and writes
+  `editing.markdownFormattedView` only when the view actually changed; stop
+  recording it on observed format changes. Formatted-text reads already
+  resolve their projection from the snapshot identity, so they need no
+  change. A new window of a Markdown buffer creates its view with
+  `VIEM_VIEW_DISPLAY_PREVIEW` or `SOURCE` from that setting; a split copies
+  its source view's `viem_core_view_display`.
+- Diff: delete `EnterDiff`, `LeaveDiff`, `InheritDiffMode`, `priorDiffMode`,
+  `diffViews` and `SwitchingDiffProjection`; create diff views with
+  `VIEM_VIEW_DISPLAY_DIFF` (or set it with `viem_core_view_set_display`).
+  Diff Mode on opens a new window with the diff frame; off shows the file in
+  an ordinary window (reusing one) and closes the diff window.
+- Menus, toolbar, status bar and Ctrl-0…5 read the active view's format.
+- Reload re-adds each view with the display it had.
+- Validate with `scripts/test-win.ps1 -Suite DiffMode,DiffCollapsedContext`
+  and the ABI check.
 
 Read [AGENTS.md](AGENTS.md) and [docs/diff_mode.md](docs/diff_mode.md) first.
 Line numbers below are from `main` at `1fc266e`.

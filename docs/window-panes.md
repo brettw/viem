@@ -4,6 +4,11 @@
 `:vsplit` (`:vs`, Control-W v) opens and focuses one to its left. Both views share the
 buffer, edits, and history, with independent cursors, selections, scrolling,
 wrapping, and line modes. Horizontal and vertical splits can nest.
+Each view also shows the buffer its own way: a split shows what its source
+view shows, so views of one Markdown buffer may differ, one in Preview and
+one showing the source. Turning Preview on or off changes only the active
+view. A new window of a Markdown buffer shows the remembered Preview choice
+(see [AGENTS.md](../AGENTS.md#configuration-and-themes)).
 
 `:new` and `:vnew` open an empty buffer in a horizontal or vertical split.
 `:enew` replaces the current buffer. `:vertical split` and `:vertical new`

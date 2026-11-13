@@ -607,6 +607,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// cancel or resume a newer script. Closing the view discards its frames.
     pub fn resume_script(&mut self, view: ViewId, token: u64, success: bool,
         clipboard: Option<ClipboardCommandContext>) -> Result<CoreOutcome, CoreError> {
+        self.focus_view(view);
         if !self.views.contains_key(&view) { return Err(CoreError::UnknownView(view)); }
         if self.pending_scripts.get(&view).is_none_or(|pending| pending.token != token) {
             return Err(CoreError::StaleScriptContinuation);

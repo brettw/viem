@@ -154,14 +154,16 @@ final class EVDiffPairTests: XCTestCase {
             XCTAssertNil(status.fileURL, "an unrenamed file's name is not repeated")
             XCTAssertEqual(status.width, frame(editor).minX - frame(pane.statusBar).minX, accuracy: 0.5)
         }
-        XCTAssertEqual(document.editorBackend.sourceFormat, .code)
+        XCTAssertTrue(panes.allSatisfy { $0.editorSurface.currentDisplay == .diff }, "every compared view shows Code")
+        XCTAssertEqual(document.editorBackend.sourceFormat, .plainText, "the buffer keeps its format")
         window.closePane(panes[0])
         try waitUntil { window.paneContainer.panes.count == 2 }
-        XCTAssertEqual(document.editorBackend.sourceFormat, .code, "remaining pairs keep comparing in Code")
+        XCTAssertTrue(window.paneContainer.panes.allSatisfy { $0.editorSurface.currentDisplay == .diff },
+                      "remaining pairs keep comparing in Code")
         XCTAssertTrue(window.paneContainer.panes.allSatisfy { $0.diffBaseSurface != nil })
         window.diffMode?.disable()
         XCTAssertTrue(window.paneContainer.panes.allSatisfy { $0.diffBaseSurface == nil && $0.statusBar.diffBase == nil })
-        XCTAssertEqual(document.editorBackend.sourceFormat, .plainText, "the last pair restores the format")
+        XCTAssertEqual(document.editorBackend.sourceFormat, .plainText)
     }
 
     func testTheBaseStatusNamesItsVersionAndARenamedFilesOriginal() throws {

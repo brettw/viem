@@ -5,7 +5,7 @@ import ViemAppShell
 @MainActor
 extension EVEditorSurfaceController: EVStyleMenuProviding {
   public func currentStyleMenuCatalogue() -> EVStyleMenuCatalogue? {
-    if backend.sourceFormat == .code { return currentCodeStyleMenuCatalogue() }
+    if viewFormat == .code { return currentCodeStyleMenuCatalogue() }
     guard let snapshot = try? backend.styleSheetSnapshot() else { return nil }
     let selectedStyles = try? session?.selectedNamedStyles()
     let actions = try? session?.formattingActions(EVFormattingActions.styleAssignments)
@@ -127,7 +127,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
   }
 
   private func standardHeadingLevel(for id: String) -> UInt32? {
-    guard backend.sourceFormat == .markdown else {
+    guard viewFormat == .markdown else {
       return nil
     }
     if id == "Paragraph" { return 0 }
@@ -143,7 +143,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
       EVStyleEditorCoordinator.shared.show(document: self, sender: sender)
       return
     }
-    if backend.sourceFormat == .code {
+    if viewFormat == .code {
       performCodeStyleMenuAction(action, sender: sender)
       return
     }

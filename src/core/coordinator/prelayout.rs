@@ -152,6 +152,11 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// Capture the nearest chunk of lines missing from the retained geometry.
     /// Call again after installation until None. No text shaping occurs here.
     pub fn prepare_view_prelayout(&mut self, view_id: ViewId, forward: bool) -> Result<Option<LayoutJobRequest>, CoreError> {
+        self.focus_view(view_id);
+        self.with_view_focus(view_id, |core| core.prepare_view_prelayout_focused(view_id, forward))
+    }
+
+    fn prepare_view_prelayout_focused(&mut self, view_id: ViewId, forward: bool) -> Result<Option<LayoutJobRequest>, CoreError> {
         // This cache-only path has no presentation-change result for its host.
         // Syntax publication can invalidate the visible layout, so leave it to
         // the explicit poll API that notifies frontends before they scroll.
@@ -196,6 +201,11 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// Background completion is cache-only. Abandoned scroll regions, cancelled
     /// work, and stale dependencies are discarded without changing presentation.
     pub fn install_view_prelayout(&mut self, view_id: ViewId, forward: bool, candidate: LayoutJobCandidate) -> Result<bool, CoreError> {
+        self.focus_view(view_id);
+        self.with_view_focus(view_id, |core| core.install_view_prelayout_focused(view_id, forward, candidate))
+    }
+
+    fn install_view_prelayout_focused(&mut self, view_id: ViewId, forward: bool, candidate: LayoutJobCandidate) -> Result<bool, CoreError> {
         let view = self.views.get_mut(&view_id).ok_or(CoreError::UnknownView(view_id))?;
         refresh_observed_metrics(view);
         if !view.active_prelayout_work.as_ref().is_some_and(|active| active.job_id == candidate.job_id()) {

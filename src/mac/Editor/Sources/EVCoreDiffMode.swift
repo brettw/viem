@@ -78,7 +78,9 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
     private var handle: ViemDiffSessionHandle = 0
     private var aligned: Bool
     private var collapsed: Bool
-    private var restoreMode: EVDocumentModeChoice?
+    /// What the live view showed before the comparison, when that was not
+    /// already a diff's Code (a window opened for diffing creates it so).
+    private var restoreDisplay: EVViewDisplay?
     private var restoreModifiable = false
     private var mirroring = false
     private(set) var lastSync: UInt32 = UInt32(VIEM_DIFF_SYNC_UNCHANGED)
@@ -95,11 +97,13 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
         self.surface = surface
         self.aligned = aligned
         self.collapsed = collapsed
-        // The live side is compared and edited as Code. Turning Preview off
-        // (or Text into Code) reprojects the same source without converting it.
-        if let mode = surface.currentDocumentMode(), mode.format != "code" {
-            restoreMode = mode.format == "markdown" ? .markdown : .plainText
-            surface.selectDocumentMode(mode.format == "markdown" ? .code("markdown") : .codeFormat, expected: mode)
+        // The live view is compared and edited as Code. That is this view's
+        // display only: the buffer and its other views, including one in
+        // Preview, are unchanged, and nothing enters history.
+        let display = surface.currentDisplay
+        if display != .diff {
+            restoreDisplay = display
+            surface.setDisplay(.diff)
         }
         if !editable {
             try checkedDiff(viem_core_set_modifiable(document.core, 0), operation: "Protect a deleted file")
@@ -290,12 +294,10 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
 
     func end() {
         guard handle != 0 else { return }
-        // Pairs in other panes may still compare this document. The format and
-        // protection are buffer-wide, so the last comparison restores them.
+        // Pairs in other panes may still compare this document. Protection is
+        // buffer-wide, so the last comparison restores it.
         if let heir = document?.diffSessions.compactMap(\.value).first(where: { $0 !== self && $0.handle != 0 }) {
-            heir.restoreMode = heir.restoreMode ?? restoreMode
             heir.restoreModifiable = heir.restoreModifiable || restoreModifiable
-            restoreMode = nil
             restoreModifiable = false
         }
         surface?.liveDiffSession = nil
@@ -315,14 +317,9 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
         if restoreModifiable, let document {
             _ = viem_core_set_modifiable(document.core, 1)
         }
+        // Only this view changed what it shows; give it back.
+        if let restoreDisplay, let surface { surface.setDisplay(restoreDisplay) }
         surface?.refreshPresentation()
-        // The format is buffer-wide, so restore it through any open view of
-        // the document, even when the compared pane has already closed.
-        if let restoreMode, let modeSurface = surface ?? document?.liveEditorSurfaces.first,
-           let session = modeSurface.session,
-           let mode = modeSurface.currentDocumentMode(), mode.format == "code" {
-            modeSurface.performInput { _ = try session.setDocumentMode(restoreMode, expected: mode) }
-        }
         document?.diffSessions.removeAll { $0.value == nil || $0.value === self }
         base = nil
     }

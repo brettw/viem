@@ -149,8 +149,6 @@ fn returning_to_the_configured_view_format_keeps_its_installed_defaults() {
     let revision = document.projection().style_sheet().revision;
     assert!(document.replace_style_defaults(themed).unwrap().is_empty());
     assert_eq!(document.projection().style_sheet().revision, revision);
-    assert!(document.undo(), "undo the switch back to Markdown");
-    assert!(document.redo());
     assert!(document.style_defaults_installed(themed));
     document.replace_style_defaults(br#"{"version":1}"#).unwrap();
     assert!(!document.style_defaults_installed(themed));

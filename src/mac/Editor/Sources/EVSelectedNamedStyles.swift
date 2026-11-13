@@ -49,13 +49,13 @@ extension EVEditorSurfaceController {
     let fallback = EVStyleKey.baseParagraph
     guard let session,
       let selected = try? session.selectedNamedStyles(),
-      let snapshot = try? backend.sourceFormat == .code
+      let snapshot = try? viewFormat == .code
         ? EVCoreStyleBridge.copyStyleSheet(core: nil) : backend.styleSheetSnapshot(),
       let state = try? backend.documentState(),
       selected.identity.documentID == state.document_id,
       selected.identity.documentRevision == state.document_revision,
       selected.identity.styleSheetRevision == snapshot.identity.styleSheetRevision,
-      backend.sourceFormat == .code || selected.identity == snapshot.identity
+      viewFormat == .code || selected.identity == snapshot.identity
     else { return fallback }
 
     func current(_ kind: EVStyleKind, id: EVStyleID?, mixed: Bool) -> EVStyleKey? {

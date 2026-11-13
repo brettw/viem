@@ -1019,7 +1019,7 @@ impl Document {
                 .ok_or(ModelTransactionError::RevisionExhausted)?;
             scratch.next_projected_block_id = prepared.next_projected_block_id_after;
             let PreparedPublication::State(state) = prepared.publication else { unreachable!() };
-            scratch.history = super::super::history::History::transient(state);
+            scratch.install_transient_state(state);
             for point in points {
                 let paragraph = super::super::edit_boundary::paragraph_at(&scratch, point)?
                     .ok_or(DocumentError::AmbiguousProjection)?;

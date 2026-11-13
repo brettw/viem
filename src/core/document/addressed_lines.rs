@@ -240,12 +240,12 @@ fn addressed_candidates_match(
     let expected = match &expected.publication {
         PreparedPublication::State(state) => &state.projection,
         PreparedPublication::NoOp => document.projection(),
-        PreparedPublication::History { .. } => return Err(DocumentError::VerificationFailed),
+        PreparedPublication::History { .. } | PreparedPublication::Lineage(_) => return Err(DocumentError::VerificationFailed),
     };
     let candidate = match &candidate.publication {
         PreparedPublication::State(state) => &state.projection,
         PreparedPublication::NoOp => document.projection(),
-        PreparedPublication::History { .. } => return Err(DocumentError::VerificationFailed),
+        PreparedPublication::History { .. } | PreparedPublication::Lineage(_) => return Err(DocumentError::VerificationFailed),
     };
     if expected.text_tree().byte_len() != candidate.text_tree().byte_len()
         || expected.hard_line_count() != candidate.hard_line_count()

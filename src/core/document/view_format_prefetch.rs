@@ -53,11 +53,12 @@ impl Document {
         // An application theme overlays only styles on the history snapshot:
         // text and provenance, which the switch reads, are identical. A theme
         // change advances `next_revision`, so it still invalidates the key.
-        if target == self.format() {
+        if target.projection_kind() == self.state().kind {
             return None;
         }
+        let target = target.projection_kind().structure_format();
         Some(PrefetchKey {
-            state: Arc::as_ptr(self.history.current()) as usize,
+            state: Arc::as_ptr(&self.live().state) as usize,
             revision: self.revision(),
             next_revision: self.next_revision,
             target,
@@ -75,11 +76,12 @@ impl Document {
         if slot.as_ref().is_some_and(|job| job.key == key) {
             return;
         }
-        let state = Arc::clone(self.history.current());
+        let state = Arc::clone(&self.live().state);
         let cancelled = Arc::new(AtomicBool::new(false));
         let result = Arc::new(Mutex::new(None));
         let (worker_cancelled, output) = (cancelled.clone(), result.clone());
         let revision = Revision(key.next_revision);
+        let key_target = key.target;
         let spawned = std::thread::Builder::new()
             .name("viem-view-format-prefetch".into())
             .spawn(move || {
@@ -87,7 +89,7 @@ impl Document {
                     let decoded = state.encoding.decode(&state.source.bytes()).ok()?;
                     if worker_cancelled.load(Ordering::Relaxed) { return None; }
                     let candidate = build_state_from_decoded(
-                        state.source.clone(), decoded, target, state.file_format,
+                        state.source.clone(), decoded, key_target, state.file_format,
                         state.file_format_origin, state.line_ending_evidence, revision,
                     ).ok()?;
                     if worker_cancelled.load(Ordering::Relaxed) { return None; }
@@ -182,18 +184,18 @@ mod tests {
             assert_eq!(prepared.text(), synchronous.text());
             assert_eq!(prepared.source_bytes(), synchronous.source_bytes());
             assert_eq!(prepared.revision(), synchronous.revision());
-            // Switching back restores the original presentation exactly.
-            assert!(prepared.undo());
+            prepared.set_view_format(Format::Markdown).unwrap();
             assert_eq!(prepared.text(), markdown().text());
         }
     }
 
     #[test]
-    fn an_edit_or_another_target_discards_the_preparation() {
+    fn an_edit_or_another_projection_discards_the_preparation() {
         let mut document = markdown();
         document.prefetch_view_format(Format::Code);
         wait_until_ready(&document, Format::Code);
-        assert!(!document.view_format_prefetch_ready(Format::PlainText));
+        // Text and Code share the Literal structure, so they share it too.
+        assert!(document.view_format_prefetch_ready(Format::PlainText));
         assert!(!document.view_format_prefetch_ready(Format::Markdown));
         document.replace(0..0, "x").unwrap();
         assert!(!document.view_format_prefetch_ready(Format::Code));

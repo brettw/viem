@@ -1056,6 +1056,35 @@ pub struct ViemViewOptions {
     pub padding_left: f32,
     pub padding_bottom: f32,
     pub padding_right: f32,
+    /// What the view shows of its buffer (`VIEM_VIEW_DISPLAY_*`).
+    pub display: u32,
+}
+
+/// The buffer's default presentation, as a new view of it shows.
+pub const VIEM_VIEW_DISPLAY_DEFAULT: u32 = 0;
+/// The literal source: Text or Code, and a Markdown buffer's source.
+pub const VIEM_VIEW_DISPLAY_SOURCE: u32 = 1;
+/// Markdown Preview; a buffer that is not Markdown shows its source.
+pub const VIEM_VIEW_DISPLAY_PREVIEW: u32 = 2;
+/// A diff's live side, always literal Code.
+pub const VIEM_VIEW_DISPLAY_DIFF: u32 = 3;
+
+fn display_from_ffi(core: &Core<CTextMeasurementProvider>, value: u32)
+    -> Result<crate::document::ViewPresentation, ViemStatus> {
+    use crate::document::ViewPresentation;
+    match value {
+        VIEM_VIEW_DISPLAY_DEFAULT => Ok(core.document().default_presentation()),
+        VIEM_VIEW_DISPLAY_SOURCE => Ok(ViewPresentation::literal()),
+        VIEM_VIEW_DISPLAY_PREVIEW => Ok(ViewPresentation::preview()),
+        VIEM_VIEW_DISPLAY_DIFF => Ok(ViewPresentation::diff()),
+        _ => Err(ViemStatus::InvalidArgument),
+    }
+}
+
+fn display_to_ffi(presentation: crate::document::ViewPresentation) -> u32 {
+    if presentation.diff { VIEM_VIEW_DISPLAY_DIFF }
+    else if presentation.preview { VIEM_VIEW_DISPLAY_PREVIEW }
+    else { VIEM_VIEW_DISPLAY_SOURCE }
 }
 
 
@@ -1069,6 +1098,7 @@ impl Default for ViemViewOptions {
             padding_left: 0.0,
             padding_bottom: 0.0,
             padding_right: 0.0,
+            display: VIEM_VIEW_DISPLAY_DEFAULT,
         }
     }
 }
@@ -2464,15 +2494,19 @@ fn formatted_snapshot_identity(document: &Document) -> ViemFormattedSnapshotIden
     }
 }
 
-fn validate_formatted_snapshot_identity(
+/// Run `work` against the projection a formatted snapshot was taken from.
+/// Each view reads its own lineage, so a snapshot names its lineage by its
+/// revision rather than by whichever view the core addressed last.
+fn with_formatted_snapshot<R>(
     expected: ViemFormattedSnapshotIdentity,
     document: &Document,
-) -> Result<(), ViemStatus> {
-    let actual = formatted_snapshot_identity(document);
-    (expected.document_id == actual.document_id
-        && expected.document_revision == actual.document_revision)
-        .then_some(())
-        .ok_or(ViemStatus::StaleRevision)
+    work: impl FnOnce(&Document) -> Result<R, ViemStatus>,
+) -> Result<R, ViemStatus> {
+    if expected.document_id != document.id().0 { return Err(ViemStatus::StaleRevision); }
+    let kind = document
+        .lineage_at_revision(crate::document::Revision(expected.document_revision))
+        .ok_or(ViemStatus::StaleRevision)?;
+    document.with_lineage_focus(kind, work)
 }
 
 fn formatted_text_status(error: FormattedTextError) -> ViemStatus {
@@ -4614,6 +4648,11 @@ fn summarize_viewport_state(
 }
 
 fn summarize_document_state(document: &Document) -> ViemDocumentState {
+    summarize_document_state_as(document, document.buffer_format())
+}
+
+/// [`summarize_document_state`] as a view showing `format` sees it.
+fn summarize_document_state_as(document: &Document, format: Format) -> ViemDocumentState {
     let history = document.history_status();
     let mut flags = 0;
     if document.has_bom() {
@@ -4642,7 +4681,7 @@ fn summarize_document_state(document: &Document) -> ViemDocumentState {
         style_sheet_revision: document.projection().style_sheet().revision.0,
         source_byte_count: document.source_byte_len() as u64,
         encoding: encoding_to_ffi(document.encoding()),
-        format: format_to_ffi(document.format()),
+        format: format_to_ffi(format),
         file_format: file_format_to_ffi(document.file_format()),
         file_format_origin: file_format_origin_to_ffi(document.file_format_origin()),
         undo_action_category: history_action_category(history.undo_summary.as_ref()),
@@ -7387,7 +7426,7 @@ pub unsafe extern "C" fn viem_core_revision(
             return Err(ViemStatus::InvalidArgument);
         }
         unsafe { out_revision.write(0) };
-        let revision = with_core(handle, |core| Ok(core.document().revision().0))?;
+        let revision = with_core(handle, |core| { core.focus_buffer(); Ok(core.document().revision().0) })?;
         unsafe { out_revision.write(revision) };
         Ok(())
     })
@@ -7407,11 +7446,92 @@ pub unsafe extern "C" fn viem_core_document_state(
         typed_pointer_region(out_state, 1)?;
         unsafe { out_state.write(ViemDocumentState::default()) };
         let state = with_core(handle, |core| {
+            core.focus_buffer();
             let mut state = summarize_document_state(core.document());
             if core.is_markdown_source() { state.flags |= VIEM_DOCUMENT_STATE_MARKDOWN_SOURCE; }
             Ok(state)
         })?;
         unsafe { out_state.write(state) };
+        Ok(())
+    })
+}
+
+/// The document state as `view` shows it: its projection's revision,
+/// stylesheet and format. Buffer-wide fields equal the document state's.
+/// Document-level queries that follow answer for this view.
+///
+/// # Safety
+///
+/// `out_state` must identify one aligned writable state value.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_document_state(
+    handle: ViemCoreHandle,
+    view: ViemViewId,
+    out_state: *mut ViemDocumentState,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        typed_pointer_region(out_state, 1)?;
+        unsafe { out_state.write(ViemDocumentState::default()) };
+        let state = with_core(handle, |core| {
+            let format = core.view_format(ViewId(view)).map_err(core_status)?;
+            let mut state = summarize_document_state_as(core.view_document(ViewId(view)), format);
+            if core.is_markdown_source() { state.flags |= VIEM_DOCUMENT_STATE_MARKDOWN_SOURCE; }
+            Ok(state)
+        })?;
+        unsafe { out_state.write(state) };
+        Ok(())
+    })
+}
+
+/// Read what `view` shows of its buffer (`VIEM_VIEW_DISPLAY_*`, never
+/// `DEFAULT`).
+///
+/// # Safety
+///
+/// `out_display` must identify one aligned writable value.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_display(
+    handle: ViemCoreHandle,
+    view: ViemViewId,
+    out_display: *mut u32,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        typed_pointer_region(out_display, 1)?;
+        unsafe { out_display.write(VIEM_VIEW_DISPLAY_DEFAULT) };
+        let presentation = with_core(handle, |core| {
+            core.view_presentation(ViewId(view)).map(display_to_ffi).map_err(core_status)
+        })?;
+        unsafe { out_display.write(presentation) };
+        Ok(())
+    })
+}
+
+/// Change what one view shows of its buffer: Preview or its source, or a
+/// diff's literal Code. Not an edit: no source, revision of another view's
+/// projection, history, dirty state or other view changes. Preview of a
+/// buffer that is not Markdown is unsupported.
+///
+/// # Safety
+///
+/// `out_outcome` must identify one aligned writable outcome.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_set_display(
+    handle: ViemCoreHandle,
+    view: ViemViewId,
+    display: u32,
+    out_outcome: *mut ViemCoreOutcome,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        unsafe { clear_outcome(out_outcome)? };
+        let outcome = with_core_mut(handle, |core| {
+            let presentation = display_from_ffi(core, display)?;
+            if presentation.preview && !core.document().is_markdown_buffer() {
+                return Err(ViemStatus::UnsupportedOperation);
+            }
+            let result = core.set_view_presentation(ViewId(view), presentation).map_err(core_status)?;
+            summarize_core_outcome(core, ViewId(view), Some(&result))
+        })?;
+        unsafe { out_outcome.write(outcome) };
         Ok(())
     })
 }
@@ -7471,12 +7591,11 @@ pub unsafe extern "C" fn viem_core_copy_formatted_utf8_range(
         let start = usize::try_from(request.utf8_start).map_err(|_| ViemStatus::LengthOverflow)?;
         let end = usize::try_from(request.utf8_end).map_err(|_| ViemStatus::LengthOverflow)?;
         let bytes = with_core(handle, |core| {
-            validate_formatted_snapshot_identity(request.identity, core.document())?;
-            core.document()
+            with_formatted_snapshot(request.identity, core.document(), |document| document
                 .hard_line_snapshot()
                 .slice_utf8(start..end)
                 .map(String::into_bytes)
-                .map_err(formatted_text_status)
+                .map_err(formatted_text_status))
         })?;
         let required = checked_export_count(bytes.len())?;
         unsafe { out_required.write(required) };
@@ -7539,8 +7658,8 @@ unsafe fn map_formatted_offsets(
         };
         unsafe { buffers.out_required.write(0) };
         let outputs = with_core(handle, |core| {
-            validate_formatted_snapshot_identity(identity, core.document())?;
-            let snapshot = core.document().hard_line_snapshot();
+            with_formatted_snapshot(identity, core.document(), |document| {
+            let snapshot = document.hard_line_snapshot();
             inputs
                 .iter()
                 .map(|offset| {
@@ -7558,6 +7677,7 @@ unsafe fn map_formatted_offsets(
                     checked_export_count(mapped)
                 })
                 .collect::<Result<Vec<_>, _>>()
+            })
         })?;
         let required = checked_export_count(outputs.len())?;
         unsafe { buffers.out_required.write(required) };
@@ -7674,8 +7794,8 @@ pub unsafe extern "C" fn viem_core_formatted_point_info(
         unsafe { out_info.write(ViemFormattedPointInfo::default()) };
         let utf8_offset = usize::try_from(utf8_offset).map_err(|_| ViemStatus::LengthOverflow)?;
         let info = with_core(handle, |core| {
-            validate_formatted_snapshot_identity(identity, core.document())?;
-            let snapshot = core.document().hard_line_snapshot();
+            with_formatted_snapshot(identity, core.document(), |document| {
+            let snapshot = document.hard_line_snapshot();
             let line = snapshot
                 .line_at_offset(utf8_offset)
                 .map_err(hard_line_query_status)?;
@@ -7687,7 +7807,7 @@ pub unsafe extern "C" fn viem_core_formatted_point_info(
                 .grapheme_count(line_range.start..utf8_offset)
                 .ok_or(ViemStatus::CoreFailure)?;
             Ok(ViemFormattedPointInfo {
-                identity: formatted_snapshot_identity(core.document()),
+                identity: formatted_snapshot_identity(document),
                 utf8_offset: checked_export_count(utf8_offset)?,
                 utf16_offset: checked_export_count(
                     snapshot
@@ -7698,6 +7818,7 @@ pub unsafe extern "C" fn viem_core_formatted_point_info(
                 hard_line_start: checked_export_count(line_range.start)?,
                 hard_line_end: checked_export_count(line_range.end)?,
                 grapheme_column: checked_export_count(grapheme_column)?,
+            })
             })
         })?;
         unsafe { out_info.write(info) };
@@ -7719,6 +7840,7 @@ pub unsafe extern "C" fn viem_core_mark_saved(
         typed_pointer_region(request, 1)?;
         let request = unsafe { request.read() };
         with_core_mut(handle, |core| {
+            core.focus_buffer();
             core.mark_saved(
                 DocumentId(request.document_id),
                 Revision(request.document_revision),
@@ -7816,11 +7938,13 @@ pub unsafe extern "C" fn viem_core_view_add(
                 top: options.padding_top, left: options.padding_left,
                 bottom: options.padding_bottom, right: options.padding_right,
             });
+            let presentation = display_from_ffi(core, options.display)?;
             let view = core
-                .try_add_view_with_initial_layout(
+                .try_add_view_with_presentation(
                     provider,
                     layout,
                     execution_context,
+                    presentation,
                 )
                 .map_err(core_status)?;
             if let Some(error) = core
@@ -10121,6 +10245,9 @@ fn core_snapshot_bytes(
     source: bool,
 ) -> Result<Vec<u8>, ViemStatus> {
     with_core(handle, |core| {
+        // Source is buffer-wide and identified by the buffer's revision;
+        // formatted text answers for the last view addressed.
+        if source { core.focus_buffer(); }
         validate_revision(core.document(), expected_revision)?;
         Ok(if source {
             core.document().source_bytes()
@@ -13222,6 +13349,7 @@ pub extern "C" fn viem_core_set_read_only(
             _ => return Err(ViemStatus::InvalidArgument),
         };
         with_core_mut(handle, |core| {
+            core.focus_buffer();
             core.set_read_only(
                 crate::document::DocumentId(document),
                 Revision(revision),
@@ -13240,6 +13368,7 @@ pub extern "C" fn viem_core_mark_recovered(
 ) -> ViemStatus {
     ffi_boundary(|| {
         with_core_mut(handle, |core| {
+            core.focus_buffer();
             core.mark_recovered(crate::document::DocumentId(document), Revision(revision))
                 .map_err(core_status)
         })
@@ -13439,6 +13568,7 @@ pub unsafe extern "C" fn viem_core_replace_style_defaults(handle: ViemCoreHandle
     ffi_boundary(|| {
         let bytes = unsafe { input_bytes(json, length)? };
         let result = with_core_mut(handle, |core| {
+            core.focus_buffer();
             validate_revision(core.document(), expected_revision)?;
             Ok(core.replace_style_defaults(bytes))
         })?;
@@ -13472,6 +13602,7 @@ pub unsafe extern "C" fn viem_core_initialize_style_defaults(
     ffi_boundary(|| {
         let bytes = unsafe { input_bytes(json, length)? };
         let result = with_core_mut(handle, |core| {
+            core.focus_buffer();
             validate_revision(core.document(), expected_revision)?;
             Ok(core.initialize_style_defaults(bytes))
         })?;
@@ -13791,6 +13922,7 @@ pub unsafe extern "C" fn viem_core_export_style_defaults(
         }
         unsafe { required.write(0) };
         let bytes = with_core(handle, |core| {
+            core.focus_buffer();
             validate_revision(core.document(), expected_revision)?;
             core.document()
                 .export_style_defaults()
@@ -14013,6 +14145,7 @@ pub unsafe extern "C" fn viem_core_copy_source_range_bytes(
             out_complete.write(0);
         }
         let (bytes, complete) = with_core(handle, |core| {
+            core.focus_buffer();
             let doc = core.document();
             if doc.id() != DocumentId(document) {
                 return Err(ViemStatus::InvalidArgument);
@@ -14100,9 +14233,9 @@ pub unsafe extern "C" fn viem_core_copy_clipboard_json(
         let request = unsafe { request.read() };
         unsafe { out_required.write(0); }
         let fragment = with_core(handle,|core| {
-            validate_formatted_snapshot_identity(request.identity,core.document())?;
-            core.document().clipboard_fragment(checked_length(request.utf8_start)?..checked_length(request.utf8_end)?)
-                .map_err(|_| ViemStatus::InvalidArgument)
+            with_formatted_snapshot(request.identity, core.document(), |document| document
+                .clipboard_fragment(checked_length(request.utf8_start)?..checked_length(request.utf8_end)?)
+                .map_err(|_| ViemStatus::InvalidArgument))
         })?;
         unsafe { copy_clipboard_json_bytes(fragment.json().as_bytes(),output,output_capacity,out_required) }
     })
@@ -14253,7 +14386,27 @@ pub unsafe extern "C" fn viem_core_view_set_document_mode_with_effects(
 pub unsafe extern "C" fn viem_core_copy_document_mode_json(handle: ViemCoreHandle, output: *mut u8, capacity: u64, required: *mut u64) -> ViemStatus {
     ffi_boundary(|| {
         validate_disjoint_regions(&[typed_pointer_region(output, capacity)?, typed_pointer_region(required, 1)?])?;
-        let bytes = with_core(handle, |core| serde_json::to_vec(&core.document_mode_state()).map_err(|_| ViemStatus::CoreFailure))?;
+        let bytes = with_core(handle, |core| { core.focus_buffer(); serde_json::to_vec(&core.document_mode_state()).map_err(|_| ViemStatus::CoreFailure) })?;
+        unsafe { required.write(bytes.len() as u64); }
+        if capacity < bytes.len() as u64 { return Err(ViemStatus::BufferTooSmall); }
+        unsafe { copy_output(&bytes, output); }
+        Ok(())
+    })
+}
+
+/// [`viem_core_copy_document_mode_json`] as `view` shows the buffer: its
+/// revision and format (Preview or source) are that view's.
+/// # Safety
+/// Output storage and the length record must be writable and disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_copy_document_mode_json(handle: ViemCoreHandle, view: ViemViewId,
+    output: *mut u8, capacity: u64, required: *mut u64) -> ViemStatus {
+    ffi_boundary(|| {
+        validate_disjoint_regions(&[typed_pointer_region(output, capacity)?, typed_pointer_region(required, 1)?])?;
+        let bytes = with_core(handle, |core| {
+            let state = core.view_document_mode_state(ViewId(view)).map_err(core_status)?;
+            serde_json::to_vec(&state).map_err(|_| ViemStatus::CoreFailure)
+        })?;
         unsafe { required.write(bytes.len() as u64); }
         if capacity < bytes.len() as u64 { return Err(ViemStatus::BufferTooSmall); }
         unsafe { copy_output(&bytes, output); }

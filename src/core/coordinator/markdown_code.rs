@@ -671,6 +671,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         at: usize,
         language: Option<&str>,
     ) -> Result<CoreOutcome, CoreError> {
+        self.focus_view(view);
         self.views.get(&view).ok_or(CoreError::UnknownView(view))?;
         let prepared = self
             .document
@@ -881,7 +882,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .services
                     .entry(id)
                     .or_insert_with(|| MarkdownCodeService {
-                        service: self.syntax.service.for_export(),
+                        service: self.syntax.code.service.for_export(),
                         anchors: None,
                         input: None,
                         published_language: None,

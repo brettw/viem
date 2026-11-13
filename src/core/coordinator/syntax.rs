@@ -37,14 +37,14 @@ mod filename_tests {
         let document = Document::from_bytes(b"token".to_vec(), crate::document::Encoding::Utf8, Format::Code).unwrap();
         let mut core = Core::<MockTextMeasurementProvider>::new(document);
         core.initialize_code_detection("first.vim", false).unwrap();
-        assert_eq!(core.syntax.service.configuration.filename.as_deref(), Some("first.vim"));
-        let old = core.syntax.service.configuration.clone();
+        assert_eq!(core.syntax.code.service.configuration.filename.as_deref(), Some("first.vim"));
+        let old = core.syntax.code.service.configuration.clone();
         core.redetect_code_language(Some("second.vim"));
-        assert_eq!(core.syntax.service.configuration.filename.as_deref(), Some("second.vim"));
-        assert_eq!(core.syntax.service.configuration.language, old.language);
-        assert_ne!(core.syntax.service.configuration.generation, old.generation);
+        assert_eq!(core.syntax.code.service.configuration.filename.as_deref(), Some("second.vim"));
+        assert_eq!(core.syntax.code.service.configuration.language, old.language);
+        assert_ne!(core.syntax.code.service.configuration.generation, old.generation);
         core.set_syntax_provider_factory(Arc::new(|| Box::new(NoSyntax)));
-        assert_eq!(core.syntax.service.configuration.filename.as_deref(), Some("second.vim"));
+        assert_eq!(core.syntax.code.service.configuration.filename.as_deref(), Some("second.vim"));
     }
 }
 
@@ -65,8 +65,40 @@ pub struct CodeLanguagePolicy {
     automatic_mode: bool,
 }
 
-pub(super) struct CoreSyntax {
+/// The buffer's one Code style layer: its syntax service, publication state
+/// and progress. Every Code view of the buffer, including a diff's live
+/// side, shares it; nothing outside the styling path reads its fields.
+pub(super) struct CodeLayer {
     pub(super) service: SyntaxService,
+    pub(super) published: Option<(SyntaxInputIdentity, u64)>,
+    /// When the analyzed input last changed. Speculative whole-document
+    /// analysis waits for editing to pause.
+    input_changed: Option<(SyntaxInputIdentity, std::time::Instant)>,
+    /// How far complete highlighting of the current input has progressed.
+    /// Finished chunks are never revisited, so evicted coverage entries
+    /// cannot make the pass repeat itself.
+    complete_progress: Option<(SyntaxInputIdentity, usize)>,
+    referenced_names: Vec<String>,
+    implicit_limited: bool,
+}
+
+impl Default for CodeLayer {
+    fn default() -> Self {
+        Self {
+            service: Default::default(),
+            published: None,
+            input_changed: None,
+            complete_progress: None,
+            referenced_names: Vec::new(),
+            implicit_limited: false,
+        }
+    }
+}
+
+/// Buffer syntax policy (language selection, detection, filename) and the
+/// style layers it configures.
+pub(super) struct CoreSyntax {
+    pub(super) code: CodeLayer,
     pub(super) prepared_code: Option<PreparedCodeSyntax>,
     pub(super) markdown: super::markdown_code::MarkdownCodeSyntax,
     pub(super) selection: LanguageSelection,
@@ -77,19 +109,9 @@ pub(super) struct CoreSyntax {
     filename_associations: Vec<detection::FilenameAssociation>,
     detection_profile: Arc<detection::DetectionProfile>,
     filename: String,
-    pub(super) published: Option<(SyntaxInputIdentity, u64)>,
-    /// When the analyzed input last changed. Speculative whole-document
-    /// analysis waits for editing to pause.
-    input_changed: Option<(SyntaxInputIdentity, std::time::Instant)>,
-    /// How far complete highlighting of the current input has progressed.
-    /// Finished chunks are never revisited, so evicted coverage entries
-    /// cannot make the pass repeat itself.
-    complete_progress: Option<(SyntaxInputIdentity, usize)>,
     /// When the document revision last changed, for preparing the other
     /// Markdown view only after editing pauses.
     pub(super) view_format_changed: Option<((crate::document::DocumentId, crate::document::Revision), std::time::Instant)>,
-    referenced_names: Vec<String>,
-    implicit_limited: bool,
     sheet: Arc<crate::document::StyleSheet>,
     /// Whether `sheet` has any automatic style with non-default metrics,
     /// memoized by its revision.
@@ -98,7 +120,7 @@ pub(super) struct CoreSyntax {
 impl Default for CoreSyntax {
     fn default() -> Self {
         Self {
-            service: Default::default(),
+            code: Default::default(),
             prepared_code: None,
             markdown: Default::default(),
             selection: LanguageSelection::Automatic,
@@ -109,12 +131,7 @@ impl Default for CoreSyntax {
             filename_associations: Vec::new(),
             detection_profile: detection::bundled_profile(),
             filename: String::new(),
-            published: None,
-            input_changed: None,
-            complete_progress: None,
             view_format_changed: None,
-            referenced_names: Vec::new(),
-            implicit_limited: false,
             sheet: code_style::snapshot(),
             metric_styles: None,
         }
@@ -125,11 +142,12 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// render after releasing the coordinator lease; it uses no layout provider.
     pub fn prepare_html_export(&self, view: ViewId) -> Result<crate::document::HtmlExport, CoreError> {
         if !self.views.contains_key(&view) { return Err(CoreError::UnknownView(view)); }
+        self.focus_view(view);
         let export = self.document.prepare_html_export()
             .with_tabstop(self.views[&view].commands.indentation_options().tabstop);
         if !self.document.format().is_code() { return Ok(export); }
         let input = self.syntax_input();
-        let mut service = self.syntax.service.for_export();
+        let mut service = self.syntax.code.service.for_export();
         if !self.syntax.detected_for_code {
             let detection = detection::detect_with_profile(&input, &self.syntax.filename,
                 &self.syntax.selection, &self.syntax.filename_associations, &self.syntax.detection_profile);
@@ -162,18 +180,18 @@ impl<P: TextMeasurementProvider> Core<P> {
             return Err(crate::document::StyleDefaultsError::NotPristine);
         }
         self.syntax.filename = filename.to_owned();
-        self.syntax.service.set_filename((!filename.is_empty()).then(|| filename.to_owned()));
+        self.syntax.code.service.set_filename((!filename.is_empty()).then(|| filename.to_owned()));
         let detection = self.detect_code_language(&self.syntax.selection);
         if allow_auto_code
             && detection.language.is_some()
-            && self.document.format() == Format::PlainText
+            && self.document.buffer_format() == Format::PlainText
         {
             self.document.initialize_code_format()?;
         }
-        self.syntax.service.set_language(detection.language.clone());
+        self.syntax.code.service.set_language(detection.language.clone());
         self.syntax.automatic_detection = Some(detection.clone());
         self.syntax.detection = Some(detection);
-        self.syntax.detected_for_code = self.document.format().is_code();
+        self.syntax.detected_for_code = self.code_layer_wanted();
         self.publish_reflow_language();
         Ok(())
     }
@@ -211,11 +229,11 @@ impl<P: TextMeasurementProvider> Core<P> {
     }
     fn refresh_code_detection(&mut self) {
         self.syntax.automatic_detection = Some(self.detect_code_language(&LanguageSelection::Automatic));
-        self.syntax.service.set_filename((!self.syntax.filename.is_empty()).then(|| self.syntax.filename.clone()));
+        self.syntax.code.service.set_filename((!self.syntax.filename.is_empty()).then(|| self.syntax.filename.clone()));
         let detection = self.detect_code_language(&self.syntax.selection);
-        self.syntax.service.set_language(detection.language.clone());
+        self.syntax.code.service.set_language(detection.language.clone());
         self.syntax.detection = Some(detection);
-        self.syntax.published = None;
+        self.syntax.code.published = None;
         self.publish_reflow_language();
     }
     /// Explicit policy changes/redetection are the only post-load detector
@@ -244,7 +262,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             self.syntax.filename = filename.to_owned();
         }
         self.refresh_code_detection();
-        self.syntax.detected_for_code = self.document.format().is_code();
+        self.syntax.detected_for_code = self.code_layer_wanted();
     }
     /// The buffer's file name as the frontend reported it (for `%` and
     /// autocommand patterns); empty for an unnamed buffer.
@@ -256,8 +274,8 @@ impl<P: TextMeasurementProvider> Core<P> {
     }
     pub fn configure_syntax(&mut self, directory: &str) {
         self.syntax.prepared_code = None;
-        self.syntax.service.set_vim_directory(directory.to_owned());
-        self.syntax.published = None;
+        self.syntax.code.service.set_vim_directory(directory.to_owned());
+        self.syntax.code.published = None;
         self.syntax.markdown = Default::default();
     }
 
@@ -269,17 +287,17 @@ impl<P: TextMeasurementProvider> Core<P> {
         factory: crate::document::syntax::service::SyntaxProviderFactory,
     ) {
         let mut service = SyntaxService::with_factory(factory);
-        service.set_language(self.syntax.service.configuration.language.clone());
-        service.set_vim_directory(self.syntax.service.configuration.vim_directory.clone());
-        service.set_filename(self.syntax.service.configuration.filename.clone());
-        self.syntax.service = service;
+        service.set_language(self.syntax.code.service.configuration.language.clone());
+        service.set_vim_directory(self.syntax.code.service.configuration.vim_directory.clone());
+        service.set_filename(self.syntax.code.service.configuration.filename.clone());
+        self.syntax.code.service = service;
         self.syntax.prepared_code = None;
         self.syntax.markdown = Default::default();
-        self.syntax.published = None;
+        self.syntax.code.published = None;
     }
     pub fn syntax_diagnostics(&self) -> String {
-        let mut diagnostics = self.syntax.service.diagnostics();
-        if self.syntax.implicit_limited {
+        let mut diagnostics = self.syntax.code.service.diagnostics();
+        if self.syntax.code.implicit_limited {
             if !diagnostics.is_empty() {
                 diagnostics.push('\n');
             }
@@ -291,15 +309,15 @@ impl<P: TextMeasurementProvider> Core<P> {
         diagnostics
     }
     pub fn syntax_statistics(&self) -> crate::document::syntax::service::SyntaxServiceStatistics {
-        self.syntax.service.statistics
+        self.syntax.code.service.statistics
     }
 
     /// Names in the accepted, bounded syntax cache, including unresolved names.
     /// Menu inspection never runs a provider or scans unhighlighted document text.
     pub fn syntax_style_names(&self) -> &[String] {
-        let current = (self.syntax_input().identity(), self.syntax.service.configuration.generation);
-        if self.document.format().is_code() && self.syntax.published == Some(current) {
-            &self.syntax.referenced_names
+        let current = (self.syntax_input().identity(), self.syntax.code.service.configuration.generation);
+        if self.code_layer_wanted() && self.syntax.code.published == Some(current) {
+            &self.syntax.code.referenced_names
         } else {
             &[]
         }
@@ -309,23 +327,54 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// function, parsing, or wait occurs under the coordinator's serial lock.
     pub fn poll_syntax(&mut self) -> bool {
         self.poll_view_format_prefetch();
-        if self.document.format() == Format::Markdown {
-            // Whole-document Code analysis is obsolete in Preview; only code
-            // blocks use their own bounded services.
-            self.syntax.service.cancel();
-            self.syntax.published = None;
-            return self.poll_markdown_code_syntax();
+        let previous = self.document.focus();
+        // Each live style layer serves every view drawn from it: Preview's
+        // code blocks and the buffer's one Code layer may both be live.
+        let mut changed = false;
+        if self.preview_layer_wanted() {
+            self.document.set_focus(crate::document::ViewPresentation::preview());
+            changed |= self.poll_markdown_code_syntax();
+        } else {
+            self.syntax.markdown = Default::default();
         }
-        self.syntax.markdown = Default::default();
-        if !self.document.format().is_code() {
-            self.syntax.service.cancel();
-            self.syntax.published = None;
-            return false;
+        if self.code_layer_wanted() {
+            self.document.set_focus(crate::document::ViewPresentation::diff());
+            changed |= self.poll_code_syntax();
+        } else {
+            self.syntax.code.service.cancel();
+            self.syntax.code.published = None;
         }
+        self.document.set_focus(previous);
+        changed
+    }
+
+    /// Whether some view of this buffer shows Code, so the buffer's one Code
+    /// layer must analyze and publish.
+    pub(super) fn code_layer_wanted(&self) -> bool {
+        use crate::document::ProjectionKind;
+        if !self.document.has_lineage(ProjectionKind::Literal) { return false; }
+        if self.views.is_empty() { return self.document.buffer_format().is_code(); }
+        self.views.values().any(|view| self.document.format_for(view.presentation).is_code())
+    }
+
+    /// Whether some view shows the buffer in Preview.
+    fn preview_layer_wanted(&self) -> bool {
+        use crate::document::ProjectionKind;
+        if !self.document.has_lineage(ProjectionKind::Preview) { return false; }
+        if self.views.is_empty() { return self.document.buffer_format().is_markdown(); }
+        self.views.values().any(|view| self.document.format_for(view.presentation).is_markdown())
+    }
+
+    /// Whether `view` is drawn from the presentation now being published.
+    fn shows_focused_presentation(&self, view: &View<P>) -> bool {
+        self.document.format_for(view.presentation) == self.document.format()
+    }
+
+    fn poll_code_syntax(&mut self) -> bool {
         let input = self.syntax_input();
         if !self.syntax.detected_for_code {
             let detection = self.detect_code_language(&self.syntax.selection);
-            self.syntax.service.set_language(detection.language.clone());
+            self.syntax.code.service.set_language(detection.language.clone());
             self.syntax.detection = Some(detection);
             self.syntax.detected_for_code = true;
         }
@@ -334,39 +383,39 @@ impl<P: TextMeasurementProvider> Core<P> {
         let hull = map
             .and_then(|map| self.document.layout_change_between(map.source_revision(), map.target_revision()))
             .map(|change| (change.old, change.new));
-        self.syntax.service.rebase_input(input.clone(), map, hull);
+        self.syntax.code.service.rebase_input(input.clone(), map, hull);
         // Drain completed coverage before enqueueing: requesting first could
         // restart a finished regional query on every publication frame.
-        let completed = self.syntax.service.poll(input.identity());
+        let completed = self.syntax.code.service.poll(input.identity());
         let mut requests = Vec::new();
-        for view in self.views.values() {
+        for view in self.views.values().filter(|view| self.shows_focused_presentation(view)) {
             let range = self.visible_syntax_range(&input, view);
             if !requests.contains(&range) { requests.push(range); }
         }
         for range in &requests {
-            self.syntax.service.request(input.clone(), range.clone());
+            self.syntax.code.service.request(input.clone(), range.clone());
         }
         self.request_complete_code_syntax(&input, &requests);
         let mut sheet = code_style::snapshot();
         let style_changed = sheet.revision != self.syntax.sheet.revision;
         let publication = (
             input.identity(),
-            self.syntax.service.configuration.generation,
+            self.syntax.code.service.configuration.generation,
         );
-        let input_changed = self.syntax.published != Some(publication);
+        let input_changed = self.syntax.code.published != Some(publication);
         if !completed && !style_changed && !input_changed {
             return false;
         }
-        self.syntax.referenced_names = self.syntax.service.referenced_names();
+        self.syntax.code.referenced_names = self.syntax.code.service.referenced_names();
         let generated =
-            code_style::materialize(self.syntax.referenced_names.iter().map(String::as_str));
-        self.syntax.implicit_limited = generated.limited;
+            code_style::materialize(self.syntax.code.referenced_names.iter().map(String::as_str));
+        self.syntax.code.implicit_limited = generated.limited;
         if let Some(generated) = generated.sheet {
             sheet = generated;
         }
-        let delta = self.syntax.service.take_publication_delta();
+        let delta = self.syntax.code.service.take_publication_delta();
         self.publish_code_presentation(sheet, &delta, completed);
-        self.syntax.published = Some(publication);
+        self.syntax.code.published = Some(publication);
         true
     }
 
@@ -377,26 +426,26 @@ impl<P: TextMeasurementProvider> Core<P> {
     fn request_complete_code_syntax(&mut self, input: &SyntaxInputSnapshot, visible: &[std::ops::Range<usize>]) {
         if !super::prelayout::retains_complete_presentation(&self.document) { return; }
         let now = std::time::Instant::now();
-        let changed_at = match self.syntax.input_changed {
+        let changed_at = match self.syntax.code.input_changed {
             Some((identity, at)) if identity == input.identity() => at,
-            _ => { self.syntax.input_changed = Some((input.identity(), now)); now }
+            _ => { self.syntax.code.input_changed = Some((input.identity(), now)); now }
         };
         if now.duration_since(changed_at) < COMPLETE_SYNTAX_EDIT_PAUSE { return; }
-        if !visible.iter().all(|range| self.syntax.service.covers(input, range.clone())) { return; }
+        if !visible.iter().all(|range| self.syntax.code.service.covers(input, range.clone())) { return; }
         let len = input.byte_len();
-        let mut start = match self.syntax.complete_progress {
+        let mut start = match self.syntax.code.complete_progress {
             Some((identity, offset)) if identity == input.identity() => offset,
             _ => 0,
         };
         while start < len {
             let end = complete_syntax_chunk_end(input, start);
-            if !self.syntax.service.covers(input, start..end) {
-                self.syntax.service.request(input.clone(), start..end);
+            if !self.syntax.code.service.covers(input, start..end) {
+                self.syntax.code.service.request(input.clone(), start..end);
                 break;
             }
             start = end;
         }
-        self.syntax.complete_progress = Some((input.identity(), start));
+        self.syntax.code.complete_progress = Some((input.identity(), start));
     }
 
     /// Capture the current view's syntax request without waiting under the
@@ -406,11 +455,12 @@ impl<P: TextMeasurementProvider> Core<P> {
     ) -> Result<(bool, Option<crate::document::syntax::service::SyntaxWait>), CoreError> {
         if !self.views.contains_key(&view) { return Err(CoreError::UnknownView(view)); }
         let changed = self.poll_syntax();
+        self.focus_view(view);
         if !self.document.format().is_code() { return Ok((changed, None)); }
         let input = self.syntax_input();
         let range = self.visible_syntax_range(&input, &self.views[&view]);
         let state = &mut self.views.get_mut(&view).expect("validated view").syntax_wait;
-        Ok((changed, self.syntax.service.prepare_wait(input, range, state, deadline)))
+        Ok((changed, self.syntax.code.service.prepare_wait(input, range, state, deadline)))
     }
 
     pub(super) fn visible_syntax_range(&self, input: &SyntaxInputSnapshot, view: &View<P>) -> std::ops::Range<usize> {
@@ -530,7 +580,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             .then(|| self.document.projection().clone());
         let local = self
             .document
-            .install_code_presentation_delta(sheet.clone(), self.syntax.service.run_store(), delta);
+            .install_code_presentation_delta(sheet.clone(), self.syntax.code.service.run_store(), delta);
         let change = if sheet_changed {
             metrics::MetricChange::Unbounded
         } else if local {
@@ -574,7 +624,10 @@ impl<P: TextMeasurementProvider> Core<P> {
             _ => None,
         };
         self.syntax.sheet = sheet;
-        for (id, view) in &mut self.views {
+        let published = self.views.iter()
+            .filter(|(_, view)| self.shows_focused_presentation(view))
+            .map(|(id, _)| *id).collect::<Vec<_>>();
+        for (id, view) in self.views.iter_mut().filter(|(id, _)| published.contains(id)) {
             // Visible jobs carry paint; speculative geometry survives a
             // paint-only publication and is validated by geometry at install.
             if metrics_changed {

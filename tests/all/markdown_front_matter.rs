@@ -577,11 +577,8 @@ fn preview_switches_keep_source_and_metadata_body_anchors() {
             assert!(document.text().starts_with("---\n"));
         }
     }
-    for _ in 0..3 {
-        assert!(document.undo());
-        assert_eq!(document.source_bytes(), source.as_bytes());
-    }
-    assert_eq!(document.format(), Format::Code);
+    assert_eq!(document.source_bytes(), source.as_bytes());
+    assert_eq!(document.format(), Format::Markdown);
 }
 
 struct MetadataSyntax(Arc<Mutex<Vec<(String, String)>>>);

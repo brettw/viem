@@ -123,8 +123,10 @@ final class EVDiffModeTests: XCTestCase {
         let baseView = try XCTUnwrap(left.session)
         let baseCore = base.core
 
-        try new.read(source: Data("first\nreplacement\nthird\n".utf8), typeName: EVDocument.codeType,
+        // Reloading reads the buffer's own format; the compared view stays Code.
+        try new.read(source: Data("first\nreplacement\nthird\n".utf8), typeName: try XCTUnwrap(EVDocument.markdownType),
                      origin: .reload(path: path))
+        XCTAssertEqual(live.viewFormat, .code)
         XCTAssertIdentical(left.session, baseView)
         XCTAssertEqual(base.core, baseCore)
         XCTAssertEqual(try source(base), original)
@@ -140,28 +142,34 @@ final class EVDiffModeTests: XCTestCase {
         let new = try backend("# Title\n\ntext\n", type: try XCTUnwrap(EVDocument.markdownType), filename: "/tmp/viem-diff.md")
         XCTAssertEqual(new.sourceFormat, .markdown)
         let (surface, _, _, session) = try begin(new, base: "# Title\n")
-        XCTAssertEqual(new.sourceFormat, .code)
-        XCTAssertEqual(try source(new), "# Title\n\ntext\n", "switching to Code keeps the bytes")
+        XCTAssertEqual(surface.viewFormat, .code, "the compared view shows Code")
+        XCTAssertEqual(new.sourceFormat, .markdown, "the buffer stays Markdown")
+        XCTAssertEqual(try source(new), "# Title\n\ntext\n", "showing Code keeps the bytes")
         session.end()
-        XCTAssertEqual(new.sourceFormat, .markdown)
+        XCTAssertEqual(surface.viewFormat, .markdown)
         XCTAssertEqual(surface.currentDocumentMode()?.format, "markdown")
     }
 
-    func testTheFormatIsRestoredThroughAnotherViewAfterTheComparedPaneCloses() throws {
+    func testAnotherViewKeepsPreviewWhileTheComparedViewShowsCode() throws {
         let new = try backend("# Title\n\ntext\n", type: try XCTUnwrap(EVDocument.markdownType), filename: "/tmp/viem-diff.md")
         let other = try surface(new)
-        weak var compared: EVEditorSurfaceController?
-        var session: (any EVDiffSessionControlling)?
-        try autoreleasepool {
-            let begun = try begin(new, base: "# Title\n")
-            compared = begun.0
-            session = begun.3
-        }
-        XCTAssertNil(compared, "the compared pane has closed")
-        XCTAssertEqual(new.sourceFormat, .code)
-        try XCTUnwrap(session).end()
+        let (compared, _, baseSurface, session) = try begin(new, base: "# Title\n")
+        XCTAssertEqual(compared.viewFormat, .code)
+        XCTAssertEqual(other.viewFormat, .markdown, "a view in another window keeps Preview")
+        // Turning Preview off and on again elsewhere leaves the comparison literal.
+        other.setMarkdownPreview(false)
+        other.setMarkdownPreview(true)
+        XCTAssertEqual(other.viewFormat, .markdown)
+        XCTAssertEqual(compared.viewFormat, .code)
+        type("ix", into: compared)
+        escape(compared)
+        XCTAssertEqual(try source(new), "# xTitle\n\ntext\n")
+        XCTAssertEqual(session.lineTotals.added, 3, "the comparison follows the edit")
+        XCTAssertEqual(session.lineTotals.removed, 1)
+        XCTAssertEqual(try backgroundLines(baseSurface), [0])
+        session.end()
+        XCTAssertEqual(other.viewFormat, .markdown)
         XCTAssertEqual(new.sourceFormat, .markdown)
-        XCTAssertEqual(other.currentDocumentMode()?.format, "markdown")
     }
 
     func testADeletedFilesBlankSideIsNotEditableUntilTheComparisonEnds() throws {

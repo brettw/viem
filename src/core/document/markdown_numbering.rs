@@ -265,7 +265,7 @@ impl Document {
         let PreparedPublication::State(state) = prepared.publication else {
             unreachable!()
         };
-        scratch.history = super::super::history::History::transient(state);
+        scratch.install_transient_state(state);
         let edits = Vec::new();
         let renumbered = if literal_overflow {
             // Ten-digit ordinals have no list meaning in CommonMark. This is

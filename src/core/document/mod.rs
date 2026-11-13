@@ -26,6 +26,7 @@ pub(crate) use formatted_text::FormattedTextSnapshotIdentity;
 mod history;
 mod history_memory;
 mod history_source;
+pub(crate) mod lineage;
 mod view_format_prefetch;
 #[cfg(test)]
 mod large_file_tests;
@@ -126,7 +127,8 @@ pub use position::{
     SourcePoint, SourceRange, Splice, TextAnchor, TextRange, UnresolvableAnchor,
 };
 pub use projection::{
-    Block, BlockDirectFormatting, BlockKind, CodeBlockKind, CodeClipboardRepresentation, Format, FormattedDocument, InlineImage, InlineReference, FormattedPayloadError, FormattedTextPayload,
+    Block, BlockDirectFormatting, BlockKind, CodeBlockKind, CodeClipboardRepresentation, Format, FormattedDocument,
+    LiteralStyle, ProjectionKind, ViewPresentation, InlineImage, InlineReference, FormattedPayloadError, FormattedTextPayload,
     HardLineInfo, HardLineQueryError, HardLineSnapshot, ListStyle, ProjectedSourceBoundary,
     ProvenanceSpan, SourceBoundaryRelation, SourceToTextError, StyleSpan,
 };
@@ -644,22 +646,19 @@ struct DocumentState {
     /// later absolute extent moves without an `O(n)` suffix rewrite.
     source_hard_lines: SourceHardLineIndex,
     encoding: Encoding,
-    format: Format,
+    /// Literal or Preview. Text and Code styling are not stored.
+    kind: ProjectionKind,
     file_format: FileFormat,
     file_format_origin: FileFormatOrigin,
     line_ending_evidence: LineEndingEvidence,
     has_bom: bool,
 }
 
-fn visit_document_state_source_buffers(
-    state: &DocumentState,
-    visitor: &mut history_source::SourceRetentionVisitor<'_>,
-) {
-    state.source.visit_source_retention(visitor);
-}
-
-fn document_state_source_digest(state: &DocumentState) -> SourceArtifactDigest {
-    state.source.artifact_digest()
+impl DocumentState {
+    /// The format whose adapter built this state's structure.
+    fn structure_format(&self) -> Format {
+        self.kind.structure_format()
+    }
 }
 
 fn visit_document_state_memory(
@@ -684,17 +683,19 @@ fn visit_document_state_memory(
     }
 }
 
-fn new_document_history(state: DocumentState) -> History<DocumentState, PositionMap> {
+type DocumentHistory = History<lineage::HistoryState, lineage::LineageMaps>;
+
+fn new_document_history(state: &std::sync::Arc<DocumentState>) -> DocumentHistory {
     History::new_accounted(
-        state,
+        lineage::HistoryState::recording(state),
         HistoryRetentionPolicy::default(),
-        visit_document_state_source_buffers,
-        document_state_source_digest,
-        |state| state.source.identity(),
+        lineage::visit_history_state_source_buffers,
+        lineage::history_state_source_digest,
+        |state| state.source.source.identity(),
     )
     .with_retained_memory(
-        visit_document_state_memory,
-        PositionMap::visit_retained_memory,
+        lineage::visit_history_state_memory,
+        lineage::LineageMaps::visit_retained_memory,
     )
 }
 
@@ -732,7 +733,15 @@ struct SuspendedEditGroup {
 /// One editing buffer's document state and branching undo history.
 pub struct Document {
     id: DocumentId,
-    history: History<DocumentState, PositionMap>,
+    history: DocumentHistory,
+    /// The live projection lineages at the current history node; queries and
+    /// edits address the one the focus selects.
+    lineages: lineage::Lineages,
+    /// The buffer is Markdown, so a view may show it in Preview.
+    markdown: bool,
+    /// What a view shows when nothing else says: the format it was opened
+    /// in, or the last buffer-wide choice.
+    default_presentation: ViewPresentation,
     open_work: DocumentOpenWorkStatistics,
     next_revision: u64,
     /// Monotonic across the complete undo tree. History navigation restores
@@ -746,15 +755,6 @@ pub struct Document {
     edit_group_generation: u64,
     /// An open undo group detached while another view's input runs.
     suspended_edit_group: Option<SuspendedEditGroup>,
-    /// Short-lived exact transition accumulator installed by the serial core
-    /// coordinator around one input event. Model transactions compose into it
-    /// before publication, so a command which performs several source commits
-    /// still exposes one exact map from the event's input snapshot to its
-    /// output snapshot. Ordinary document users pay no logging cost.
-    position_map_capture: Option<PositionMap>,
-    /// Exact formatted change of recent committed transactions, so a view's
-    /// layout cache can rebase across a revision instead of discarding.
-    layout_changes: std::collections::VecDeque<LayoutChangeRecord>,
     artifact_binding: Option<ArtifactBinding>,
     pending_artifact_writes: HashMap<ArtifactWriteToken, PendingArtifactWrite>,
     next_artifact_write_token: u64,
@@ -768,10 +768,19 @@ pub struct Document {
     /// asynchronous save. `None` after recovery, when the persisted source is
     /// unknown.
     saved_source: Option<SourceSnapshot>,
-    /// Disposable presentation cache; never retained by document history.
-    code_presentation: Option<code_presentation::CodePresentation>,
+    /// Buffer-wide Text or Code styling of literal views. Not history.
+    literal_style: LiteralStyle,
+    /// The presentation of the view the serial owner is acting for. Every
+    /// format and projection query answers for it.
+    focus: std::cell::Cell<ViewPresentation>,
+    /// A lineage selected directly by kind for internal passes over every
+    /// live lineage, overriding the focus while set.
+    kind_focus: std::cell::Cell<Option<ProjectionKind>>,
+    /// The Code sheet, fetched only once something shows Code.
+    code_sheet: Option<std::sync::Arc<StyleSheet>>,
+    /// A view shows Code although the buffer's literal style is Text.
+    code_views: bool,
     configuration: Option<configuration::Configuration>,
-    configuration_state: Option<DocumentState>,
     /// Disposable background preparation of the next Preview switch.
     view_format_prefetch: view_format_prefetch::ViewFormatPrefetch,
     reference_cache: references::ReferenceCache,
@@ -788,12 +797,158 @@ impl Document {
     /// identity projection's format metadata. No second decoding pass.
     pub fn initialize_code_format(&mut self) -> Result<(), StyleDefaultsError> {
         if self.revision().0 != 0 || self.history_status().node_count != 1 || !self.format().is_literal() { return Err(StyleDefaultsError::NotPristine); }
-        let mut state = self.state().clone();
-        state.format = Format::Code;
-        state.projection.install_code_styles(code_style::snapshot(), &[]);
-        self.history.initialize_projection(state);
-        self.refresh_configuration();
+        self.set_literal_style(LiteralStyle::Code);
         Ok(())
+    }
+
+    /// Choose Text or Code styling for every literal view of this buffer.
+    /// No source, revision, history or dirty state changes.
+    pub fn set_literal_style(&mut self, style: LiteralStyle) {
+        if self.literal_style == style { return; }
+        self.literal_style = style;
+        if let Some(literal) = self.lineages.get_mut(ProjectionKind::Literal) { literal.code_presentation = None; }
+        self.refresh_code_base();
+    }
+
+    pub fn literal_style(&self) -> LiteralStyle {
+        self.literal_style
+    }
+
+    /// The structure the buffer currently holds.
+    pub fn projection_kind(&self) -> ProjectionKind {
+        self.state().kind
+    }
+
+    /// Which presentation subsequent queries and edits answer for.
+    pub fn set_focus(&self, presentation: ViewPresentation) {
+        self.focus.set(presentation);
+    }
+
+    pub fn focus(&self) -> ViewPresentation {
+        self.focus.get()
+    }
+
+    /// The format a view with `presentation` shows.
+    pub fn format_for(&self, presentation: ViewPresentation) -> Format {
+        match self.kind_for(presentation) {
+            ProjectionKind::Preview => Format::Markdown,
+            ProjectionKind::Literal => self.literal_format(presentation),
+        }
+    }
+
+    /// Text or Code: how the Literal structure is styled for `presentation`.
+    fn literal_format(&self, presentation: ViewPresentation) -> Format {
+        if presentation.diff || self.markdown || self.literal_style == LiteralStyle::Code {
+            Format::Code
+        } else {
+            Format::PlainText
+        }
+    }
+
+    /// The live lineage a view with `presentation` is drawn from: the kind it
+    /// asks for, or the buffer's other live lineage while that one is not
+    /// built yet.
+    pub fn kind_for(&self, presentation: ViewPresentation) -> ProjectionKind {
+        let wanted = presentation.wanted_kind(self.markdown);
+        if self.lineages.has(wanted) { return wanted; }
+        self.lineages.kinds().next().expect("a lineage is always live")
+    }
+
+    /// The projection kind `presentation` asks for, whether or not it is live.
+    pub fn wanted_kind(&self, presentation: ViewPresentation) -> ProjectionKind {
+        presentation.wanted_kind(self.markdown)
+    }
+
+    /// Run a query against the live lineage of `kind`.
+    pub(crate) fn with_lineage_focus<R>(&self, kind: ProjectionKind, work: impl FnOnce(&Self) -> R) -> R {
+        self.with_kind_focus(kind, work)
+    }
+
+    /// Byte length of the shown projection's text, without flattening it.
+    pub fn text_tree_len(&self) -> usize {
+        self.projection().text_tree().byte_len()
+    }
+
+    /// The current revision of the live lineage of `kind`.
+    pub fn revision_of(&self, kind: ProjectionKind) -> Revision {
+        self.with_kind_focus(kind, Self::revision)
+    }
+
+    /// Whether a lineage of `kind` is live.
+    pub fn has_lineage(&self, kind: ProjectionKind) -> bool {
+        self.lineages.has(kind)
+    }
+
+    /// The live lineage whose current revision is `revision`. Revisions are
+    /// unique across a buffer's lineages, so at most one matches.
+    pub fn lineage_at_revision(&self, revision: Revision) -> Option<ProjectionKind> {
+        self.lineages.kinds().find(|kind| self.revision_of(*kind) == revision)
+    }
+
+    /// Whether the buffer is Markdown, so views may show Preview.
+    pub fn is_markdown_buffer(&self) -> bool {
+        self.markdown
+    }
+
+    /// What a view shows when nothing else says.
+    pub fn default_presentation(&self) -> ViewPresentation {
+        self.default_presentation
+    }
+
+    pub(crate) fn focus_kind(&self) -> ProjectionKind {
+        match self.kind_focus.get().filter(|kind| self.lineages.has(*kind)) {
+            Some(kind) => kind,
+            None => self.kind_for(self.focus.get()),
+        }
+    }
+
+    pub(super) fn live(&self) -> &lineage::LiveLineage {
+        self.lineages.get(self.focus_kind()).expect("the focused lineage is live")
+    }
+
+    pub(super) fn live_mut(&mut self) -> &mut lineage::LiveLineage {
+        let kind = self.focus_kind();
+        self.lineages.get_mut(kind).expect("the focused lineage is live")
+    }
+
+    /// Run `work` against the lineage of `kind`, then restore the focus.
+    pub(super) fn with_kind_focus<R>(&self, kind: ProjectionKind, work: impl FnOnce(&Self) -> R) -> R {
+        let previous = self.kind_focus.replace(Some(kind));
+        let result = work(self);
+        self.kind_focus.set(previous);
+        result
+    }
+
+    pub(super) fn with_kind_focus_mut<R>(&mut self, kind: ProjectionKind, work: impl FnOnce(&mut Self) -> R) -> R {
+        let previous = self.kind_focus.replace(Some(kind));
+        let result = work(self);
+        self.kind_focus.set(previous);
+        result
+    }
+
+    /// Rebuild the unhighlighted Code presentation after the current state
+    /// changed. Persistent clone, so constant work.
+    pub(super) fn refresh_code_base(&mut self) {
+        let wanted = self.code_views || self.markdown || self.literal_style == LiteralStyle::Code;
+        let Some(state) = self.lineages.get(ProjectionKind::Literal)
+            .map(|lineage| lineage.configuration_state.clone().map(std::sync::Arc::new).unwrap_or_else(|| lineage.state.clone()))
+        else { return };
+        if !wanted {
+            self.lineages.get_mut(ProjectionKind::Literal).expect("checked").code_base = None;
+            return;
+        }
+        let sheet = self.code_sheet.get_or_insert_with(code_style::snapshot).clone();
+        let base = state.projection.with_code_sheet(sheet);
+        self.lineages.get_mut(ProjectionKind::Literal).expect("checked").code_base = Some(base);
+    }
+
+    /// Whether some view shows this Text buffer as Code (a diff view), so
+    /// the Code presentation must be kept current.
+    pub fn set_code_views(&mut self, present: bool) {
+        if self.code_views != present {
+            self.code_views = present;
+            self.refresh_code_base();
+        }
     }
 
     /// Install immutable user defaults before the first view/edit. Source bytes,
@@ -816,9 +971,11 @@ impl Document {
         state
             .projection
             .install_configuration_styles(state.revision, sheet, assignment);
-        self.history.initialize_projection(state);
+        let state = std::sync::Arc::new(state);
+        self.history.initialize_projection(lineage::HistoryState::recording(&state));
+        self.lineages = lineage::Lineages::single(lineage::LiveLineage::new(state));
         self.configuration = None;
-        self.configuration_state = None;
+        self.refresh_code_base();
         // Reserve the consumed style generation so the next source/model
         // transaction still advances both style and projection identities.
         self.next_revision = self.next_revision.max(generation);
@@ -875,7 +1032,7 @@ impl Document {
             )
             .expect("layout fixture source-line ranges form a partition"),
             encoding: Encoding::Utf8,
-            format: Format::PlainText,
+            kind: ProjectionKind::Literal,
             file_format: FileFormat::Unix,
             file_format_origin: FileFormatOrigin::Defaulted,
             line_ending_evidence: LineEndingEvidence {
@@ -884,10 +1041,14 @@ impl Document {
             },
             has_bom: false,
         };
+        let live = std::sync::Arc::new(state);
         Self {
             id: allocate_document_id(&NEXT_DOCUMENT_ID)
                 .expect("process-wide document identities were exhausted in a test fixture"),
-            history: new_document_history(state),
+            history: new_document_history(&live),
+            lineages: lineage::Lineages::single(lineage::LiveLineage::new(live)),
+            markdown: false,
+            default_presentation: ViewPresentation::default(),
             // This fixture deliberately bypasses decoding/provenance setup so
             // layout scalability can be measured in isolation.
             open_work: DocumentOpenWorkStatistics {
@@ -905,8 +1066,6 @@ impl Document {
             edit_group_depth: 0,
             edit_group_generation: 0,
             suspended_edit_group: None,
-            position_map_capture: None,
-            layout_changes: std::collections::VecDeque::new(),
             saved_source: None,
             artifact_binding: None,
             pending_artifact_writes: HashMap::new(),
@@ -916,9 +1075,12 @@ impl Document {
             read_only: false,
             modifiable: true,
             recovered_dirty: false,
-            code_presentation: None,
+            literal_style: LiteralStyle::default(),
+            focus: Default::default(),
+            kind_focus: Default::default(),
+            code_sheet: None,
+            code_views: false,
             configuration: None,
-            configuration_state: None,
             view_format_prefetch: Default::default(),
             reference_cache: Default::default(),
         }
@@ -1053,17 +1215,21 @@ impl Document {
             &state.projection,
         );
         let saved_source = Some(state.source.clone());
-        Ok(Self {
+        let literal_style = if format.is_code() { LiteralStyle::Code } else { LiteralStyle::Text };
+        let live = std::sync::Arc::new(state);
+        let default_presentation = ViewPresentation { preview: format.is_markdown(), ..Default::default() };
+        let mut document = Self {
             id: allocate_document_id(&NEXT_DOCUMENT_ID)?,
-            history: new_document_history(state),
+            history: new_document_history(&live),
+            lineages: lineage::Lineages::single(lineage::LiveLineage::new(live)),
+            markdown: format.is_markdown(),
+            default_presentation,
             open_work,
             next_revision: 1,
             next_projected_block_id,
             edit_group_depth: 0,
             edit_group_generation: 0,
             suspended_edit_group: None,
-            position_map_capture: None,
-            layout_changes: std::collections::VecDeque::new(),
             saved_source,
             artifact_binding: None,
             pending_artifact_writes: HashMap::new(),
@@ -1073,16 +1239,29 @@ impl Document {
             read_only: false,
             modifiable: true,
             recovered_dirty: false,
-            code_presentation: None,
+            literal_style: LiteralStyle::default(),
+            focus: std::cell::Cell::new(default_presentation),
+            kind_focus: Default::default(),
+            code_sheet: None,
+            code_views: false,
             configuration: None,
-            configuration_state: None,
             view_format_prefetch: Default::default(),
             reference_cache: Default::default(),
-        })
+        };
+        document.set_literal_style(literal_style);
+        if lineage::shadow_lineage_enabled() {
+            let other = match document.projection_kind() {
+                ProjectionKind::Literal => ProjectionKind::Preview,
+                ProjectionKind::Preview => ProjectionKind::Literal,
+            };
+            let _ = document.add_lineage(other);
+        }
+        Ok(document)
     }
 
     fn state(&self) -> &DocumentState {
-        self.configuration_state.as_ref().unwrap_or(self.history.current())
+        let live = self.live();
+        live.configuration_state.as_ref().unwrap_or(&live.state)
     }
 
     pub fn id(&self) -> DocumentId {
@@ -1107,7 +1286,22 @@ impl Document {
     }
 
     pub fn format(&self) -> Format {
-        self.state().format
+        match self.kind_focus.get().filter(|kind| self.lineages.has(*kind)) {
+            Some(ProjectionKind::Preview) => Format::Markdown,
+            Some(ProjectionKind::Literal) => self.literal_format(self.focus.get()),
+            None => self.format_for(self.focus.get()),
+        }
+    }
+
+    /// The buffer's own format, as an ordinary view shows it. A diff view of
+    /// a Text buffer shows Code without changing this.
+    pub fn buffer_format(&self) -> Format {
+        // The buffer's own choice, whichever projections views keep live.
+        if self.default_presentation.wanted_kind(self.markdown) == ProjectionKind::Preview {
+            Format::Markdown
+        } else {
+            self.literal_format(self.default_presentation)
+        }
     }
 
     pub fn file_format(&self) -> FileFormat {
@@ -1131,18 +1325,35 @@ impl Document {
     }
 
     pub fn projection(&self) -> &FormattedDocument {
-        self.code_presentation.as_ref().filter(|p| p.projection.revision() == self.revision()
-            && (self.format().is_code() || self.format() == Format::Markdown
+        let format = self.format();
+        let published = self.live().code_presentation.as_ref().filter(|p| p.projection.revision() == self.revision()
+            && (format.is_code() || format == Format::Markdown
                 && p.projection.style_sheet().revision == self.state().projection.style_sheet().revision))
-            .map(|p| &p.projection).unwrap_or(&self.state().projection)
+            .map(|p| &p.projection);
+        match (published, format) {
+            (Some(projection), _) => projection,
+            (None, Format::Code) => self.live().code_base.as_ref()
+                .filter(|base| base.revision() == self.revision())
+                .unwrap_or(&self.state().projection),
+            (None, _) => &self.state().projection,
+        }
     }
 
+    /// Publish Code highlighting. Only the Literal structure has a Code layer.
     pub fn install_code_presentation(&mut self, sheet: std::sync::Arc<StyleSheet>, runs: &[syntax::SyntaxRun]) -> bool {
-        if !self.format().is_code() { self.code_presentation = None; return false; }
+        if self.state().kind != ProjectionKind::Literal { self.live_mut().code_presentation = None; return false; }
+        self.adopt_code_sheet(&sheet);
         let mut projection = self.state().projection.clone();
         projection.install_code_styles(sheet, runs);
         self.publish_code_presentation(projection);
         true
+    }
+
+    fn adopt_code_sheet(&mut self, sheet: &std::sync::Arc<StyleSheet>) {
+        if !self.code_sheet.as_ref().is_some_and(|current| std::sync::Arc::ptr_eq(current, sheet)) {
+            self.code_sheet = Some(sheet.clone());
+            self.refresh_code_base();
+        }
     }
 
     /// Install a publication from the run store, splicing the previous
@@ -1156,13 +1367,14 @@ impl Document {
         runs: &syntax::service::RunStore,
         delta: &syntax::service::PublicationDelta,
     ) -> bool {
-        if !self.format().is_code() { self.code_presentation = None; return false; }
-        let local = !delta.unbounded && self.code_presentation.as_ref().is_some_and(|previous| {
+        if self.state().kind != ProjectionKind::Literal { self.live_mut().code_presentation = None; return false; }
+        self.adopt_code_sheet(&sheet);
+        let local = !delta.unbounded && self.live().code_presentation.as_ref().is_some_and(|previous| {
             previous.transition.source_revision() == previous.projection.revision()
                 && previous.transition.target_revision() == self.revision()
         });
         if local {
-            let previous = self.code_presentation.as_ref().expect("checked above");
+            let previous = self.live().code_presentation.as_ref().expect("checked above");
             let mut projection = self.state().projection.clone();
             if projection.install_code_styles_incrementally(
                 sheet.clone(),
@@ -1180,7 +1392,7 @@ impl Document {
     }
 
     fn publish_code_presentation(&mut self, projection: FormattedDocument) {
-        self.code_presentation = Some(code_presentation::CodePresentation {
+        self.live_mut().code_presentation = Some(code_presentation::CodePresentation {
             projection,
             transition: PositionMap::identity(self.id, PositionDomain::FormattedText,
                 self.revision(), self.state().projection.text_tree().byte_len()),
@@ -1190,14 +1402,14 @@ impl Document {
     /// The retained Code presentation, including one published for an
     /// earlier revision whose lineage is still tracked.
     pub(crate) fn code_presentation_projection(&self) -> Option<&FormattedDocument> {
-        self.code_presentation.as_ref().map(|presentation| &presentation.projection)
+        self.live().code_presentation.as_ref().map(|presentation| &presentation.projection)
     }
 
     pub(crate) fn record_layout_change(&mut self, record: LayoutChangeRecord) {
-        if self.layout_changes.len() == RETAINED_LAYOUT_CHANGES {
-            self.layout_changes.pop_front();
+        if self.live().layout_changes.len() == RETAINED_LAYOUT_CHANGES {
+            self.live_mut().layout_changes.pop_front();
         }
-        self.layout_changes.push_back(record);
+        self.live_mut().layout_changes.push_back(record);
     }
 
     /// The exact bounded formatted change between two revisions, when exactly
@@ -1209,7 +1421,7 @@ impl Document {
         before: Revision,
         after: Revision,
     ) -> Option<LocalFormattedChange> {
-        self.layout_changes
+        self.live().layout_changes
             .iter()
             .rev()
             .find(|record| record.after == after)
@@ -1226,10 +1438,10 @@ impl Document {
         if from == current {
             return Some(Vec::new());
         }
-        let start = self.layout_changes.iter().position(|record| record.before == from)?;
+        let start = self.live().layout_changes.iter().position(|record| record.before == from)?;
         let mut chain = Vec::new();
         let mut at = from;
-        for record in self.layout_changes.iter().skip(start) {
+        for record in self.live().layout_changes.iter().skip(start) {
             if record.before != at {
                 return None;
             }
@@ -1259,24 +1471,51 @@ impl Document {
         // outer transition. Temporarily make this frame authoritative, then
         // compose it into its parent on every ordinary return, including an
         // error whose successful prefix committed document revisions.
-        let parent_capture = self.position_map_capture.take();
-        self.position_map_capture = Some(PositionMap::identity(
-            self.id,
-            PositionDomain::FormattedText,
-            self.revision(),
-            self.projection().text_tree().byte_len(),
-        ));
+        // Every live lineage captures its own exact transition: a follower's
+        // views rebase through its map, not the acting lineage's.
+        let kinds = self.lineages.kinds().collect::<Vec<_>>();
+        let mut parents = Vec::with_capacity(kinds.len());
+        for kind in &kinds {
+            let identity = self.with_kind_focus(*kind, |document| PositionMap::identity(
+                document.id,
+                PositionDomain::FormattedText,
+                document.revision(),
+                document.projection().text_tree().byte_len(),
+            ));
+            let lineage = self.lineages.get_mut(*kind).expect("listed lineage");
+            parents.push(lineage.position_map_capture.replace(identity));
+        }
         let result = operation(self);
-        let map = self
-            .position_map_capture
-            .take()
-            .expect("the active capture remains installed for the operation");
-        self.position_map_capture = parent_capture.map(|parent| {
-            parent
-                .then(&map)
-                .expect("a nested capture follows its parent transition exactly")
-        });
+        let focused = self.focus_kind();
+        let mut focused_map = None;
+        for (kind, parent) in kinds.into_iter().zip(parents) {
+            let Some(lineage) = self.lineages.get_mut(kind) else { continue };
+            let map = lineage
+                .position_map_capture
+                .take()
+                .expect("the active capture remains installed for the operation");
+            lineage.position_map_capture = parent.map(|parent| {
+                parent
+                    .then(&map)
+                    .expect("a nested capture follows its parent transition exactly")
+            });
+            lineage.last_capture = Some(map.clone());
+            if kind == focused { focused_map = Some(map); }
+        }
+        let map = focused_map.expect("the focused lineage was captured");
         (result, map)
+    }
+
+    /// The map the last completed capture produced for the lineage of
+    /// `kind`, so views of a follower rebase through their own transition.
+    pub(crate) fn last_captured_map(&self, kind: ProjectionKind) -> Option<&PositionMap> {
+        self.lineages.get(kind).and_then(|lineage| lineage.last_capture.as_ref())
+    }
+
+    /// The map that moved the lineage of `kind` in the last publication it
+    /// followed, for rebasing that lineage's views after a single commit.
+    pub(crate) fn last_follow_map(&self, kind: ProjectionKind) -> Option<&PositionMap> {
+        self.lineages.get(kind).and_then(|lineage| lineage.last_follow.as_ref())
     }
 
     /// Structured diagnostics for malformed bytes in the current source
@@ -1975,18 +2214,7 @@ impl Document {
         // Resolve the protected open-unit ancestry before finalizing the
         // group, so an aggressively small budget cannot erase the target.
         let target = self.history.undo_target(count)?;
-        let map = self
-            .position_map_to_history_node(target.node)
-            .expect("retained history edges compose exactly");
-        let next_capture = self
-            .composed_position_capture(&map)
-            .expect("captured history transition follows the current revision");
-        self.edit_group_depth = 0;
-        let navigation = self.history.select_node(target.node)?;
-        self.position_map_capture = next_capture;
-        self.refresh_configuration();
-        self.advance_code_presentation(&map);
-        Ok(navigation)
+        self.navigate_to_history_node(target.node, |history| history.select_node(target.node))
     }
 
     /// Step to the currently preferred redo state.
@@ -2007,18 +2235,7 @@ impl Document {
             });
         }
         let target = self.history.redo_target(count)?;
-        let map = self
-            .position_map_to_history_node(target.node)
-            .expect("retained history edges compose exactly");
-        let next_capture = self
-            .composed_position_capture(&map)
-            .expect("captured history transition follows the current revision");
-        self.edit_group_depth = 0;
-        let navigation = self.history.select_node(target.node)?;
-        self.position_map_capture = next_capture;
-        self.refresh_configuration();
-        self.advance_code_presentation(&map);
-        Ok(navigation)
+        self.navigate_to_history_node(target.node, |history| history.select_node(target.node))
     }
 
     /// Compatibility helper for callers that only need a boundary boolean.
@@ -2066,7 +2283,38 @@ impl Document {
         from: HistoryNodeId,
         to: HistoryNodeId,
     ) -> Result<Option<HistoryRestorationSnapshot>, HistoryError> {
-        self.history.restoration_between(from, to)
+        Ok(self.history.restoration_between(from, to)?.map(|snapshot| self.rebind_restoration(snapshot)))
+    }
+
+    /// A restoration recorded against another projection of the same source
+    /// (an edge committed before a Preview toggle, or a node reached by
+    /// following its source) is resolved here through its anchors' leaf,
+    /// block and source identities. Anchors already in this revision pass
+    /// through unchanged.
+    fn rebind_restoration(&self, snapshot: HistoryRestorationSnapshot) -> HistoryRestorationSnapshot {
+        let revision = self.revision();
+        if snapshot.cursor().revision() == revision && snapshot.marks().values().all(|mark| mark.revision() == revision) {
+            return snapshot;
+        }
+        let rebind = |anchor: TextAnchor| -> Option<TextAnchor> {
+            if anchor.revision() == revision { return Some(anchor); }
+            let point = match self.projection().resolve_text_anchor(self.id, anchor).ok()? {
+                MappingOutcome::Exact(point) | MappingOutcome::Moved(point)
+                | MappingOutcome::CollapsedByDeletion(point) | MappingOutcome::RecoveredFromProvenance(point) => point,
+                MappingOutcome::Ambiguous(points) => *points.first()?,
+                MappingOutcome::Unresolvable(_) => return None,
+            };
+            self.text_anchor(point, anchor.association(), anchor.affinity(), anchor.deletion_recovery()).ok()
+        };
+        let cursor = rebind(snapshot.cursor()).unwrap_or_else(|| {
+            let point = self.text_point(0).expect("the document start is a boundary");
+            self.text_anchor(point, snapshot.cursor().association(), BoundaryAffinity::Downstream,
+                snapshot.cursor().deletion_recovery()).expect("the document start has an anchor")
+        });
+        let marks = snapshot.marks().iter()
+            .filter_map(|(name, mark)| rebind(*mark).map(|mark| (*name, mark)))
+            .collect();
+        HistoryRestorationSnapshot::new(cursor, marks)
     }
 
     /// Replace the deterministic model-only fallback with authentic command
@@ -2134,18 +2382,7 @@ impl Document {
         if self.history.location_for_node(node).is_none() {
             return Err(HistoryError::NodeNotFound(node));
         }
-        let map = self
-            .position_map_to_history_node(node)
-            .expect("retained history edges compose exactly");
-        let next_capture = self
-            .composed_position_capture(&map)
-            .expect("captured history transition follows the current revision");
-        let navigation = self.history.select_node(node)?;
-        self.edit_group_depth = 0;
-        self.position_map_capture = next_capture;
-        self.refresh_configuration();
-        self.advance_code_presentation(&map);
-        Ok(navigation)
+        self.navigate_to_history_node(node, |history| history.select_node(node))
     }
 
     /// Navigate directly to a retained monotonic change number.
@@ -2158,18 +2395,7 @@ impl Document {
             .history
             .location_for_change(change)
             .ok_or(HistoryError::ChangeNotFound(change))?;
-        let map = self
-            .position_map_to_history_node(target.node)
-            .expect("retained history edges compose exactly");
-        let next_capture = self
-            .composed_position_capture(&map)
-            .expect("captured history transition follows the current revision");
-        let navigation = self.history.select_change(change)?;
-        self.edit_group_depth = 0;
-        self.position_map_capture = next_capture;
-        self.refresh_configuration();
-        self.advance_code_presentation(&map);
-        Ok(navigation)
+        self.navigate_to_history_node(target.node, |history| history.select_change(change))
     }
 
     /// Mark the current immutable state as the last successfully persisted
@@ -2237,12 +2463,52 @@ impl Document {
         })
     }
 
-    /// Reproject the same source in another format (for example Markdown
-    /// Preview and Code) as one undo unit, without changing its bytes.
+    /// Show the same source in another format without changing its bytes.
+    /// Moving between Markdown Preview and a literal format reprojects as one
+    /// undo unit; choosing Text or Code only restyles the literal structure.
     pub fn set_view_format(&mut self, target: Format) -> Result<(), DocumentError> {
         self.execute_compat_request(ModelRequest::SetViewFormat {
             document: self.id, revision: self.revision(), target,
-        })
+        })?;
+        self.adopt_literal_style_of(target);
+        self.focus.set(self.default_presentation);
+        Ok(())
+    }
+
+    /// Record the Text or Code choice a format request implies.
+    /// Record the buffer-wide choice a format request implies: Text or Code
+    /// styling, whether the buffer is Markdown, and what a view shows by
+    /// default. Code keeps a Markdown buffer Markdown (its literal source).
+    pub(crate) fn adopt_literal_style_of(&mut self, target: Format) {
+        match target {
+            Format::Code => {
+                self.set_literal_style(LiteralStyle::Code);
+                self.default_presentation.preview = false;
+            }
+            Format::PlainText => {
+                self.set_literal_style(LiteralStyle::Text);
+                self.markdown = false;
+                self.default_presentation.preview = false;
+            }
+            Format::Markdown => {
+                self.markdown = true;
+                self.default_presentation.preview = true;
+            }
+        }
+        self.refresh_code_base();
+    }
+
+    /// The buffer stops being Markdown, for example when another language is
+    /// chosen; every view then shows literal Code or Text.
+    pub(crate) fn set_markdown_buffer(&mut self, markdown: bool) {
+        self.markdown = markdown;
+        if !markdown { self.default_presentation.preview = false; }
+        self.refresh_code_base();
+    }
+
+    /// Choose what a view shows when nothing else says.
+    pub(crate) fn set_default_presentation(&mut self, presentation: ViewPresentation) {
+        self.default_presentation = presentation;
     }
 
     /// Transcode the complete source without substituting unrepresentable or
@@ -2519,28 +2785,43 @@ impl Document {
         Ok(false)
     }
 
-    fn position_map_to_history_node(
-        &self,
-        target: HistoryNodeId,
-    ) -> Result<PositionMap, PositionError> {
-        let current = self.history.status().current.node;
-        self.history.map_between(
-            current,
-            target,
-            PositionMap::identity(
-                self.id,
-                PositionDomain::FormattedText,
-                self.revision(),
-                self.projection().text_tree().byte_len(),
-            ),
-        )
+    /// Move to a retained node with the live lineage's projection there,
+    /// cached or followed from the current one. Every fallible step precedes
+    /// the first mutation.
+    fn navigate_to_history_node(
+        &mut self,
+        node: HistoryNodeId,
+        select: impl FnOnce(&mut DocumentHistory) -> Result<HistoryNavigation, HistoryError>,
+    ) -> Result<HistoryNavigation, HistoryError> {
+        let resolved = self
+            .resolve_history_node(node)
+            .expect("a retained history node can always be reprojected");
+        let next_capture = self
+            .composed_position_capture(&resolved.map)
+            .expect("captured history transition follows the current revision");
+        let followers = self
+            .prepare_followers(lineage::FollowTarget::Node(node),
+                self.next_revision.max(resolved.state.revision.0 + 1), resolved.next_projected_block_id)
+            .expect("a retained history node can always be reprojected");
+        self.edit_group_depth = 0;
+        let navigation = select(&mut self.history)?;
+        if resolved.state.revision.0 >= self.next_revision {
+            self.next_revision = resolved.state.revision.0 + 1;
+        }
+        self.next_projected_block_id = resolved.next_projected_block_id;
+        self.install_live_state(resolved.state);
+        self.live_mut().position_map_capture = next_capture;
+        self.advance_code_presentation(&resolved.map);
+        self.publish_followers(followers, true);
+        self.refresh_configuration();
+        Ok(navigation)
     }
 
     fn composed_position_capture(
         &self,
         transition: &PositionMap,
     ) -> Result<Option<PositionMap>, PositionError> {
-        self.position_map_capture
+        self.live().position_map_capture
             .as_ref()
             .map(|captured| captured.then(transition))
             .transpose()
@@ -2581,7 +2862,7 @@ fn build_state_from_decoded(
         source_hard_lines: SourceHardLineIndex::new(source_hard_lines)
             .expect("decoded hard-line ranges form a contiguous source partition"),
         encoding: decoded.encoding,
-        format,
+        kind: format.projection_kind(),
         file_format,
         file_format_origin,
         line_ending_evidence,

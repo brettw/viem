@@ -23,9 +23,7 @@ window resizes and while that window shows other files or bases.
 Every split view in a diff window is such a pair. Splitting a view, either
 horizontally or vertically, splits the pair: the new view gets its own base
 beside it, compared with the same base version, and each pair keeps its own
-alignment and scrolling. Closing a view ends its pair; a format switched to
-Code for the comparison is restored when the last pair showing that document
-ends.
+alignment and scrolling. Closing a view ends its pair.
 
 One status bar runs under both sides of a pair, and the splitter between the
 sides ends at its top. Over the new side it shows the usual status. Over the
@@ -37,9 +35,13 @@ Dragging the status bar resizes the pair as one view. While the base view
 has a command line or command output of its own, the status bar shows that
 instead.
 
-Showing the new side in Code reprojects the buffer as Code, as turning
-Preview off does. It never converts the source (see
-[source formats](../AGENTS.md#product)).
+The new side is a view of the buffer that always shows Code. That is a
+property of that view only: the buffer keeps its format, and another view of
+it, in another window, can stay in Preview or turn Preview on and off without
+changing the comparison. Views in a diff window are Code from their first
+frame, so a Markdown file chosen from the file popup never shows Preview
+first. Nothing about the comparison enters undo history or converts the
+source (see [source formats](../AGENTS.md#product)).
 
 ### Line numbers
 
@@ -172,9 +174,16 @@ registers, dirty state or undo.
 ## Diff menu
 
 A new top-level **Diff** menu sits immediately after **File**. Its first item,
-**Diff Mode**, is a checkmark item that turns diff mode on and off for the
-current window. Diff mode is per window: each window has its own on/off
-state, base and file list.
+**Diff Mode**, is a checkmark item. Diff mode has its own windows: each diff
+window has its own base and file list.
+
+- **On**, from an ordinary window, opens the comparison of the active
+  document in a new diff window, using the diff window frame. The
+  originating window and its views are unchanged.
+- **Off**, in a diff window, shows the current file in an ordinary window
+  (bringing forward one that already shows it, otherwise opening one as
+  **Open in New Editor Window** does) and closes the diff window. The buffer
+  stays open throughout, so unsaved edits carry over without a save review.
 
 Turning diff mode on selects the Unstaged (`git diff`) base when the document
 is in a git repository, and Last saved otherwise. Outside a repository the git
@@ -518,13 +527,15 @@ Layers are built bottom-up; each has focused tests before the next starts.
     `EVConfigurationStore.swift`: diff and Code line-number settings.
   - `src/mac/Editor/Sources/EVCoreDiffMode.swift`: backend conformance
     (`makeDiffBase` builds a read-only, non-modifiable Code buffer with the
-    document's language; `beginDiff`), `EVCoreDiffSession` (switches Preview
-    or Text to Code and back, protects a deleted file's blank side, syncs in
+    document's language; `beginDiff`), `EVCoreDiffSession` (shows its live
+    view as Code with `viem_core_view_set_display` and gives that view back
+    what it showed when the session ends; the buffer's format and other
+    views never change; protects a deleted file's blank side, syncs in
     `noteSourceChange`, mirrors vertical scrolling while aligned). Mirroring
     uses `viem_diff_session_sync_scroll` to reconcile the shared range and
     vertical offset as either view scrolls or refines its layout.
-    Ending a session restores the document's format through any open view
-    of the document, since the compared pane may already have closed.
+    Diff windows (`EVDocumentWindowController.isDiffWindow`) create every
+    pane's view with `VIEM_VIEW_DISPLAY_DIFF`.
   - Tests: `src/mac/Editor/Tests/EVDiffModeTests.swift`;
     `EVMenuBuilderTests` checks the Diff menu's position and first item.
 - [x] 6. Windows frontend. `src/win/Shell/DiffMode.cs` owns the window’s

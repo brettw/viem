@@ -100,7 +100,7 @@ mod addressed_lines;
 mod source_transforms;
 pub use source_transforms::{rot13, PhysicalSourceTransform};
 #[path = "candidate.rs"]
-mod candidate;
+pub(super) mod candidate;
 pub use candidate::{
     trace_candidate_strategies, verify_regional_candidates, CandidateEvent, CandidateOutcome,
     CandidateStrategy, ShadowMismatch,
@@ -515,6 +515,8 @@ pub enum ModelChangeKind {
     HardLineTransfer,
     SourceMetadata,
     HistoryNavigation,
+    /// The same source shown through another projection; not an edit.
+    Presentation,
     NoOp,
 }
 
@@ -879,7 +881,7 @@ fn history_semantic_kind(kind: ModelChangeKind) -> Option<HistorySemanticChangeK
         ModelChangeKind::FileFormat => Some(HistorySemanticChangeKind::FileFormat),
         ModelChangeKind::HardLineTransfer => Some(HistorySemanticChangeKind::HardLineTransfer),
         ModelChangeKind::SourceMetadata => Some(HistorySemanticChangeKind::SourceMetadata),
-        ModelChangeKind::HistoryNavigation | ModelChangeKind::NoOp => None,
+        ModelChangeKind::HistoryNavigation | ModelChangeKind::Presentation | ModelChangeKind::NoOp => None,
     }
 }
 
@@ -905,10 +907,15 @@ fn history_transaction_summary(
     ))
 }
 
-enum PreparedPublication {
+pub(super) enum PreparedPublication {
     NoOp,
     State(DocumentState),
-    History { target: HistoryNodeId },
+    /// Move to a history node; `state` is the live lineage's projection
+    /// there, cached or followed from the current one.
+    History { target: HistoryNodeId, state: std::sync::Arc<DocumentState> },
+    /// Replace the live lineage at the current history node, for example to
+    /// show Preview instead of Literal. No history node or source change.
+    Lineage(std::sync::Arc<DocumentState>),
 }
 
 struct CandidateVerification<'a> {
@@ -996,24 +1003,24 @@ fn protect_markdown_line_start(line: &str, output: &mut String) {
 pub struct PreparedModelTransaction {
     document: DocumentId,
     before_revision: Revision,
-    after_revision: Revision,
+    pub(super) after_revision: Revision,
     expected_next_revision: u64,
     expected_next_projected_block_id: u64,
-    next_projected_block_id_after: u64,
+    pub(super) next_projected_block_id_after: u64,
     expected_history: HistoryLocation,
     expected_edit_group_depth: usize,
     expected_edit_group_generation: u64,
-    summary: ModelChangeSummary,
-    text_position_map: PositionMap,
+    pub(super) summary: ModelChangeSummary,
+    pub(super) text_position_map: PositionMap,
     /// Exact presentation dependency of a verified source-only mutation whose
     /// visible text and paragraph topology are unchanged.
-    layout_invalidation: Option<Range<usize>>,
+    pub(super) layout_invalidation: Option<Range<usize>>,
     /// Exact old/new projection windows; outside these windows the regional
     /// splice retains the original semantic records with rebased coordinates.
     /// Absent for complete reparses and candidates without that proof.
     reprojected_region: Option<(Range<usize>, Range<usize>)>,
     planned_history_navigation: Option<HistoryNavigation>,
-    publication: PreparedPublication,
+    pub(super) publication: PreparedPublication,
 }
 
 impl fmt::Debug for PreparedModelTransaction {
@@ -1184,17 +1191,23 @@ impl Document {
     /// but do not inherit UI history groups, position captures or file writes.
     pub(super) fn scratch_document(&self) -> Self {
         super::work_statistics::record(|stats| stats.scratch_documents += 1);
+        let live = if self.live().configuration_state.is_some() { std::sync::Arc::new(self.state().clone()) } else { self.live().state.clone() };
         Document {
             id: self.id,
-            history: super::history::History::transient(self.state().clone()),
+            history: super::history::History::transient(super::lineage::HistoryState::recording(&live)),
+            lineages: super::lineage::Lineages::single({
+                let mut lineage = super::lineage::LiveLineage::new(live);
+                lineage.code_base = self.live().code_base.clone();
+                lineage
+            }),
+            markdown: self.markdown,
+            default_presentation: self.default_presentation,
             open_work: self.open_work,
             next_revision: self.next_revision,
             next_projected_block_id: self.next_projected_block_id,
             edit_group_depth: 0,
             edit_group_generation: 0,
             suspended_edit_group: None,
-            position_map_capture: None,
-            layout_changes: std::collections::VecDeque::new(),
             // Candidates never back a diff base.
             saved_source: None,
             artifact_binding: None,
@@ -1205,9 +1218,12 @@ impl Document {
             read_only: false,
             modifiable: true,
             recovered_dirty: false,
-            code_presentation: None,
+            literal_style: self.literal_style,
+            focus: self.focus.clone(),
+            kind_focus: Default::default(),
+            code_sheet: self.code_sheet.clone(),
+            code_views: self.code_views,
             configuration: self.configuration.clone(),
-            configuration_state: None,
             view_format_prefetch: Default::default(),
             reference_cache: Default::default(),
         }
@@ -1218,15 +1234,14 @@ impl Document {
         let mut scratch = self.scratch_document();
         match &prepared.publication {
             PreparedPublication::State(state) => {
-                scratch.history = super::history::History::transient(state.clone());
+                scratch.install_transient_state(state.clone());
             }
-            PreparedPublication::History { target } => {
-                let state = self.history.state_at_node(*target)
-                    .ok_or(DocumentError::VerificationFailed)?.as_ref().clone();
-                scratch.history = super::history::History::transient(state);
+            PreparedPublication::History { state, .. } | PreparedPublication::Lineage(state) => {
+                scratch.install_transient_state(state.as_ref().clone());
             }
             PreparedPublication::NoOp => {}
         }
+        scratch.refresh_code_base();
         Ok(scratch)
     }
 
@@ -1250,11 +1265,7 @@ impl Document {
         let state = match &prepared.publication {
             PreparedPublication::NoOp => self.state(),
             PreparedPublication::State(state) => state,
-            PreparedPublication::History { target } => self
-                .history
-                .state_at_node(*target)
-                .ok_or(DocumentError::VerificationFailed)?
-                .as_ref(),
+            PreparedPublication::History { state, .. } | PreparedPublication::Lineage(state) => state.as_ref(),
         };
         let length = state.projection.text_tree().byte_len();
         if offset > length {
@@ -1482,7 +1493,7 @@ impl Document {
             || prepared.expected_next_projected_block_id != self.next_projected_block_id
             || prepared.expected_history != self.history.status().current
             || prepared.expected_edit_group_generation != self.edit_group_generation
-            || !matches!(prepared.publication, PreparedPublication::State(_))
+            || !matches!(prepared.publication, PreparedPublication::State(_) | PreparedPublication::Lineage(_))
         {
             return Err(ModelTransactionError::StaleDocumentState);
         }
@@ -1551,15 +1562,23 @@ impl Document {
         }
 
         // Validate every remaining fallible condition before publishing.
-        if let PreparedPublication::History { target } = &prepared.publication {
+        if let PreparedPublication::History { target, .. } = &prepared.publication {
             if self.history.state_at_node(*target).is_none() {
                 return Err(ModelTransactionError::History(HistoryError::NodeNotFound(
                     *target,
                 )));
             }
         }
+        // A new projection takes the next revision: an edit, a lineage
+        // swap, or a history node reached by following its source.
+        let allocates_revision = prepared.after_revision.0 == self.next_revision;
         let incremented_revision = match &prepared.publication {
-            PreparedPublication::State(_) => Some(
+            PreparedPublication::State(_) | PreparedPublication::Lineage(_) => Some(
+                self.next_revision
+                    .checked_add(1)
+                    .ok_or(ModelTransactionError::RevisionExhausted)?,
+            ),
+            PreparedPublication::History { .. } if allocates_revision => Some(
                 self.next_revision
                     .checked_add(1)
                     .ok_or(ModelTransactionError::RevisionExhausted)?,
@@ -1567,22 +1586,34 @@ impl Document {
             PreparedPublication::NoOp | PreparedPublication::History { .. } => None,
         };
         match &prepared.publication {
-            PreparedPublication::State(_)
+            PreparedPublication::State(_) | PreparedPublication::Lineage(_) | PreparedPublication::History { .. }
                 if prepared.next_projected_block_id_after
                     < prepared.expected_next_projected_block_id =>
             {
                 return Err(ModelTransactionError::StaleDocumentState);
             }
-            PreparedPublication::NoOp | PreparedPublication::History { .. }
+            PreparedPublication::NoOp
                 if prepared.next_projected_block_id_after
                     != prepared.expected_next_projected_block_id =>
             {
                 return Err(ModelTransactionError::StaleDocumentState);
             }
-            PreparedPublication::State(_)
-            | PreparedPublication::NoOp
-            | PreparedPublication::History { .. } => {}
+            _ => {}
         }
+        // Every other live lineage catches up with the new source before
+        // anything publishes, so all live projections share one history
+        // position. A follower's revisions follow the acting one's.
+        let followers = match &prepared.publication {
+            PreparedPublication::State(candidate) => {
+                let source = super::lineage::SourceState::of(candidate);
+                self.prepare_followers(super::lineage::FollowTarget::Source(&source),
+                    candidate.revision.0 + 1, prepared.next_projected_block_id_after)?
+            }
+            PreparedPublication::History { target, state } => self.prepare_followers(
+                super::lineage::FollowTarget::Node(*target),
+                self.next_revision.max(state.revision.0 + 1), prepared.next_projected_block_id_after)?,
+            PreparedPublication::NoOp | PreparedPublication::Lineage(_) => Vec::new(),
+        };
         // A compatibility command may issue several independently prepared
         // model operations during one input event (for example a macro). Fold
         // this transition into the coordinator's short-lived capture before
@@ -1601,7 +1632,7 @@ impl Document {
                 .expect("a state publication has a source-changing semantic kind"),
                 self.default_history_restoration(&prepared.summary, &prepared.text_position_map)?,
             )),
-            PreparedPublication::NoOp | PreparedPublication::History { .. } => None,
+            PreparedPublication::NoOp | PreparedPublication::History { .. } | PreparedPublication::Lineage(_) => None,
         };
 
         let history_navigation = match prepared.publication {
@@ -1610,65 +1641,57 @@ impl Document {
                 debug_assert_eq!(candidate.revision, prepared.after_revision);
                 let (transaction, restoration) =
                     history_record.expect("a state publication prepared history metadata");
+                let candidate = std::sync::Arc::new(candidate);
+                let record = super::lineage::HistoryState::recording_all(
+                    std::iter::once(&candidate).chain(followers.iter().map(|follower| &follower.state)));
+                let maps = followers.iter().fold(
+                    super::lineage::LineageMaps::single(candidate.kind, prepared.text_position_map.clone()),
+                    |maps, follower| maps.with(follower.state.kind, follower.map.clone()));
                 self.history.commit_with_maps(
-                    candidate,
+                    record,
                     self.edit_group_depth > 0,
-                    prepared.text_position_map.clone(),
+                    maps,
                     transaction,
                     restoration,
                 )?;
+                self.live_mut().state = candidate;
                 self.next_revision =
                     incremented_revision.expect("state commit increments revision");
                 self.next_projected_block_id = prepared.next_projected_block_id_after;
+                self.publish_followers(followers, false);
                 None
             }
-            PreparedPublication::History { target } => {
+            PreparedPublication::History { target, state } => {
                 self.edit_group_depth = 0;
                 self.history.end_group();
-                Some(
-                    self.history
-                        .select_node(target)
-                        .expect("history target was validated before publication"),
-                )
+                let navigation = self.history
+                    .select_node(target)
+                    .expect("history target was validated before publication");
+                self.install_live_state(state);
+                if let Some(next) = incremented_revision { self.next_revision = next; }
+                self.next_projected_block_id = prepared.next_projected_block_id_after;
+                self.publish_followers(followers, true);
+                Some(navigation)
+            }
+            PreparedPublication::Lineage(state) => {
+                // A buffer-wide switch: every view now shows `kind`, so the
+                // other lineages and the projections they cached are dropped.
+                let kind = state.kind;
+                self.install_live_state(state);
+                for other in [super::ProjectionKind::Literal, super::ProjectionKind::Preview] {
+                    if other != kind { self.release_lineage(other); }
+                }
+                self.next_revision = incremented_revision.expect("a lineage swap takes a revision");
+                self.next_projected_block_id = prepared.next_projected_block_id_after;
+                None
             }
         };
         self.refresh_configuration();
-        self.position_map_capture = next_position_capture;
+        self.live_mut().position_map_capture = next_position_capture;
         self.advance_code_presentation(&prepared.text_position_map);
         if prepared.after_revision != prepared.before_revision {
-            let splices = prepared.summary.formatted_splices();
-            let local = prepared
-                .layout_invalidation
-                .clone()
-                .map(|range| super::LocalFormattedChange {
-                    new: range.clone(),
-                    old: range,
-                    old_line_count,
-                    new_line_count: self.projection().presentation_line_count(),
-                })
-                .or_else(|| {
-                    (prepared.summary.projection_work().scope() == ProjectionWorkScope::RegionalHardLines
-                        && !splices.is_empty())
-                    .then(|| {
-                        let old = splices
-                            .iter()
-                            .map(|s| s.old_range().start)
-                            .min()
-                            .unwrap_or(0)
-                            ..splices.iter().map(|s| s.old_range().end).max().unwrap_or(0);
-                        let delta = splices.iter().fold(0i128, |sum, s| {
-                            sum + s.inserted_len() as i128 - s.old_range().len() as i128
-                        });
-                        let new_end = usize::try_from(old.end as i128 + delta).ok()?;
-                        Some(super::LocalFormattedChange {
-                            new: old.start..new_end,
-                            old,
-                            old_line_count,
-                            new_line_count: self.projection().presentation_line_count(),
-                        })
-                    })
-                    .flatten()
-                });
+            let local = local_layout_change(&prepared.summary, prepared.layout_invalidation.as_ref(),
+                old_line_count, self.projection().presentation_line_count());
             self.record_layout_change(super::LayoutChangeRecord {
                 before: prepared.before_revision,
                 after: prepared.after_revision,
@@ -1782,7 +1805,7 @@ impl Document {
         let mut candidate = build_state_from_decoded(
             source,
             decoded,
-            self.state().format,
+            self.state().structure_format(),
             file_format,
             self.state().file_format_origin,
             evidence,
@@ -2232,6 +2255,13 @@ impl Document {
         edits: Vec<TextEdit>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.prepare_text_edits_with_patches(edits, None)
+    }
+
+    /// Literal text edits with their exact source patches, for a follower
+    /// lineage catching up with an edit made through another projection.
+    pub(super) fn prepare_text_edits_for_follow(&self, edits: Vec<TextEdit>, patches: Vec<SourcePatch>)
+        -> Result<PreparedModelTransaction, ModelTransactionError> {
+        self.prepare_text_edits_with_patches(edits, Some(patches))
     }
 
     fn validate_formatted_replacement_characters(&self, text: &str) -> Result<(), DocumentError> {
@@ -4163,7 +4193,7 @@ impl Document {
             return Ok(None);
         }
 
-        if self.state().format != Format::Markdown {
+        if self.state().kind != super::ProjectionKind::Preview {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
 
@@ -4827,8 +4857,12 @@ impl Document {
         ))
     }
 
+    /// Swap the structure between Literal and Preview. Text and Code are
+    /// styling of the same Literal structure, so choosing between them is
+    /// never a transaction.
     fn prepare_view_format_change(&self, target: Format) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        if target == self.format() { return Ok(self.no_op_prepared()); }
+        if target.projection_kind() == self.state().kind { return Ok(self.no_op_prepared()); }
+        let target = target.projection_kind().structure_format();
         let revision = Revision(self.next_revision);
         let (mut candidate, edits) = match self.take_prefetched_view_format(target) {
             Some(prefetched) => (prefetched.candidate, prefetched.edits),
@@ -4851,39 +4885,7 @@ impl Document {
             .iter()
             .map(|edit| Splice::new(edit.range.clone(), edit.replacement.len()))
             .collect::<Result<Vec<_>, _>>()?;
-        let map_splices = if edits.is_empty() {
-            Vec::new()
-        } else {
-            grapheme_closed_snapshot_map_splices(self.projection(), &candidate.projection, &edits)?
-        };
-        // Empty semantic owners have no grapheme to retain in the source diff.
-        // Their exact typing boundaries nevertheless survive this source-only
-        // reinterpretation, in both directions and through composed history.
-        let (semantic, literal, reverse) = if self.format().is_markdown() {
-            (self.projection(), &candidate.projection, false)
-        } else {
-            (&candidate.projection, self.projection(), true)
-        };
-        let boundaries = if self.format().is_markdown() || target.is_markdown() {
-            semantic.empty_paragraph_source_points().map(|point| {
-                let (formatted, source) = point?;
-                let mapped = literal.map_source_boundary(literal.revision(), source, BoundaryAffinity::Downstream)
-                    .map_err(|_| DocumentError::AmbiguousProjection)?.formatted_offset;
-                Ok(if reverse { (mapped, formatted) } else { (formatted, mapped) })
-            }).collect::<Result<Vec<_>, DocumentError>>()?
-        } else { Vec::new() };
-        if boundaries.windows(2).any(|pair| pair[0].0 >= pair[1].0 || pair[0].1 >= pair[1].1) {
-            return Err(DocumentError::AmbiguousProjection.into());
-        }
-        let map = PositionMap::for_projection_switch(
-            self.id,
-            self.revision(),
-            revision,
-            self.projection(),
-            &candidate.projection,
-            map_splices,
-            boundaries,
-        )?;
+        let map = self.projection_switch_map(&candidate.projection, revision, &edits)?;
         let next_id = candidate
             .projection
             .install_reconciled_source_block_ids(
@@ -4897,7 +4899,7 @@ impl Document {
         Ok(self.prepared(
             revision,
             ModelChangeSummary {
-                kind: ModelChangeKind::SourceMetadata,
+                kind: ModelChangeKind::Presentation,
                 source_patches: Vec::new(),
                 formatted_splices,
                 projection_work: work,
@@ -4907,8 +4909,84 @@ impl Document {
             map,
             None,
             next_id,
-            PreparedPublication::State(candidate),
+            PreparedPublication::Lineage(std::sync::Arc::new(candidate)),
         ))
+    }
+
+    /// The exact map from the focused projection to another projection of
+    /// the same source, given the text edits between them.
+    fn projection_switch_map(&self, target: &FormattedDocument, revision: Revision, edits: &[TextEdit])
+        -> Result<PositionMap, ModelTransactionError> {
+        let source_markdown = self.state().kind == super::ProjectionKind::Preview;
+        let map_splices = if edits.is_empty() {
+            Vec::new()
+        } else {
+            grapheme_closed_snapshot_map_splices(self.projection(), target, edits)?
+        };
+        // Empty semantic owners have no grapheme to retain in the source diff.
+        // Their exact typing boundaries nevertheless survive this source-only
+        // reinterpretation, in both directions and through composed history.
+        let (semantic, literal, reverse) = if source_markdown {
+            (self.projection(), target, false)
+        } else {
+            (target, self.projection(), true)
+        };
+        // One side of a switch is always Preview.
+        let boundaries = {
+            semantic.empty_paragraph_source_points().map(|point| {
+                let (formatted, source) = point?;
+                let mapped = literal.map_source_boundary(literal.revision(), source, BoundaryAffinity::Downstream)
+                    .map_err(|_| DocumentError::AmbiguousProjection)?.formatted_offset;
+                Ok(if reverse { (mapped, formatted) } else { (formatted, mapped) })
+            }).collect::<Result<Vec<_>, DocumentError>>()?
+        };
+        if boundaries.windows(2).any(|pair| pair[0].0 >= pair[1].0 || pair[0].1 >= pair[1].1) {
+            return Err(DocumentError::AmbiguousProjection.into());
+        }
+        Ok(PositionMap::for_projection_switch(
+            self.id,
+            self.revision(),
+            revision,
+            self.projection(),
+            target,
+            map_splices,
+            boundaries,
+        )?)
+    }
+
+    /// The exact map from the focused lineage to the live lineage of `to`,
+    /// both projections of the current source. A view changing presentation
+    /// carries its positions through it.
+    pub(crate) fn lineage_translation(&self, to: super::ProjectionKind) -> Result<PositionMap, ModelTransactionError> {
+        let target = self.with_kind_focus(to, |document| document.projection().clone());
+        let edits = source_backed_reprojection_edits(self.projection(), &target);
+        self.projection_switch_map(&target, target.revision(), &edits)
+    }
+
+    /// [`Self::lineage_translation`] from the live lineage of `from`.
+    pub(crate) fn lineage_translation_from(&self, from: super::ProjectionKind, to: super::ProjectionKind)
+        -> Result<PositionMap, ModelTransactionError> {
+        self.with_kind_focus(from, |document| document.lineage_translation(to))
+    }
+
+    /// [`Self::add_lineage`] built from the live lineage of `from`.
+    pub(crate) fn add_lineage_from(&mut self, from: super::ProjectionKind, kind: super::ProjectionKind)
+        -> Result<Option<PositionMap>, ModelTransactionError> {
+        self.with_kind_focus_mut(from, |document| document.add_lineage(kind))
+    }
+
+    /// Build the lineage of `kind` beside the live ones, at the current
+    /// history node, and return the map from the focused projection to it.
+    /// No history node, revision of another lineage, or source changes.
+    pub(crate) fn add_lineage(&mut self, kind: super::ProjectionKind) -> Result<Option<PositionMap>, ModelTransactionError> {
+        if self.lineages.has(kind) { return Ok(None); }
+        let prepared = self.prepare_view_format_change(kind.structure_format())?;
+        let PreparedPublication::Lineage(state) = prepared.publication else { return Ok(None) };
+        self.next_revision = state.revision.0 + 1;
+        self.next_projected_block_id = prepared.next_projected_block_id_after;
+        self.install_live_state(state);
+        self.refresh_configuration();
+        Ok(Some(prepared.text_position_map))
     }
 
     fn prepare_bom_policy(&self, policy: super::BomPolicy) -> Result<PreparedModelTransaction, ModelTransactionError> {
@@ -4975,7 +5053,7 @@ impl Document {
         let mut candidate = build_state_from_decoded(
             source,
             new_decoded,
-            self.state().format,
+            self.state().structure_format(),
             self.state().file_format,
             self.state().file_format_origin,
             self.state().line_ending_evidence,
@@ -5103,7 +5181,7 @@ impl Document {
     /// guess for an inline style change. This query is presentation-only.
     pub(crate) fn history_formatting_change_range(&self, from: HistoryNodeId) -> Option<Range<usize>> {
         let previous = self.history.state_at_node(from)?;
-        let changed = previous.source.changed_extents(&self.state().source).into_iter()
+        let changed = previous.source.source.changed_extents(&self.state().source).into_iter()
             .map(|(_, new)| new).reduce(|a, b| a.start.min(b.start)..a.end.max(b.end))?;
         let projection = self.projection();
         let start = projection.nearest_text_boundary_for_source(changed.start, true)?;
@@ -5149,10 +5227,8 @@ impl Document {
                 .location_for_change(change)
                 .ok_or(HistoryError::ChangeNotFound(change))?,
         };
-        let candidate = self
-            .history
-            .state_at_node(target.node)
-            .expect("resolved history locations have states");
+        let resolved = self.resolve_history_node(target.node)?;
+        let candidate = resolved.state.clone();
         let old_text = self.projection().text_tree();
         let new_text = candidate.projection.text_tree();
         // History restores persistent snapshots. Only their changed boundary
@@ -5161,15 +5237,7 @@ impl Document {
             None => Vec::new(),
             Some((old, new)) => vec![Splice::new(old, new.len())?],
         };
-        let identity = PositionMap::identity(
-            self.id,
-            super::PositionDomain::FormattedText,
-            self.revision(),
-            old_text.byte_len(),
-        );
-        let text_position_map = self
-            .history
-            .map_between(current.node, target.node, identity)?;
+        let text_position_map = resolved.map;
         debug_assert_eq!(text_position_map.target_revision(), candidate.revision);
         debug_assert_eq!(text_position_map.target_len(), new_text.byte_len());
         let source_patches = self
@@ -5191,23 +5259,32 @@ impl Document {
             from: current,
             to: target,
         };
+        let projection_work = if resolved.followed {
+            ProjectionWorkStatistics::full(&candidate)
+        } else {
+            ProjectionWorkStatistics::none()
+        };
         let mut prepared = self.prepared(
             candidate.revision,
             ModelChangeSummary {
                 kind: ModelChangeKind::HistoryNavigation,
                 source_patches,
                 formatted_splices,
-                projection_work: ProjectionWorkStatistics::none(),
+                projection_work,
                 style_change: None,
                 conversion_warnings: Vec::new(),
             },
             text_position_map,
             Some(navigation),
-            self.next_projected_block_id,
+            resolved.next_projected_block_id,
             PreparedPublication::History {
                 target: target.node,
+                state: candidate,
             },
         );
+        if resolved.followed {
+            return Ok(prepared);
+        }
         prepared.layout_invalidation =
             self.history.layout_invalidation_between(current.node, target.node);
         Ok(prepared)
@@ -5231,7 +5308,7 @@ impl Document {
         let mut candidate = build_state_from_decoded(
             source,
             decoded,
-            self.state().format,
+            self.state().structure_format(),
             file_format,
             file_format_origin,
             evidence,
@@ -5552,7 +5629,7 @@ impl Document {
             let complete = (|| -> Result<DocumentState, ModelTransactionError> {
                 let decoded = self.state().encoding.decode(&source.bytes())?;
                 let evidence = detect(&decoded.text).1;
-                Ok(build_state_from_decoded(source.clone(), decoded, self.state().format,
+                Ok(build_state_from_decoded(source.clone(), decoded, self.state().structure_format(),
                     self.state().file_format, self.state().file_format_origin, evidence, revision)?)
             })();
             let complete = match complete {
@@ -5638,7 +5715,7 @@ impl Document {
         let mut regional_projection = {
             project(
                 &parser_input,
-                self.state().format,
+                self.state().structure_format(),
                 revision,
                 new_source.start,
                 new_source.end,
@@ -5835,7 +5912,7 @@ impl Document {
                 projection,
                 source_hard_lines,
                 encoding: self.state().encoding,
-                format: self.state().format,
+                kind: self.state().kind,
                 file_format: self.state().file_format,
                 file_format_origin: self.state().file_format_origin,
                 line_ending_evidence: self.state().line_ending_evidence,
@@ -6402,7 +6479,7 @@ impl Document {
             projection,
             source_hard_lines,
             encoding: self.state().encoding,
-            format: self.state().format,
+            kind: self.state().kind,
             file_format: self.state().file_format,
             file_format_origin: self.state().file_format_origin,
             line_ending_evidence: self.state().line_ending_evidence,
@@ -8145,7 +8222,46 @@ struct GraphemeMapGap {
 /// Snapshot-backed grapheme closure for formatted edits. The supplied
 /// snapshots define logical item boundaries, including forced boundaries
 /// around semantic hard breaks, without materializing either complete text.
-fn grapheme_closed_snapshot_map_splices<B, A>(
+/// The exact bounded formatted change of a prepared transaction, when its
+/// projection was rebuilt only for a region; `None` when anything outside
+/// the hull may also have changed.
+pub(super) fn local_layout_change(summary: &ModelChangeSummary, layout_invalidation: Option<&Range<usize>>,
+    old_line_count: usize, new_line_count: usize) -> Option<super::LocalFormattedChange> {
+    let splices = summary.formatted_splices();
+    layout_invalidation
+        .cloned()
+        .map(|range| super::LocalFormattedChange {
+            new: range.clone(),
+            old: range,
+            old_line_count,
+            new_line_count,
+        })
+        .or_else(|| {
+            (summary.projection_work().scope() == ProjectionWorkScope::RegionalHardLines
+                && !splices.is_empty())
+            .then(|| {
+                let old = splices
+                    .iter()
+                    .map(|s| s.old_range().start)
+                    .min()
+                    .unwrap_or(0)
+                    ..splices.iter().map(|s| s.old_range().end).max().unwrap_or(0);
+                let delta = splices.iter().fold(0i128, |sum, s| {
+                    sum + s.inserted_len() as i128 - s.old_range().len() as i128
+                });
+                let new_end = usize::try_from(old.end as i128 + delta).ok()?;
+                Some(super::LocalFormattedChange {
+                    new: old.start..new_end,
+                    old,
+                    old_line_count,
+                    new_line_count,
+                })
+            })
+            .flatten()
+        })
+}
+
+pub(super) fn grapheme_closed_snapshot_map_splices<B, A>(
     before: &B,
     after: &A,
     edits: &[TextEdit],
@@ -8407,10 +8523,6 @@ mod prepared_group_reuse_tests {
         document.commit_model_transaction(prepared).unwrap();
         // Intraword underscores are literal in GFM.
         assert_eq!(document.text(), "X__word__");
-        assert!(document.undo());
-        assert_eq!(document.text(), "X__word__");
-        assert!(document.undo());
-        assert_eq!(document.text(), "__word__");
 
         let prepared = document.prepare_model_request(request(&document)).unwrap();
         document.insert(0, "new").unwrap();

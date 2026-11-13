@@ -864,7 +864,20 @@ typedef struct ViemViewOptions {
   float padding_left;
   float padding_bottom;
   float padding_right;
+  /* What the view shows of its buffer (VIEM_VIEW_DISPLAY_*). Zero is the
+     buffer's default, as a new view of it shows. */
+  uint32_t display;
 } ViemViewOptions;
+
+/* What one view shows of its buffer. Views of one buffer may differ: one can
+   show Markdown Preview while another shows its source. */
+#define VIEM_VIEW_DISPLAY_DEFAULT 0u
+/* The literal source: Text or Code, and a Markdown buffer's source. */
+#define VIEM_VIEW_DISPLAY_SOURCE 1u
+/* Markdown Preview; only a Markdown buffer can show it. */
+#define VIEM_VIEW_DISPLAY_PREVIEW 2u
+/* A diff's live side, always literal Code. */
+#define VIEM_VIEW_DISPLAY_DIFF 3u
 
 
 /*
@@ -1968,6 +1981,11 @@ ViemStatus viem_core_destroy(ViemCoreHandle core);
 ViemStatus viem_core_revision(ViemCoreHandle core, uint64_t *out_revision);
 ViemStatus viem_core_document_state(ViemCoreHandle core,
                                     ViemDocumentState *out_state);
+/* The document state as one view shows it: that view's projection revision,
+   stylesheet revision and format; buffer-wide fields are the same for every
+   view. Document-level queries that follow answer for this view. */
+ViemStatus viem_core_view_document_state(ViemCoreHandle core, ViemViewId view,
+                                         ViemDocumentState *out_state);
 
 /*
  * Bounded access to the immutable formatted projection. Snapshot info returns
@@ -2059,6 +2077,14 @@ ViemStatus viem_layout_work_cancel(uint64_t request);
 ViemStatus viem_layout_work_release(uint64_t work);
 ViemStatus viem_core_view_state(ViemCoreHandle core, ViemViewId view,
                                 ViemCoreOutcome *out_outcome);
+/* Read or change what one view shows (VIEM_VIEW_DISPLAY_*; a read is never
+   DEFAULT). Changing it is not an edit: no source, history, dirty state or
+   other view changes, and undo never reverses it. PREVIEW of a buffer that is
+   not Markdown is VIEM_STATUS_UNSUPPORTED_OPERATION. */
+ViemStatus viem_core_view_display(ViemCoreHandle core, ViemViewId view,
+                                  uint32_t *out_display);
+ViemStatus viem_core_view_set_display(ViemCoreHandle core, ViemViewId view,
+                                      uint32_t display, ViemCoreOutcome *out_outcome);
 ViemStatus viem_core_view_capture_restoration(ViemCoreHandle core, ViemViewId view,
     ViemViewRestoration *out_state);
 /* Stage positions in the explicitly identified replacement before publication.
@@ -2843,6 +2869,10 @@ ViemStatus viem_core_view_set_document_mode_with_effects(ViemCoreHandle core, Vi
 /* Two-pass UTF-8 JSON queries. Output regions must be disjoint. Mode reads
    cached detection; language enumeration does not load or execute providers. */
 ViemStatus viem_core_copy_document_mode_json(ViemCoreHandle core, uint8_t *output, uint64_t capacity, uint64_t *required);
+/* The same mode state as `view` shows the buffer: documentRevision and format
+   (markdown for Preview, code for its source) are that view's. */
+ViemStatus viem_core_view_copy_document_mode_json(ViemCoreHandle core, ViemViewId view,
+    uint8_t *output, uint64_t capacity, uint64_t *required);
 ViemStatus viem_copy_code_languages_json(uint8_t *output, uint64_t capacity, uint64_t *required);
 ViemStatus viem_core_initialize_code_detection(ViemCoreHandle core, const uint8_t *filename, uint64_t length, uint8_t allow_auto_code);
 /* Instead of the call above, for a core created in a reloaded buffer's format

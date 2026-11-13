@@ -45,7 +45,7 @@ final class EVMarkdownViewPreferenceTests: XCTestCase {
         }
     }
 
-    func testToggleAndHistoryRememberActualTransitionsWithoutBackgroundViewsOverwritingThem() throws {
+    func testTheToggleRemembersItsChoiceWithoutBackgroundViewsOverwritingIt() throws {
         let configuration = configuration()
         try configuration.setMarkdownFormattedView(false)
         let first = try surface(configuration: configuration)
@@ -61,12 +61,6 @@ final class EVMarkdownViewPreferenceTests: XCTestCase {
         let anotherSource = try surface(configuration: configuration)
         XCTAssertEqual(anotherSource.backend.sourceFormat, .code)
         XCTAssertTrue(configuration.markdownFormattedView, "Opening an explicit source specimen must not reset the default")
-        first.perform(menuCommand: .undo, sender: nil)
-        XCTAssertEqual(first.backend.sourceFormat, .code)
-        XCTAssertFalse(configuration.markdownFormattedView)
-        first.perform(menuCommand: .redo, sender: nil)
-        XCTAssertEqual(first.backend.sourceFormat, .markdown)
-        XCTAssertTrue(configuration.markdownFormattedView)
 
         for type in [EVDocument.plainTextType, EVDocument.codeType] {
             let other = try surface(configuration: configuration, type: type)

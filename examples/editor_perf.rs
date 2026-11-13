@@ -119,7 +119,9 @@ fn key(core: &mut Editor, view: ViewId, key: Key) {
 fn text(core: &mut Editor, view: ViewId, text: &str) {
     let outcome = core
         .handle_with_layout(view, CoreEvent::Input(InputEvent::text(text)))
-        .unwrap();
+        .unwrap_or_else(|error| panic!("typing {text:?} in {view:?} ({:?}, cursor {:?}, length {}): {error:?}",
+            core.view_format(view), core.command_state(view).map(|state| state.cursor()),
+            core.view_document(view).text_tree_len()));
     assert!(outcome.document_changed, "typing {text:?} changed nothing");
 }
 
@@ -394,6 +396,33 @@ fn main() {
     }
     key(&mut core, view, Key::Escape);
     report.insert("type_char_two_views".into(), typing_two.summary());
+    // Markdown with one Preview view and one view of its source: each
+    // keystroke also advances the other projection (synchronous follower).
+    if format.is_markdown() {
+        let revision = core.view_document(view).revision();
+        core.handle(view, CoreEvent::SetDocumentMode { document: core.document().id(), revision,
+            mode: DocumentMode::Markdown }).unwrap();
+        core.set_view_presentation(second, viem_core::document::ViewPresentation::literal()).unwrap();
+        let mut dual = Series::default();
+        key(&mut core, view, Key::Char('i'));
+        let (_, work) = viem_core::document::measure_document_work(|| {
+            for character in "edit with Preview and Code open ".chars() {
+                let buffer = character.to_string();
+                time(&mut dual, || text(&mut core, view, &buffer));
+            }
+        });
+        key(&mut core, view, Key::Escape);
+        let mut dual_code = Series::default();
+        key(&mut core, second, Key::Char('i'));
+        for character in "typed in the source view ".chars() {
+            let buffer = character.to_string();
+            time(&mut dual_code, || text(&mut core, second, &buffer));
+        }
+        key(&mut core, second, Key::Escape);
+        report.insert("type_char_preview_beside_code".into(), dual.summary());
+        report.insert("type_char_code_beside_preview".into(), dual_code.summary());
+        report.insert("follower_reprojections".into(), json!(work.follower_reprojections));
+    }
     if syntax {
         report.insert("syntax_poll".into(), syntax_polls.summary());
         let statistics = core.syntax_statistics();

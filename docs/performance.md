@@ -314,7 +314,43 @@ The Rust diff cases drew the base surface 20–22 times per 100 inputs,
 down from 200. Adding a line can still change filler and both panes'
 geometry, and Enter through paint remained slower than in regular Code.
 
+### Preview and Code views of one buffer
+
+A buffer keeps one source and, at most, one Literal and one Preview
+projection, built when a view first shows it and released when its last view
+leaves. With both open, every edit or history move also advances the other
+projection (a synchronous follower) through the same regional strategies, with
+complete reprojection as the last resort. `DocumentWorkStatistics::
+follower_reprojections` counts follower reprojections. With one kind open,
+followers never run.
+
+Core-only `editor_perf markdown`, mock shaping, M-series laptop under load,
+milliseconds p50 / p95 for one keystroke typed mid-document:
+
+| Source | One view | Two views, one kind | Preview typing, Code open | Code typing, Preview open |
+| ---: | ---: | ---: | ---: | ---: |
+| 100 KiB | 0.85 / 1.15 | 2.52 / 2.72 | 4.75 / 5.33 | 6.26 / 6.92 |
+| 1 MiB | 0.98 / 1.29 | 2.71 / 3.14 | 5.36 / 6.13 | 6.83 / 8.16 |
+
+The single-kind columns, the Preview toggle (15 ms at 100 KiB, 350 ms at
+1 MiB) and undo match `main` within noise. The follower's result is checked
+against the edit's source only over the patched ranges; a full digest of the
+source on every keystroke made dual-view typing grow with document size.
+
 ## Open work
+
+- **Lagging followers:** typing with Preview and Code views of one large
+  Markdown file open pays a bounded follow per keystroke, or a complete
+  reprojection when the regional strategies decline (watch
+  `follower_reprojections` and dual-view typing latency). If that becomes
+  slow, publish the edit without the other projection and let a worker
+  reproject it from the immutable source snapshot, installing it when still
+  current; input to a lagging view would force catch-up first. This needs a
+  projection revision distinct from the source revision throughout layout.
+- **Presentation translation:** moving one view between live Literal and
+  Preview projections still diffs the two projections (as the old switch did).
+  Translating only the view's positions through source provenance would make
+  it logarithmic; the switch map remains the oracle.
 
 - **Native shaping throughput:** speculative layout of 95 KB of Markdown takes
   about 400 ms of worker time with Core Text (about 90 µs per provider
