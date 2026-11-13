@@ -179,7 +179,7 @@ internal sealed partial class Preferences
             foreach (var document in themeDocuments.Keys.ToArray()) {
                 bool styleChanged = false;
                 bool applied = document.ConfigureForEditing("theme styles", () => styleChanged = ApplyDocumentStyles(document, theme));
-                if (!applied || styleChanged || codeChanged && document.State.format == VIEM_FORMAT_CODE) changed.Add(document);
+                if (!applied || styleChanged || codeChanged) changed.Add(document);
             }
             return changed;
         }

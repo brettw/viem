@@ -286,7 +286,7 @@ internal sealed partial class EditorPane
     private void RefreshLinkPopup()
     {
         if (View is not { } view || !IsActive || !window.IsWindowActive || view.Composing || composing
-            || !view.HasFormattingSelection || Document.State.format != VIEM_FORMAT_MARKDOWN)
+            || !view.HasFormattingSelection || View!.State.format != VIEM_FORMAT_MARKDOWN)
         { DismissLinkPopup(suppress: false); return; }
         if (!HasLinkInteractionFocus()) { DismissLinkPopup(suppress: false); return; }
         // A linked image has both contexts. Its object toolbar owns the passive

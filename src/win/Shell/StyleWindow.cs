@@ -51,7 +51,7 @@ internal sealed partial class StyleWindow : Window
     public StyleWindow(CoreView initialView, Preferences preferences, bool followCaret = true)
     {
         documentView = initialView; this.preferences = preferences;
-        CreateThemeSession(initialView.Document.State.format);
+        CreateThemeSession(initialView.State.format);
         Title = ThemeStyleTitle;
         var scroll = new ScrollViewer { Content = root, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, RequestedTheme = preferences.Midnight ? ElementTheme.Dark : ElementTheme.Light, Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(32, 32, 32) : Theme.Rgb(250, 250, 250)) };
         Content = scroll;
@@ -157,7 +157,7 @@ internal sealed partial class StyleWindow : Window
         // Keep the current source attachment until the replacement specimen
         // exists. A failed optional preview must leave following and a later
         // retry bound to the original, still-live target.
-        CreateThemeSession(nextView.Document.State.format);
+        CreateThemeSession(nextView.State.format);
         DetachView();
         documentView = nextView; AttachView(true);
         Load(followCaret: true);
@@ -386,10 +386,10 @@ internal sealed partial class StyleWindow : Window
             before = view.ExportStyleDefaults();
             error.Text = ""; error.Visibility = Visibility.Collapsed; action(); var key = selected.Key;
             byte[] after = view.ExportStyleDefaults();
-            byte[] context = preferences.ThemeStyleContext(view.Document.State.format, after);
-            preferences.SaveThemeStyles(view.Document.State.format, after);
+            byte[] context = preferences.ThemeStyleContext(view.State.format, after);
+            preferences.SaveThemeStyles(view.State.format, after);
             RecordThemeEdit(before, after, key);
-            if (!view.UsesGlobalStyles && !context.AsSpan().SequenceEqual(preferences.ThemeStyleContext(view.Document.State.format)))
+            if (!view.UsesGlobalStyles && !context.AsSpan().SequenceEqual(preferences.ThemeStyleContext(view.State.format)))
                 CreateThemeSession();
             if (reload) Load(key); else RefreshCommittedColors();
             return true;

@@ -24,8 +24,9 @@ internal sealed partial class EditorWindow
     private string[] diffBranches = [];
     private string? diffScope;
     private bool singleFileDiff;
-    private bool diffEnabled, diffAligned, diffCollapsed, diffGit, mirroring, deletedSide, originalNumbers;
-    private bool enteredDiff, changingNumbers;
+    private bool diffEnabled, diffAligned, diffCollapsed, diffGit, mirroring, deletedSide;
+    private bool changingNumbers;
+    internal bool IsDiffWindow { get; private set; }
     private (ulong Revision, ulong Turn)? syncedSource;
     private DiffRequest? diffRequest;
     private CancellationTokenSource? folderRequest, branchRequest;
@@ -82,9 +83,39 @@ internal sealed partial class EditorWindow
     internal async Task SetDiffMode(bool enabled)
     {
         if (diffEnabled == enabled) return;
-        if (!enabled) { EndDiff(); return; }
-        if (ActivePane == null) return;
+        if (ActivePane is not { } pane) return;
+        if (!enabled) {
+            // Keep the shared buffer alive before closing the comparison, including
+            // unsaved changes. Prefer an existing ordinary window for this file.
+            EditorWindow? active = null;
+            foreach (var document in Panes.Select(p => p.Document).Distinct().ToArray()) {
+                var ordinary = App.Instance.Windows.FirstOrDefault(w => w != this && !w.closed && !w.IsDiffWindow
+                    && w.Panes.Any(p => p.Document == document));
+                ordinary ??= NewWindow(document);
+                ordinary.FocusPane(ordinary.Panes.First(p => p.Document == document));
+                if (document == pane.Document) active = ordinary;
+            }
+            active?.Activate();
+            closing = true;
+            Close();
+            return;
+        }
+        var target = NewWindow(pane.Document, diffWindow: true);
+        try { await target.EnableDiff(); }
+        catch { target.closing = true; target.Close(); throw; }
+    }
+
+    private async Task EnableDiff()
+    {
+        if (!IsDiffWindow) {
+            IsDiffWindow = true;
+            windowPlacement.ApplyDiffFrame(this, cascade: true);
+        }
         BeginDiff();
+        if (ActivePane is { } pane) {
+            var view = await pane.Ready;
+            if (view.Display != VIEM_VIEW_DISPLAY_DIFF) view.SetDisplay(VIEM_VIEW_DISPLAY_DIFF);
+        }
         await LoadDiff(detectRepository: true);
     }
 
@@ -122,13 +153,9 @@ internal sealed partial class EditorWindow
             if (live?.View is { } view) {
                 live.ClearDiffMarks();
                 if (deletedSide) live.Document.ProtectDeletedSide(false);
-                if (enteredDiff) {
-                    live.Document.LeaveDiff(view);
-                    view.Number(preferences.Get("code", "lineNumbers", originalNumbers));
-                }
                 live.Refresh();
             }
-            deletedSide = enteredDiff = false;
+            deletedSide = false;
         }
     }
 
@@ -436,11 +463,6 @@ internal sealed partial class EditorWindow
         }
         var leftView = await diffLeft!.Ready.WaitAsync(token);
         token.ThrowIfCancellationRequested();
-        if (!enteredDiff) {
-            originalNumbers = view.NumberEnabled;
-            live.Document.EnterDiff(view);
-            enteredDiff = true;
-        }
         bool deleted = prepared.Deleted && !live.Document.IsDirty;
         if (deletedSide != deleted) {
             live.Document.ProtectDeletedSide(deleted);
@@ -471,17 +493,13 @@ internal sealed partial class EditorWindow
         var left = diffLeft!;
         var oldBase = left.Document;
         var oldLive = live.Document;
-        var oldView = live.View!;
         var liveView = live.PrepareReplacement(document, newFile: true)!;
         CoreView? baseView = null;
         DiffComparison? next = null;
-        bool entered = false, protectedFile = false;
-        bool restoreNumbers = liveView.NumberEnabled;
+        bool protectedFile = false;
         bool numbers = preferences.Get("diff", "lineNumbers", true);
         try {
             baseView = prepared.Installed ? left.View! : left.PrepareReplacement(prepared.Document, newFile: true)!;
-            document.EnterDiff(liveView);
-            entered = true;
             if (prepared.Deleted && !document.IsDirty) { document.ProtectDeletedSide(true); protectedFile = true; }
             if (liveView.NumberEnabled != numbers) liveView.Number(numbers);
             if (baseView.NumberEnabled != numbers) baseView.Number(numbers);
@@ -491,7 +509,6 @@ internal sealed partial class EditorWindow
         } catch {
             next?.Dispose();
             if (protectedFile) document.ProtectDeletedSide(false);
-            if (entered) document.LeaveDiff(liveView);
             if (!prepared.Installed) baseView?.Dispose();
             liveView.Dispose();
             throw;
@@ -500,7 +517,6 @@ internal sealed partial class EditorWindow
         comparison?.RetireWithViews();
         comparison = null;
         if (deletedSide) oldLive.ProtectDeletedSide(false);
-        if (enteredDiff) oldLive.LeaveDiff(oldView, closingDocument: oldLive != document && !HasSurvivingView(oldLive, live));
         live.AlternatePath = oldLive.FilePath ?? live.AlternatePath;
         live.InstallReplacement(document, liveView, deferPresentation: true);
         bool firstBase = prepared.Installed;
@@ -509,8 +525,7 @@ internal sealed partial class EditorWindow
             prepared.Installed = true;
         }
         diffLive = live;
-        originalNumbers = restoreNumbers;
-        enteredDiff = true; deletedSide = protectedFile;
+        deletedSide = protectedFile;
         comparison = next;
         syncedSource = document.SourceChangeIdentity;
         diffFiles = prepared.Files; diffBase = prepared.Basis; diffGit = prepared.Git;
@@ -632,7 +647,7 @@ internal sealed partial class EditorWindow
             if (diffEnabled) {
                 if (diffLeft?.View is { } left && left.NumberEnabled != enabled) left.Number(enabled);
                 preferences.Set("diff", "lineNumbers", enabled);
-            } else if (ActivePane?.Document.State.format == VIEM_FORMAT_CODE) preferences.Set("code", "lineNumbers", enabled);
+            } else if (View?.State.format == VIEM_FORMAT_CODE) preferences.Set("code", "lineNumbers", enabled);
         } finally { changingNumbers = false; }
     }
 
@@ -754,13 +769,14 @@ internal sealed partial class EditorWindow
 
     private async Task OpenLaunchDiffFile(string path, ulong? line)
     {
-        var target = CanReuseForDiff ? this : NewWindow(null);
+        var target = CanReuseForDiff ? this : NewWindow(null, diffWindow: true);
         try {
+            target.IsDiffWindow = true;
             await target.ActivePane!.Ready;
             await target.OpenPath(path, compareHere: true);
             target.singleFileDiff = true;
-            target.windowPlacement.ApplyDiffFrame(target, cascade: target != this);
-            await target.SetDiffMode(true);
+            if (target == this) target.windowPlacement.ApplyDiffFrame(target, cascade: false);
+            await target.EnableDiff();
             if (line.HasValue) target.View?.GoToLine(line.Value);
         } catch {
             if (target != this && target.ActivePane is { } empty && IsPristine(empty.Document))
@@ -780,13 +796,15 @@ internal sealed partial class EditorWindow
             var files = await Task.Run(() => DiffSources.Files(basis, path, path, unsaved, request.Token));
             request.Token.ThrowIfCancellationRequested();
             bool pristine = CanReuseForDiff;
-            var target = pristine ? this : NewWindow(null);
+            var target = pristine ? this : NewWindow(null, diffWindow: true);
             long generation = target.diffGeneration;
             try {
                 await target.ActivePane!.Ready.WaitAsync(request.Token);
                 if (target.diffEnabled) target.EndDiff();
+                target.IsDiffWindow = true;
+                target.View!.SetDisplay(VIEM_VIEW_DISPLAY_DIFF);
                 target.BeginDiff();
-                target.windowPlacement.ApplyDiffFrame(target, cascade: !pristine);
+                if (pristine) target.windowPlacement.ApplyDiffFrame(target, cascade: false);
                 target.diffScope = path;
                 target.diffBase = basis;
                 target.diffLive = target.ActivePane;

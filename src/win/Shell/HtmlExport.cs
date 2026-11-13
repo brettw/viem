@@ -39,7 +39,7 @@ internal sealed partial class EditorWindow
 
         // Snapshot on the UI thread so it cannot contend with editor commands.
         // The worker only touches the detached snapshot and exported bytes.
-        ulong revision = document.State.document_revision;
+        ulong revision = view.State.document_revision;
         ulong snapshot = view.PrepareHtmlExport(revision);
         byte[] html = await Task.Run(() => CoreView.RenderHtmlExport(snapshot));
         // Another document may have adopted this filename during serialization.

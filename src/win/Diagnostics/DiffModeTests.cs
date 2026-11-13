@@ -33,7 +33,7 @@ internal sealed partial class EditorWindow
         string source = string.Join("\n", lines);
         await using var editor = await TestEditor.Open(profile, source, VIEM_FORMAT_CODE);
         var window = editor.Window;
-        await window.SetDiffMode(true);
+        await window.EnableDiff();
         await window.ChooseDiffBase(new(VIEM_DIFF_BASE_FILE, basePath));
         var left = window.diffLeft!;
         var live = editor.Pane;
@@ -90,8 +90,8 @@ internal sealed partial class EditorWindow
         CheckDiff(((SolidColorBrush)face.Background).Color != checkedFill && glyph.Stroke == face.Foreground
             && ((SolidColorBrush)glyph.Stroke).Color.A != 0, "Turning collapse off keeps the icon visible on the neutral background");
         await WindowCapture.SaveElement(button, live.Canvas.Device, FrontendSmokeTests.ReportPath + ".collapse-off.png");
-        await window.SetDiffMode(false);
-        await window.SetDiffMode(true);
+        window.EndDiff();
+        await window.EnableDiff();
         await window.ChooseDiffBase(new(VIEM_DIFF_BASE_FILE, basePath));
         CheckDiff(button.IsChecked == false && !HasDivider(window.diffLeft!) && Shown(live, 15),
             "A new comparison starts expanded after saving that choice");
@@ -110,7 +110,7 @@ internal sealed partial class EditorWindow
             .Select(n => $"{n} " + string.Concat(Enumerable.Repeat("a long wrapped addition ", 12))));
         await using var editor = await TestEditor.Open(profile, live, VIEM_FORMAT_CODE);
         var window = editor.Window;
-        await window.SetDiffMode(true);
+        await window.EnableDiff();
         await window.ChooseDiffBase(new(VIEM_DIFF_BASE_FILE, basePath));
         window.SetDiffAlignment(true);
         var left = window.diffLeft!;
@@ -196,10 +196,12 @@ internal sealed partial class EditorWindow
             await process.WaitForExitAsync();
             if (process.ExitCode != 0) throw new InvalidOperationException(error);
         }
+        var existingWindows = App.Instance.Windows.ToHashSet();
         try {
-            string original = string.Join("\n", Enumerable.Range(1, 110).Select(n => $"Line {n}")) + "\n";
+            string original = "# Heading\n\n" + string.Join("\n", Enumerable.Range(1, 110).Select(n => $"Line {n}")) + "\n";
             await using (var editor = await TestEditor.Open(preferences, original, placement: placement)) {
-                var window = editor.Window;
+                var ordinary = editor.Window;
+                var window = ordinary;
                 var menu = window.Menu.Items.Single(m => m.Title == "Diff");
                 var mode = (ToggleMenuFlyoutItem)menu.Items[0];
                 Check(mode.Text == "Diff Mode" && window.Menu.Items[window.Menu.Items.IndexOf(menu) - 1].Title == "File", "Diff Mode heads the Diff menu immediately after File");
@@ -207,9 +209,15 @@ internal sealed partial class EditorWindow
                 await MenuTestHelpers.Transition(true, () => { peer.Expand(); return Task.CompletedTask; }, mode);
                 mode.Focus(FocusState.Programmatic);
                 await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
-                await WaitFor(() => window.comparison != null);
+                await WaitFor(() => App.Instance.Windows.Any(w => w != ordinary && w.comparison != null));
+                window = App.Instance.Windows.Single(w => w != ordinary && w.comparison != null);
+                var livePane = window.ActivePane!;
+                var liveView = livePane.View!;
+                Check(ordinary.View!.State.format == VIEM_FORMAT_MARKDOWN && ordinary.comparison == null
+                    && livePane.Document == editor.Document && liveView.Display == VIEM_VIEW_DISPLAY_DIFF,
+                    "Diff Mode creates a separate Code window and preserves the original Preview");
                 var left = window.diffLeft!;
-                Check(window.diffBase.Kind == VIEM_DIFF_BASE_LAST_SAVED && editor.Document.State.format == VIEM_FORMAT_CODE
+                Check(window.diffBase.Kind == VIEM_DIFF_BASE_LAST_SAVED && liveView.State.format == VIEM_FORMAT_CODE
                     && left.Document.Source(left.Document.State.document_revision).AsSpan().SequenceEqual(System.Text.Encoding.UTF8.GetBytes(original)),
                     "Diff menu opens an untitled Markdown document beside its saved source in Code");
                 Check(preferences.MarkdownFormattedView, "Comparing Markdown preserves the opening preference for other files");
@@ -231,49 +239,68 @@ internal sealed partial class EditorWindow
                 try { left.View!.Ex("1delete"); } catch (InvalidOperationException) { }
                 Check(left.Document.Source(left.Document.State.document_revision).SequenceEqual(source) && !left.Document.IsDirty,
                     "The diff base rejects a line deletion and stays clean");
-                editor.View.Command("i"); editor.View.Text("cha");
-                int gutterStyles = editor.Pane.GutterStyleResolutions;
+                liveView.Command("i"); liveView.Text("cha");
+                int gutterStyles = livePane.GutterStyleResolutions;
                 int baseExports = 0;
                 left.View!.BeforePresentationExport = _ => ++baseExports;
-                try { editor.View.Text("nged "); } finally { left.View.BeforePresentationExport = null; }
+                try { liveView.Text("nged "); } finally { left.View.BeforePresentationExport = null; }
                 Check(baseExports == 0, "Extending an insertion keeps the current base frame without exporting it again");
-                Check(editor.Pane.GutterStyleResolutions == gutterStyles, "Typing reuses the live gutter's normal and diff styles");
-                editor.View.Key(VIEM_KEY_ESCAPE);
+                Check(livePane.GutterStyleResolutions == gutterStyles, "Typing reuses the live gutter's normal and diff styles");
+                liveView.Key(VIEM_KEY_ESCAPE);
                 Check(window.comparison!.Marks(true).Marks.Length > 0 && window.comparison.Marks(false).Marks.Length > 0,
                     "Typing updates both sides' change marks");
                 window.NavigateChange(true);
-                Check(editor.View.Layout().Decorations.Any(d => (d.flags & VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND) != 0),
+                Check(liveView.Layout().Decorations.Any(d => (d.flags & VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND) != 0),
                     "The live layout paints changed lines after navigating");
                 var toolbar = window.diffToolbar!;
                 Check(toolbar.AddedLines.Text == "+1" && toolbar.RemovedLines.Text == "–1"
                     && ((UIElement)toolbar.FileCount.Parent).Visibility == Visibility.Collapsed,
                     "A live single-file edit shows one addition and one removal without a file count");
                 var align = toolbar.Align;
-                var markdownToggle = window.Toolbar.FormattedView;
-                Check(toolbar.ActualHeight == window.Toolbar.Height && align.ActualWidth == markdownToggle.Width
+                var markdownToggle = ordinary.Toolbar.FormattedView;
+                Check(toolbar.ActualHeight == ordinary.Toolbar.Height && align.ActualWidth == markdownToggle.Width
                     && align.ActualHeight == markdownToggle.Height && align.Content is Canvas
                     && AutomationProperties.GetName(align) == "Align Sides" && Equals(ToolTipService.GetToolTip(align), "Align Sides"),
                     "Diff uses Markdown toolbar dimensions and exposes the alignment icon as a named toggle");
                 window.SetDiffAlignment(true);
                 // The scroll tests need the unchanged lines to extend beyond the viewport.
                 window.SetDiffCollapsed(false);
-                editor.View.Scroll(0, 300);
+                liveView.Scroll(0, 300);
                 Check(left.View!.Viewport.top > 0, "Scrolling the aligned live side moves the base");
                 Check(align.IsChecked == true && align.Focus(FocusState.Programmatic), "Align Sides reflects the menu state and takes keyboard focus");
                 await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
                 await WaitFor(() => align.IsChecked == false && !window.diffAligned);
                 Check(!preferences.Get("diff", "alignSides", true), "The alignment icon toggles and persists the setting from the keyboard");
                 float top = left.View.Viewport.top;
-                editor.View.Scroll(0, 500);
+                liveView.Scroll(0, 500);
                 Check(left.View.Viewport.top == top, "Unaligned diff panes scroll independently");
                 window.SetLineNumbers(false);
-                Check(!left.View.NumberEnabled && !editor.View.NumberEnabled, "The diff line-number choice reaches both views");
-                editor.View.Undo();
+                Check(!left.View.NumberEnabled && !liveView.NumberEnabled, "The diff line-number choice reaches both views");
+                liveView.Undo();
                 Check(editor.Source == original && window.comparison.Marks(true).Marks.Length == 0, "Undo restores the exact source and clears diff marks");
                 Check(toolbar.AddedLines.Text == "+0" && toolbar.RemovedLines.Text == "–0", "Undo restores the live line totals");
+                ordinary.ActivePane!.SetMarkdownPreview(false);
+                ordinary.ActivePane.SetMarkdownPreview(true);
+                Check(liveView.Display == VIEM_VIEW_DISPLAY_DIFF && liveView.State.format == VIEM_FORMAT_CODE,
+                    "Preview toggles in the ordinary window leave the diff literal");
+                ordinary.View!.Command("ggi"); ordinary.View.Text("Preview edit "); ordinary.View.Key(VIEM_KEY_ESCAPE);
+                Check(window.comparison.LineTotals == (1UL, 1UL) && liveView.State.format == VIEM_FORMAT_CODE,
+                    "An edit through Preview updates the shared literal comparison");
+                ordinary.View.Undo();
+                Check(editor.Source == original && window.comparison.LineTotals == (0UL, 0UL),
+                    "Undo through Preview restores the diff's exact source and pairing");
+                foreach (var visible in new[] { ordinary.ActivePane, livePane }) {
+                    using var pixels = new CanvasRenderTarget(visible.Canvas.Device,
+                        (float)visible.Canvas.ActualWidth, (float)visible.Canvas.ActualHeight, visible.Canvas.Dpi);
+                    byte[] Draw() { using (var drawing = pixels.CreateDrawingSession()) visible.Draw(drawing); return pixels.GetPixelBytes(); }
+                    var cached = Draw(); visible.InvalidateDrawingCache();
+                    Check(cached.AsSpan().SequenceEqual(Draw()), "Mixed Preview and diff drawing matches a fresh recording: " + visible.View!.State.format);
+                }
+                ulong beforeExit = editor.Document.State.document_revision;
                 await window.SetDiffMode(false);
-                Check(editor.Document.State.format == VIEM_FORMAT_MARKDOWN && editor.Source == original && window.diffLeft == null,
-                    "Leaving the comparison restores Markdown Preview and removes the base");
+                Check(editor.Document.State.document_revision == beforeExit, "Leaving diff creates no source or history revision");
+                Check(editor.Document.State.format == VIEM_FORMAT_MARKDOWN && editor.Source == original && window.diffLeft == null && window.closed && !ordinary.closed,
+                    "Leaving diff closes its window and reuses the unchanged ordinary Preview");
             }
 
             await Git("init", "-q", "-b", "main");
@@ -480,12 +507,12 @@ internal sealed partial class EditorWindow
             Check(SamePath(folder.ActivePane!.Document.FilePath!, a), "Next File wraps from the last file to the first");
             folder.SetLineNumbers(true);
             string rust = string.Join("\n", Enumerable.Range(0, 650).Select(n => $"pub fn value_{n}() -> usize {{ {n} }}"));
-            string[] names = ["c.rs", "d.rs", "e.rs"];
+            string[] names = ["c.rs", "d.rs", "e.md"];
             foreach (string name in names) {
                 string path = Path.Combine(scoped, name);
-                await File.WriteAllTextAsync(path, rust);
+                await File.WriteAllTextAsync(path, name.EndsWith(".md") ? "# Heading\n\n" + rust : rust);
                 await Git("add", "sub/" + name);
-                await File.WriteAllTextAsync(path, "// changed " + name + "\n" + rust);
+                await File.WriteAllTextAsync(path, "// changed " + name + "\n" + (name.EndsWith(".md") ? "# Heading\n\n" : "") + rust);
             }
             await folder.ChooseDiffBase(new(VIEM_DIFF_BASE_UNSTAGED));
             folder.SetDiffCollapsed(true);
@@ -504,6 +531,7 @@ internal sealed partial class EditorWindow
                         bool text = livePane.PaintedDocumentForTesting == liveId, numbers = livePane.PaintedNumberDocumentForTesting == liveId;
                         bool baseText = basePane.PaintedDocumentForTesting == baseId, baseNumbers = basePane.PaintedNumberDocumentForTesting == baseId;
                         complete = text && numbers && baseText && baseNumbers;
+                        if (text && livePane.View!.State.format != VIEM_FORMAT_CODE) partialFrame ??= "live pane showed Preview";
                         if (!complete && (text || numbers || baseText || baseNumbers))
                             partialFrame ??= $"live text={text}, numbers={numbers}, base text={baseText}, numbers={baseNumbers}";
                     }
@@ -511,7 +539,8 @@ internal sealed partial class EditorWindow
                     try {
                         await folder.SelectDiffFile(index);
                         Check(livePane == folder.ActivePane && basePane == folder.diffLeft && folder.comparison != null
-                            && livePane.LineNumbersForTesting?.Enabled == true && basePane.LineNumbersForTesting?.Enabled == true,
+                            && livePane.LineNumbersForTesting?.Enabled == true && basePane.LineNumbersForTesting?.Enabled == true
+                            && livePane.View!.Display == VIEM_VIEW_DISPLAY_DIFF && livePane.View.State.format == VIEM_FORMAT_CODE,
                             $"{name} installs both numbered views and the comparison before file navigation returns");
                         Check(livePane.View!.Layout().Decorations.Any(d => (d.flags & VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT) != 0)
                             && basePane.View!.Layout().Decorations.Any(d => (d.flags & VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT) != 0),
@@ -602,6 +631,7 @@ internal sealed partial class EditorWindow
             await pending;
             Check(folder.diffLeft == null && !folder.diffEnabled, "A pending Git load cannot reopen a closed comparison");
         } finally {
+            foreach (var extra in App.Instance.Windows.Where(w => !existingWindows.Contains(w)).ToArray()) { extra.closing = true; extra.Close(); }
             foreach (var file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)) File.SetAttributes(file, FileAttributes.Normal);
             Directory.Delete(directory, recursive: true);
         }

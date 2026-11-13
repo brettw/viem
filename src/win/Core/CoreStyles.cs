@@ -54,7 +54,7 @@ internal sealed unsafe partial class CoreView
     // Query only retained core assignments/runs, never typography or syntax work.
     public StyleKey? CurrentStyleEditorKey(StyleSheet sheet)
     {
-        var state = Document.State;
+        var state = State;
         var info = new ViemSelectedStylesInfo();
         uint status = viem_core_view_selected_styles_export(Document.Handle, Id, state.document_revision, &info, null, 0);
         if (status != VIEM_STATUS_BUFFER_TOO_SMALL) Check(status, "Read selected styles");
@@ -72,7 +72,7 @@ internal sealed unsafe partial class CoreView
             && sheet.Styles.Any(s => s.Id == paragraph && s.Namespace == 1)) return new(1, paragraph);
         return null;
     }
-    public bool UsesGlobalStyles => Document.State.format == VIEM_FORMAT_CODE;
+    public bool UsesGlobalStyles => State.format == VIEM_FORMAT_CODE;
     public ViemLogicalSelectionIdentity LogicalSelection()
     { var value = new ViemLogicalSelectionIdentity(); Check(viem_core_view_list_selection(Document.Handle, Id, &value), "Read formatting selection"); return value; }
     public ViemSemanticStylePresentation SemanticStyle(uint style)
@@ -128,8 +128,8 @@ internal sealed unsafe partial class CoreView
         Apply(o => { var selection = LogicalSelection(); return viem_core_view_insert_list_paragraph(Document.Handle, Id, &selection, o); });
     }
     public uint ListCapabilities() { var selection = LogicalSelection(); uint caps = 0; Check(viem_core_view_list_indent_capabilities(Document.Handle, Id, &selection, &caps), "Read list actions"); return caps; }
-    public void SetEncoding(uint encoding) => Send((c, o, e) => { var state = Document.State; var r = new ViemSetEncoding(); r.document_id = state.document_id; r.document_revision = state.document_revision; r.encoding = encoding; return viem_core_view_set_encoding_with_effects(Document.Handle, Id, &r, o, e); });
-    public void FileFormat(uint format) => Apply(o => { var state = Document.State; var r = new ViemSetFileFormat(); r.document_id = state.document_id; r.document_revision = state.document_revision; r.file_format = format; return viem_core_view_set_file_format(Document.Handle, Id, &r, o); });
+    public void SetEncoding(uint encoding) => Send((c, o, e) => { var state = State; var r = new ViemSetEncoding(); r.document_id = state.document_id; r.document_revision = state.document_revision; r.encoding = encoding; return viem_core_view_set_encoding_with_effects(Document.Handle, Id, &r, o, e); });
+    public void FileFormat(uint format) => Apply(o => { var state = State; var r = new ViemSetFileFormat(); r.document_id = state.document_id; r.document_revision = state.document_revision; r.file_format = format; return viem_core_view_set_file_format(Document.Handle, Id, &r, o); });
     public ViemStyleSheetIdentity StyleIdentity()
     {
         var identity = new ViemStyleSheetIdentity();

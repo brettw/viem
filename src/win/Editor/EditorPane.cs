@@ -33,6 +33,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     internal string? AlternatePath { get => alternatePath; set { alternatePath = value; View?.SetHostRegister(35, value ?? ""); } }
     internal ulong? InitialHeightLines { get; set; }
     internal bool InitialVerticalSplit { get; set; }
+    internal uint? InitialDisplay { get; set; }
     internal bool? InitialNumber { get; set; }
     internal Point WindowFocusPoint { get { try { if (View != null) { var caret = View.CaretGeometry(); var viewport = View.Viewport; return new(caret.rect.x - viewport.left + GutterWidth, caret.rect.y - viewport.top); } } catch { } return new(ActualWidth / 2, ActualHeight / 2); } }
     private readonly EditorWindow window;
@@ -254,13 +255,22 @@ internal sealed partial class EditorPane : Grid, IDisposable
         };
         ApplyTheme();
     }
+    private uint NewDisplay(CoreDocument document) => diffBasePane || window.IsDiffWindow
+        ? VIEM_VIEW_DISPLAY_DIFF : preferences.InitialDisplay(document);
+    internal void SetMarkdownPreview(bool enabled)
+    {
+        if (View is not { } view) return;
+        uint previous = view.State.format;
+        view.SetMarkdownPreview(enabled);
+        if (view.State.format != previous) preferences.RememberMarkdownPreview(enabled);
+    }
     private void Attach()
     {
         using var startup = Diagnostics.StartupPerformance.Measure("editor.attach");
         InvalidateDrawingCache();
         if (View != null) { ResetImagePreviews(); View.Provider.ResetDevice(Canvas.Device); View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); return; }
         var padding = new ViemLayoutInsets { top = preferences.Margin("top"), left = preferences.Margin("left"), bottom = preferences.Margin("bottom"), right = preferences.Margin("right") };
-        using (Diagnostics.StartupPerformance.Measure("editor.createView")) View = new(Document, Canvas.Device, DispatcherQueue, (float)Canvas.ActualWidth, (float)Canvas.ActualHeight, padding);
+        using (Diagnostics.StartupPerformance.Measure("editor.createView")) View = new(Document, Canvas.Device, DispatcherQueue, (float)Canvas.ActualWidth, (float)Canvas.ActualHeight, padding, InitialDisplay ?? NewDisplay(Document));
         if (preferences.ZoomScale != 1) View.Zoom(preferences.ZoomScale);
         View.SetHostRegister(35, AlternatePath ?? "");
         View.Changed += Refresh; View.Effects += ApplyEffects; View.ZoomChanged += RememberZoom;
@@ -276,7 +286,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     {
         if (View == null) return null;
         var padding = new ViemLayoutInsets { top = preferences.Margin("top"), left = preferences.Margin("left"), bottom = preferences.Margin("bottom"), right = preferences.Margin("right") };
-        var prepared = new CoreView(document, Canvas.Device, DispatcherQueue, (float)Canvas.ActualWidth, (float)Canvas.ActualHeight, padding);
+        var prepared = new CoreView(document, Canvas.Device, DispatcherQueue, (float)Canvas.ActualWidth, (float)Canvas.ActualHeight, padding, newFile ? NewDisplay(document) : View.Display);
         try
         {
             var viewport = View.Viewport;
@@ -433,7 +443,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             literal: (state.flags & VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING) != 0, formatting: formatting, extended: extended);
     }
     internal bool CanUseFormattingCommands => IsActive && !composing && View is { } view && !view.Composing
-        && CoreDocument.IsMarkdown(Document.State.format) && view.HasFormattingSelection
+        && CoreDocument.IsMarkdown(View!.State.format) && view.HasFormattingSelection
         && (view.Presentation.flags & (VIEM_VIEW_PRESENTATION_COMMAND_INPUT_PENDING | VIEM_VIEW_PRESENTATION_HAS_COMMAND_LINE)) == 0;
     private void Enqueue(Func<Task> action)
     {
@@ -770,7 +780,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private void FollowCodeWordWrap()
     {
         if (View == null || disposed || installingDocument) return;
-        bool code = Document.State.format == VIEM_FORMAT_CODE;
+        bool code = View!.State.format == VIEM_FORMAT_CODE;
         bool wrap = (viewport.flags & VIEM_VIEWPORT_STATE_WRAP) != 0;
         bool? previous = presentedCode;
         bool before = presentedWrap;
@@ -784,7 +794,13 @@ internal sealed partial class EditorPane : Grid, IDisposable
             return;
         }
         if (previous == true) target = proseWrap;
-        else if (code) { proseWrap = wrap; target = preferences.CodeWordWrap; }
+        else if (code) {
+            proseWrap = wrap; target = preferences.CodeWordWrap;
+            bool numbers = diffBasePane || window.IsDiffWindow
+                ? preferences.Get("diff", "lineNumbers", true)
+                : preferences.Get("code", "lineNumbers", View.NumberEnabled);
+            if (View.NumberEnabled != numbers) Run(() => View.Number(numbers));
+        }
         else { proseWrap = wrap; return; }
         if (target != wrap) Run(() => View!.Wrap(target));
     }

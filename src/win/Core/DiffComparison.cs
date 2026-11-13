@@ -29,45 +29,7 @@ internal sealed unsafe partial class CoreDocument
         deletedComparisons += protect ? 1 : -1;
     }
 
-    // The projection is shared even when two windows compare different bases.
-    private int diffViews;
-    private DocumentModeState? priorDiffMode;
-    internal bool SwitchingDiffProjection { get; private set; }
 
-    private void SetDiffMode(CoreView view, uint mode, string language, DocumentModeState expected)
-    {
-        SwitchingDiffProjection = true;
-        try { view.SetDocumentMode(mode, language, expected); }
-        finally { SwitchingDiffProjection = false; }
-    }
-    internal void EnterDiff(CoreView view)
-    {
-        if (diffViews == 0) {
-            var mode = DocumentModes.Read(this);
-            if (mode.Format != "code") {
-                SetDiffMode(view, VIEM_DOCUMENT_MODE_CODE, mode.Format == "markdown" ? "markdown" : "", mode);
-                priorDiffMode = mode;
-            }
-        }
-        ++diffViews;
-    }
-
-    // Reload replaces all views together and opens the new core in the old
-    // one's format. The last diff window still restores the pre-diff format.
-    internal void InheritDiffMode(CoreDocument previous)
-    {
-        diffViews = previous.diffViews;
-        priorDiffMode = previous.priorDiffMode;
-    }
-    internal void LeaveDiff(CoreView view, bool closingDocument = false)
-    {
-        if (--diffViews != 0) return;
-        var prior = priorDiffMode;
-        priorDiffMode = null;
-        if (!closingDocument && prior != null && State.format == VIEM_FORMAT_CODE)
-            SetDiffMode(view, prior.Format == "markdown" ? VIEM_DOCUMENT_MODE_MARKDOWN : VIEM_DOCUMENT_MODE_PLAIN_TEXT,
-                "", DocumentModes.Read(this));
-    }
 }
 
 internal sealed unsafe class DiffComparison : IDisposable

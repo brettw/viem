@@ -72,7 +72,7 @@ internal sealed partial class EditorWindow
     private void RefreshDocumentModeMenu()
     {
         if (plainMode == null) return;
-        menuModeState = View == null ? null : DocumentModes.Read(ActivePane!.Document);
+        menuModeState = View == null ? null : DocumentModes.Read(View);
         var state = menuModeState;
         plainMode.IsEnabled = markdownMode.IsEnabled = codeMode.IsEnabled = codeLanguageMenu.IsEnabled = state != null;
         plainMode.IsChecked = state?.Format == "plainText";

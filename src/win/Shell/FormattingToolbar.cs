@@ -68,7 +68,7 @@ internal sealed partial class FormattingToolbar : EditorToolbar
         FormattedView.Content = FormattedViewIcon();
         FormattedView.Click += (_, _) => {
             if (View is not { } view) return;
-            Run(() => view.SetMarkdownPreview(FormattedView.IsChecked == true));
+            Run(() => pane!.SetMarkdownPreview(FormattedView.IsChecked == true));
             RestoreEditorFocus();
         };
         foreach (var selector in new[] { Paragraph, BlockQuoteAlerts })
@@ -251,7 +251,7 @@ internal sealed partial class FormattingToolbar : EditorToolbar
         refreshing = true;
         try
         {
-            bool markdown = view.Document.State.format == VIEM_FORMAT_MARKDOWN;
+            bool markdown = view.State.format == VIEM_FORMAT_MARKDOWN;
             FormattedView.IsChecked = markdown;
             FormattedView.IsEnabled = view.Document.IsMarkdownDocument;
             // With Preview off the document is literal Code: only the toggle remains.
@@ -310,7 +310,7 @@ internal sealed partial class FormattingToolbar : EditorToolbar
     private void RefreshSelector(DropDownButton button, uint space)
     {
         var entries = choices.Where(c => c.Key.Namespace == space
-            && (space != 1 || View?.Document.State.format != VIEM_FORMAT_MARKDOWN
+            && (space != 1 || View?.State.format != VIEM_FORMAT_MARKDOWN
                 || sheet?.Styles.FirstOrDefault(s => s.Key == c.Key) is { } definition
                     && (definition.Has(VIEM_STYLE_CAPABILITY_ASSIGN) || c.Selected && (definition.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL_LIST) != 0))).ToArray();
         var menu = (MenuFlyout)button.Flyout;

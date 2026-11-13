@@ -28,7 +28,7 @@ internal sealed unsafe partial class CoreView
     {
         if (!Composing) return;
         byte[] bytes = Encoding.UTF8.GetBytes(text);
-        Apply(o => { var r = new ViemCompositionUpdate(); r.document_revision = Document.State.document_revision;
+        Apply(o => { var r = new ViemCompositionUpdate(); r.document_revision = State.document_revision;
             r.selected_start = (ulong)Encoding.UTF8.GetByteCount(text.AsSpan(0, Math.Clamp(selectionStart, 0, text.Length)));
             r.selected_end = (ulong)Encoding.UTF8.GetByteCount(text.AsSpan(0, Math.Clamp(selectionStart + selectionLength, 0, text.Length)));
             fixed (byte* p = bytes) { r.marked_text = new() { data = p, length = (ulong)bytes.Length }; return viem_core_view_composition_update(Document.Handle, Id, &r, o); } });
@@ -37,14 +37,14 @@ internal sealed unsafe partial class CoreView
     {
         if (!Composing) { Text(text); return; }
         byte[] bytes = Encoding.UTF8.GetBytes(text);
-        Apply(o => { var r = new ViemCompositionCommit(); r.document_revision = Document.State.document_revision;
+        Apply(o => { var r = new ViemCompositionCommit(); r.document_revision = State.document_revision;
             fixed (byte* p = bytes) { r.committed_text = new() { data = p, length = (ulong)bytes.Length }; return viem_core_view_composition_commit(Document.Handle, Id, &r, o); } });
         Composing = false;
     }
     public void CancelComposition()
     {
         if (!Composing) return;
-        Apply(o => { var r = new ViemCompositionCancel(); r.document_revision = Document.State.document_revision; return viem_core_view_composition_cancel(Document.Handle, Id, &r, o); });
+        Apply(o => { var r = new ViemCompositionCancel(); r.document_revision = State.document_revision; return viem_core_view_composition_cancel(Document.Handle, Id, &r, o); });
         Composing = false;
     }
 }

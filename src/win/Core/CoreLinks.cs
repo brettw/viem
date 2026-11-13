@@ -92,7 +92,7 @@ internal sealed unsafe partial class CoreView
     }
     public void GoToLinkFragment(string fragment)
     {
-        var state = Document.State;
+        var state = State;
         using var arena = new NativeArena(); var text = arena.Utf8(fragment);
         bool found = false;
         Apply(outcome => {

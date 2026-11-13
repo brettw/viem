@@ -500,8 +500,7 @@ Deliberate presentation differences from GitHub:
   Diff Mode has its own windows: turning it on opens a new diff window and
   leaves the current one unchanged; turning it off shows the file in an
   ordinary window and closes the diff window. Every view a diff window
-  creates is Code from its first frame. Windows support for diff windows is
-  pending; see [preview_diff.md](preview_diff.md).
+  creates is Code from its first frame. See [preview_diff.md](preview_diff.md).
 - The Git base source runs bounded, cancellable read-only Git commands with
   argument lists. See [diff mode](docs/diff_mode.md) for the base sources,
   comparison layout and navigation contracts.

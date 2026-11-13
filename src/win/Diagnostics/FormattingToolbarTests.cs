@@ -208,7 +208,7 @@ internal static class FormattingToolbarTests
             foreach (var (action, word) in new[] { (ToolbarAction.Bold, "bold"), (ToolbarAction.Superscript, "super"), (ToolbarAction.CharacterCode, "code") })
             {
                 view.Key(VIEM_KEY_ESCAPE);
-                ulong offset = (ulong)document.FormattedText().IndexOf(word, StringComparison.Ordinal) + 1;
+                ulong offset = (ulong)view.FormattedText().IndexOf(word, StringComparison.Ordinal) + 1;
                 view.Place(offset, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
                 Check(view.Presentation.mode == VIEM_MODE_NORMAL && State(toolbar, action) == true && toolbar.Buttons[action].IsEnabled,
                     "Normal caret reflects active character formatting: " + action);
@@ -225,7 +225,7 @@ internal static class FormattingToolbarTests
             document.SetReadOnly(true);
             foreach (var (action, word) in new[] { (ToolbarAction.Bold, "bold"), (ToolbarAction.Superscript, "super"), (ToolbarAction.CharacterCode, "code") })
             {
-                view.Place((ulong)document.FormattedText().IndexOf(word, StringComparison.Ordinal) + 1,
+                view.Place((ulong)view.FormattedText().IndexOf(word, StringComparison.Ordinal) + 1,
                     VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
                 toolbar.Refresh();
                 Check(State(toolbar, action) == true && !toolbar.Buttons[action].IsEnabled && toolbar.Buttons[action].Visibility == Visibility.Visible,
@@ -404,32 +404,30 @@ internal static class FormattingToolbarTests
         internal async Task PreviewRoundTrip()
         {
             object viewIcon = toolbar.FormattedView.Content;
+            const uint history = VIEM_DOCUMENT_STATE_CAN_UNDO | VIEM_DOCUMENT_STATE_CAN_REDO;
+            uint historyBefore = view.State.flags & history;
             byte[] beforeSwitch = document.Source(document.State.document_revision);
-            ulong caret = (ulong)document.FormattedText().IndexOf("plain", StringComparison.Ordinal) + 2;
+            ulong caret = (ulong)view.FormattedText().IndexOf("plain", StringComparison.Ordinal) + 2;
             view.Place(caret, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
             ulong placedCaret = view.Presentation.cursor_utf8_offset;
             await SwitchView(toolbar);
             // Presentation offsets are in the current logical projection;
             // Code shows the complete literal source.
-            ulong sourceCaret = (ulong)document.FormattedText().IndexOf("plain", StringComparison.Ordinal) + 2;
-            Check(document.State.format == VIEM_FORMAT_CODE && toolbar.FormattedView.IsChecked == false
+            ulong sourceCaret = (ulong)view.FormattedText().IndexOf("plain", StringComparison.Ordinal) + 2;
+            Check(view.State.format == VIEM_FORMAT_CODE && toolbar.FormattedView.IsChecked == false
                 && view.Presentation.cursor_utf8_offset == sourceCaret
                 && beforeSwitch.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
                 "toolbar turns Markdown Preview off while preserving source and semantic caret",
-                $"format={document.State.format}, checked={toolbar.FormattedView.IsChecked}, caret={view.Presentation.cursor_utf8_offset}, expected={sourceCaret}, placed={placedCaret}, requested={caret}, sourceEqual={beforeSwitch.AsSpan().SequenceEqual(document.Source(document.State.document_revision))}, mode={view.Presentation.mode}, error={pane.LastError}");
+                $"format={view.State.format}, checked={toolbar.FormattedView.IsChecked}, caret={view.Presentation.cursor_utf8_offset}, expected={sourceCaret}, placed={placedCaret}, requested={caret}, sourceEqual={beforeSwitch.AsSpan().SequenceEqual(document.Source(document.State.document_revision))}, mode={view.Presentation.mode}, error={pane.LastError}");
             Check(LiteralMarkdownChrome(window, toolbar)
                 && Grid.GetColumn(window.PreviewToggle) == Grid.GetColumn(window.ToolbarToggle)
                 && AutomationProperties.GetName(window.PreviewToggle) == "Markdown Preview",
                 "with Preview off the toolbar is hidden and the title bar offers Markdown Preview in its toggle's place");
-            view.Undo();
-            Check(document.State.format == VIEM_FORMAT_MARKDOWN && toolbar.FormattedView.IsChecked == true && PreviewChrome(window, toolbar, true),
-                "undoing a view switch restores the toolbar and its title-bar toggle");
-            view.Redo();
-            Check(document.State.format == VIEM_FORMAT_CODE && LiteralMarkdownChrome(window, toolbar),
-                "redoing a view switch hides the toolbar again");
+            Check((view.State.flags & history) == historyBefore,
+                "a Preview toggle adds no undo or redo entry");
             await PreviewFromTitleBar(window);
             Check(PreviewChrome(window, toolbar, true), "the title-bar Preview button restores the visible toolbar and toolbar toggle");
-            Check(document.State.format == VIEM_FORMAT_MARKDOWN && toolbar.FormattedView.IsChecked == true
+            Check(view.State.format == VIEM_FORMAT_MARKDOWN && toolbar.FormattedView.IsChecked == true
                 && view.Presentation.cursor_utf8_offset == caret
                 && ReferenceEquals(viewIcon, toolbar.FormattedView.Content)
                 && beforeSwitch.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
@@ -618,7 +616,7 @@ internal static class FormattingToolbarTests
             md.SetMarkdownPreview(false);
             Check(LiteralMarkdownChrome(window, toolbar), "literal Markdown offers Preview whatever the toolbar preference");
             await PreviewFromTitleBar(window);
-            Check(markdown.Document.State.format == VIEM_FORMAT_MARKDOWN && PreviewChrome(window, toolbar, false) && window.ToolbarToggle.IsChecked == false,
+            Check(md.State.format == VIEM_FORMAT_MARKDOWN && PreviewChrome(window, toolbar, false) && window.ToolbarToggle.IsChecked == false,
                 "Preview from the title bar keeps a hidden toolbar hidden and shows the unchecked toolbar toggle");
             preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN, true);
             pane.FocusEditor();

@@ -59,7 +59,7 @@ internal sealed unsafe partial class CoreDocument : IDisposable
     public bool IsReadOnly => (State.flags & VIEM_DOCUMENT_STATE_READ_ONLY) != 0;
     /// <param name="reloading">The document a reload replaces, created here in its format. It supplies
     /// the language choice and whether detected Text may become Code.</param>
-    public CoreDocument(byte[] source, string? path = null, uint? format = null, uint encoding = 0, uint fileFormat = 0, bool markdownFormattedView = true,
+    public CoreDocument(byte[] source, string? path = null, uint? format = null, uint encoding = 0, uint fileFormat = 0,
         CoreDocument? reloading = null)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("document.create");
@@ -67,9 +67,6 @@ internal sealed unsafe partial class CoreDocument : IDisposable
         FilePath = path;
         var options = new ViemDocumentOptions();
         options.format = format ?? FormatForPath(path);
-        // Markdown Preview off opens literal Code; filename detection selects Markdown.
-        if (format == null && options.format == VIEM_FORMAT_MARKDOWN && !markdownFormattedView)
-            options.format = VIEM_FORMAT_CODE;
         options.encoding = encoding; options.file_format = fileFormat;
         ulong handle = 0, revision = 0;
         fixed (byte* bytes = source) Check(viem_core_create(bytes, (ulong)source.Length, &options, &handle, &revision), "Open document");
@@ -101,16 +98,6 @@ internal sealed unsafe partial class CoreDocument : IDisposable
     public static string FormatName(uint format) => format switch { 1 => "Text", 2 => "Markdown Preview", 7 => "Code", _ => "Text" };
     public byte[] Source(ulong revision) => Copy((p, n, r) => viem_core_copy_source_bytes(Handle, revision, p, n, r));
     public string FormattedText() { ulong revision = State.document_revision; return Encoding.UTF8.GetString(Copy((p, n, r) => viem_core_copy_formatted_utf8(Handle, revision, p, n, r))); }
-    public string FormattedRange(ulong start, ulong end)
-    {
-        var state = State;
-        var request = new ViemFormattedUtf8Range();
-        request.identity = new ViemFormattedSnapshotIdentity();
-        request.identity.document_id = state.document_id; request.identity.document_revision = state.document_revision;
-        request.utf8_start = start; request.utf8_end = end;
-        // Capture by value; lambda locals may safely have their addresses taken.
-        return Encoding.UTF8.GetString(Copy((p, n, r) => { var q = request; return viem_core_copy_formatted_utf8_range(Handle, &q, p, n, r); }));
-    }
     public void MarkSaved(ViemDocumentState state)
     {
         var saved = new ViemMarkSaved(); saved.document_id = state.document_id; saved.document_revision = state.document_revision;

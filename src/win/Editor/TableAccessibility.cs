@@ -20,7 +20,7 @@ internal sealed partial class EditorPane
         protected override IList<AutomationPeer> GetChildrenCore()
         {
             var children = base.GetChildrenCore() ?? new List<AutomationPeer>();
-            if (pane.View == null || pane.snapshot == null || pane.Document.State.format != VIEM_FORMAT_MARKDOWN) return children;
+            if (pane.View == null || pane.snapshot == null || pane.View.State.format != VIEM_FORMAT_MARKDOWN) return children;
             foreach (var cells in pane.snapshot.TableCells.GroupBy(c => c.table_id)) {
                 var first = cells.First();
                 var context = pane.View.TableContextAt(first.text_start, pane.snapshot.Info.identity.document_id, pane.snapshot.Info.identity.document_revision);
@@ -132,7 +132,7 @@ internal sealed partial class EditorPane
         public IRawElementProviderSimple[] GetColumnHeaderItems() => table.GetColumnHeaders().Skip(Column).Take(1).ToArray();
         public IRawElementProviderSimple[] GetRowHeaderItems() => [];
         public bool IsReadOnly => true;
-        public string Value => table.Current ? table.Pane.Document.FormattedRange(cell.text_start, cell.text_end) : "";
+        public string Value => table.Current ? table.Pane.View!.FormattedRange(cell.text_start, cell.text_end) : "";
         public void SetValue(string value) => throw new InvalidOperationException("Invoke the cell and use the editor text-input provider to replace its content.");
     }
 }

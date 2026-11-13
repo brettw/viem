@@ -36,7 +36,7 @@ internal sealed partial class EditorWindow
         AutomationProperties.SetName(previewToggle, "Markdown Preview");
         ToolTipService.SetToolTip(previewToggle, "Markdown Preview");
         previewToggle.Click += (_, _) => Safe(() => {
-            if (ActivePane is { View: { } view } pane) pane.Run(() => view.SetMarkdownPreview(true));
+            if (ActivePane is { View: { } view } pane) pane.Run(() => pane.SetMarkdownPreview(true));
             SynchronizeFormattingToolbar(); RestoreEditorFocusAfterControl(); return Task.CompletedTask;
         });
     }
@@ -55,9 +55,9 @@ internal sealed partial class EditorWindow
     }
 
     // Only Markdown Preview has a formatting toolbar.
-    private void PrepareFormattingToolbar(CoreDocument document)
+    private void PrepareFormattingToolbar(CoreDocument document, uint? display = null)
     {
-        bool visible = document.State.format == VIEM_FORMAT_MARKDOWN && preferences.ShowFormattingToolbar(VIEM_FORMAT_MARKDOWN);
+        bool visible = !IsDiffWindow && (display ?? preferences.InitialDisplay(document)) == VIEM_VIEW_DISPLAY_PREVIEW && preferences.ShowFormattingToolbar(VIEM_FORMAT_MARKDOWN);
         if (visible) EnsureFormattingToolbar();
         if (formattingToolbar != null) formattingToolbar.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -75,11 +75,14 @@ internal sealed partial class EditorWindow
     {
         if (closed) return;
         var document = ActivePane?.Document;
-        bool preview = !diffEnabled && document?.State.format == VIEM_FORMAT_MARKDOWN;
+        // Keep the reserved toolbar height until the view can report its own format.
+        bool preview = !IsDiffWindow && ActivePane is { } pane && (pane.View is { } view
+            ? CoreDocument.IsMarkdown(view.State.format)
+            : (pane.InitialDisplay ?? preferences.InitialDisplay(pane.Document)) == VIEM_VIEW_DISPLAY_PREVIEW);
         bool visible = preview && preferences.ShowFormattingToolbar(VIEM_FORMAT_MARKDOWN);
         // Preview shows the toolbar toggle; literal Markdown offers Preview
         // in its place. Text and other Code show neither.
-        bool literalMarkdown = !diffEnabled && !preview && document?.State.format == VIEM_FORMAT_CODE && document.IsMarkdownDocument;
+        bool literalMarkdown = !IsDiffWindow && !preview && View?.State.format == VIEM_FORMAT_CODE && document?.IsMarkdownDocument == true;
         toolbarToggle.Visibility = preview ? Visibility.Visible : Visibility.Collapsed;
         previewToggle.Visibility = literalMarkdown ? Visibility.Visible : Visibility.Collapsed;
         toolbarToggle.IsChecked = visible;

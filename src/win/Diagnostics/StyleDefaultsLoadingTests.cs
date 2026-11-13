@@ -88,7 +88,7 @@ internal static class StyleDefaultsLoadingTests
         byte[] saved = File.ReadAllBytes(path);
         preferences.ReloadCurrentTheme();
         Check(view.Styles().Styles.Single(style => style.Id == "Paragraph").Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value == 620
-            && view.Document.State.document_revision == revision && view.Document.Source(revision).SequenceEqual(source)
+            && view.State.document_revision == revision && view.Document.Source(revision).SequenceEqual(source)
             && File.ReadAllBytes(path).SequenceEqual(saved),
             "Reload Style Sheet applies external styles without rewriting the theme or changing document source");
         try {
@@ -97,7 +97,7 @@ internal static class StyleDefaultsLoadingTests
             try { preferences.ReloadCurrentTheme(); } catch { rejected = true; }
             Check(rejected && preferences.SelectedThemePath == path
                 && view.Styles().Styles.Single(style => style.Id == "Paragraph").Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value == 620
-                && view.Document.State.document_revision == revision && view.Document.Source(revision).SequenceEqual(source),
+                && view.State.document_revision == revision && view.Document.Source(revision).SequenceEqual(source),
                 "an invalid stylesheet reload preserves the current styles, selection, and document");
         }
         finally { File.WriteAllBytes(path, saved); }

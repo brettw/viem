@@ -47,10 +47,11 @@ internal sealed partial class EditorWindow : Window
 #endif
     internal nint Hwnd => WinRT.Interop.WindowNative.GetWindowHandle(this);
 
-    public EditorWindow(Preferences preferences, CoreDocument? document = null, DocumentWindowPlacement? placement = null, bool openLaunchFiles = false)
+    public EditorWindow(Preferences preferences, CoreDocument? document = null, DocumentWindowPlacement? placement = null, bool openLaunchFiles = false, bool diffWindow = false, uint? display = null)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("window.initialize");
         this.preferences = preferences;
+        IsDiffWindow = diffWindow;
         paneGrid.Configure(preferences);
         paneGrid.DragClosedPanes = ForgetDragClosedPanes;
         titleBar.Resources = new ResourceDictionary { Source = new Uri("ms-appx:///Shell/MenuToggleResources.xaml") };
@@ -75,7 +76,8 @@ internal sealed partial class EditorWindow : Window
         ExtendsContentIntoTitleBar = true; SetTitleBar(titleDrag);
         Diagnostics.StartupPerformance.Mark("window.chromeReady");
         windowPlacement = placement ?? App.Instance.WindowPlacement;
-        capturePlacement = windowPlacement.Track(this, () => diffEnabled ? 0 : paneGrid.OrderedPanes.FirstOrDefault()?.GutterWidth ?? 0, () => diffEnabled);
+        capturePlacement = windowPlacement.Track(this, () => IsDiffWindow ? 0 : paneGrid.OrderedPanes.FirstOrDefault()?.GutterWidth ?? 0, () => IsDiffWindow);
+        if (IsDiffWindow) windowPlacement.ApplyDiffFrame(this, cascade: true);
         WindowSizing.Appearance(this, preferences.Midnight);
         Diagnostics.StartupPerformance.Mark("window.placementReady");
         AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Standard;
@@ -121,7 +123,7 @@ internal sealed partial class EditorWindow : Window
             // Do not create and shape an empty editor merely to trigger startup.
             root.Loaded += (_, _) => BeginFileLaunch();
         }
-        else using (Diagnostics.StartupPerformance.Measure("window.initialPane")) AddPane(document ?? NewDocument());
+        else using (Diagnostics.StartupPerformance.Measure("window.initialPane")) AddPane(document ?? NewDocument(), display: display);
         WindowSizing.TrackMinimumSize(this, () => new(Math.Max(480, paneGrid.MinimumSize.Width),
             Math.Max(280, paneGrid.MinimumSize.Height + Math.Max(0, root.ActualHeight - paneGrid.ActualHeight))));
         poll.Tick += (_, _) => {
@@ -174,7 +176,7 @@ internal sealed partial class EditorWindow : Window
     private CoreDocument NewDocument(byte[]? source = null, string? path = null, uint? format = null, uint encoding = 0, uint fileFormat = 0,
         CoreDocument? reloading = null)
     {
-        var doc = new CoreDocument(source ?? [], path, format, encoding, fileFormat, preferences.MarkdownFormattedView, reloading);
+        var doc = new CoreDocument(source ?? [], path, format, encoding, fileFormat, reloading);
         return ConfigureNewDocument(doc, source ?? [], path);
     }
     private CoreDocument ConfigureNewDocument(CoreDocument doc, byte[] source, string? path, bool missingOnDisk = false)
@@ -229,8 +231,6 @@ internal sealed partial class EditorWindow : Window
                 && w.Panes.Any(p => p.Document == doc) && w.savedSources.ContainsKey(doc));
             if (owner != null) savedSources[doc] = owner.savedSources[doc];
         }
-        preferences.ObserveMarkdownView(doc, error => App.Instance.Windows.SelectMany(w => w.Panes)
-            .FirstOrDefault(p => p.Document == doc)?.Report(error));
         GlobalSelectionOptions.Attach(doc, preferences.DirectoryPath);
         preferences.AttachThemeDocument(doc, initialize: false);
     }
@@ -239,16 +239,16 @@ internal sealed partial class EditorWindow : Window
         if (App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document == doc)) return;
         savedSources.Remove(doc); App.Instance.BlockingEdits.Released(doc); doc.Dispose();
     }
-    internal EditorPane AddPane(CoreDocument doc, int? position = null, int? splitIndex = null, bool vertical = false, EditorPane? replacing = null, bool splitBefore = false, bool focusNewPane = true)
+    internal EditorPane AddPane(CoreDocument doc, int? position = null, int? splitIndex = null, bool vertical = false, EditorPane? replacing = null, bool splitBefore = false, bool focusNewPane = true, uint? display = null)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("pane.construct");
         // Pane indexes below refer to committed views only.
         paneGrid.EndDrag();
         // Include any visible toolbar before attaching a canvas that can start
         // its native resources and first document layout immediately.
-        if (focusNewPane) PrepareFormattingToolbar(doc);
+        if (focusNewPane) PrepareFormattingToolbar(doc, display);
         AttachPaneDocument(doc);
-        var pane = new EditorPane(this, doc, preferences); pane.Focused += SetActive;
+        var pane = new EditorPane(this, doc, preferences) { InitialDisplay = display }; pane.Focused += SetActive;
         pane.RememberedArgument = ActivePane?.RememberedArgument ?? ulong.MaxValue;
         // A split keeps its source pane's alternate file, as Vim's windows do.
         pane.AlternatePath = ActivePane?.AlternatePath;
@@ -300,7 +300,7 @@ internal sealed partial class EditorWindow : Window
     internal EditorPane SplitPane(EditorPane pane, CoreDocument document, ulong? lines = null, bool vertical = false, bool before = true, bool focusNewPane = true)
     {
         RequireSplitRoom(pane, vertical);
-        var added = AddPane(document, Panes.IndexOf(pane) + 1, splitIndex: Panes.IndexOf(pane), vertical: vertical, splitBefore: before, focusNewPane: focusNewPane);
+        var added = AddPane(document, Panes.IndexOf(pane) + 1, splitIndex: Panes.IndexOf(pane), vertical: vertical, splitBefore: before, focusNewPane: focusNewPane, display: pane.Document == document ? pane.View?.Display : null);
         if (pane.View is { } origin) {
             if (added.View is { } attached) attached.Number(origin.NumberEnabled);
             else added.InitialNumber = origin.NumberEnabled;
@@ -501,10 +501,9 @@ internal sealed partial class EditorWindow : Window
             }
         }
         byte[] source = recovered?.source ?? bytes;
-        bool markdownFormattedView = preferences.MarkdownFormattedView;
         var existingDocument = existing.Pane?.Document;
         var opening = existingDocument == null
-            ? Task.Run(() => new CoreDocument(source, path, recovered?.Format, recovered?.encoding ?? 0, recovered?.fileFormat ?? 0, markdownFormattedView), cancellation)
+            ? Task.Run(() => new CoreDocument(source, path, recovered?.Format, recovered?.encoding ?? 0, recovered?.fileFormat ?? 0), cancellation)
             : null;
         async Task<PreparedDiff> PrepareComparison()
         {
@@ -566,9 +565,10 @@ internal sealed partial class EditorWindow : Window
             else doc.ConfigurationWarning("The previous recovery file was retained because a new recovery backup could not be established.");
         }
         if (readOnly) doc.SetReadOnly(true);
+        uint? recoveredDisplay = recovered == null ? null : CoreDocument.IsMarkdown(recovered.Format) ? VIEM_VIEW_DISPLAY_PREVIEW : VIEM_VIEW_DISPLAY_SOURCE;
         if (newWindow)
         {
-            var window = NewWindow(doc);
+            var window = NewWindow(doc, display: recoveredDisplay);
             if (savedSources.TryGetValue(doc, out var baseline)) window.savedSources[doc] = baseline;
             window.TrackExternalFile(doc);
             if (!Panes.Any(p => p.Document == doc)) savedSources.Remove(doc);
@@ -584,7 +584,7 @@ internal sealed partial class EditorWindow : Window
         {
             int index = old == null ? Panes.Count : Panes.IndexOf(old) + (split ? 1 : 0);
             ulong argument = old?.RememberedArgument ?? ulong.MaxValue;
-            var opened = split && splitSource != null ? SplitPane(splitSource, doc, splitLines, vertical, before: splitBefore) : AddPane(doc, Math.Min(index, Panes.Count), replacing: old);
+            var opened = split && splitSource != null ? SplitPane(splitSource, doc, splitLines, vertical, before: splitBefore) : AddPane(doc, Math.Min(index, Panes.Count), replacing: old, display: recoveredDisplay);
             opened.RememberedArgument = argument;
         }
         preferences.Remember(path);
@@ -890,9 +890,6 @@ internal sealed partial class EditorWindow : Window
         try
         {
             if (old.IsReadOnly) replacement.SetReadOnly(true);
-            replacement.InheritDiffMode(old);
-            preferences.ObserveMarkdownView(replacement, error => App.Instance.Windows.SelectMany(w => w.Panes)
-                .FirstOrDefault(p => p.Document == replacement)?.Report(error));
             foreach (var w in App.Instance.Windows.ToArray())
                 foreach (var p in w.Panes.Where(p => p.Document == old))
                     prepared.Add((w, p, p.PrepareReplacement(replacement)));
@@ -916,9 +913,9 @@ internal sealed partial class EditorWindow : Window
         App.Instance.BlockingEdits.Replace(old, replacement);
         old.Dispose();
     }
-    private EditorWindow NewWindow(CoreDocument? document)
+    private EditorWindow NewWindow(CoreDocument? document, bool diffWindow = false, uint? display = null)
     {
-        var w = new EditorWindow(preferences, document); App.Instance.Windows.Add(w); w.Closed += (_, _) => App.Instance.Windows.Remove(w); w.Activate(); return w;
+        var w = new EditorWindow(preferences, document, windowPlacement, diffWindow: diffWindow, display: display); App.Instance.Windows.Add(w); w.Closed += (_, _) => App.Instance.Windows.Remove(w); w.Activate(); return w;
     }
     private void ResizeWindow(EditorPane current, ulong index, bool width, uint change, ulong? size)
     {

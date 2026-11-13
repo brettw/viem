@@ -6,42 +6,11 @@ namespace Viem.Windows.Shell;
 
 internal sealed partial class Preferences
 {
-    private readonly HashSet<CoreDocument> markdownViewDocuments = [];
     public bool MarkdownFormattedView => Get("editing", "markdownFormattedView", true);
-
-    internal void ObserveMarkdownView(CoreDocument document, Action<Exception> report)
-    {
-        uint previous = document.State.format;
-        if (!document.IsMarkdownDocument || !markdownViewDocuments.Add(document)) return;
-        // Initial attachment, recovery, and switching between existing panes
-        // do not replace the last choice. Observe actual shared document changes
-        // once, including history navigation, rather than toolbar refreshes.
-        void Changed()
-        {
-            uint current = document.State.format;
-            if (current == previous) return;
-            uint old = previous; previous = current;
-            if (document.SwitchingDiffProjection) return;
-            // Markdown Preview off is literal Code with the Markdown language.
-            if (old is not (VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_CODE)
-                || current is not (VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_CODE)
-                || !document.IsMarkdownDocument) return;
-            bool formatted = current == VIEM_FORMAT_MARKDOWN;
-            try
-            {
-                // Update merges the current file; a cached equal value must
-                // not let an external settings edit override this newer choice.
-                Update(candidate => Merge(candidate, new JsonObject {
-                    ["editing"] = new JsonObject { ["markdownFormattedView"] = formatted }
-                }), notify: false);
-            }
-            catch (Exception error) { report(error); }
-        }
-        void Disposed()
-        {
-            document.Changed -= Changed; document.Disposed -= Disposed;
-            markdownViewDocuments.Remove(document);
-        }
-        document.Changed += Changed; document.Disposed += Disposed;
-    }
+    internal uint InitialDisplay(CoreDocument document) => document.IsMarkdownDocument
+        ? MarkdownFormattedView ? VIEM_VIEW_DISPLAY_PREVIEW : VIEM_VIEW_DISPLAY_SOURCE
+        : VIEM_VIEW_DISPLAY_DEFAULT;
+    internal void RememberMarkdownPreview(bool enabled) => Update(candidate => Merge(candidate, new JsonObject {
+        ["editing"] = new JsonObject { ["markdownFormattedView"] = enabled }
+    }), notify: false);
 }

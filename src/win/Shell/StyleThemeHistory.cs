@@ -92,7 +92,7 @@ internal sealed partial class StyleWindow
         updating = true;
         try {
             if (whitespace) { if (!ReplayWhitespaceHistory(edit, redo)) return; }
-            else preferences.SaveThemeStyles(view.Document.State.format, redo ? edit.After : edit.Before);
+            else preferences.SaveThemeStyles(view.State.format, redo ? edit.After : edit.Before);
             if (redo) { themeRedo.Pop(); PushThemeUndo(edit); }
             else { themeUndo.RemoveAt(themeUndo.Count - 1); themeRedo.Push(edit); }
             if (!whitespace) { CreateThemeSession(); Load(edit.Selection); }

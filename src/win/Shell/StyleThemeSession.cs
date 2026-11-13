@@ -89,7 +89,7 @@ internal sealed partial class StyleWindow
     internal Action? ThemeSessionCreationForTesting { get; set; }
     internal Microsoft.UI.Xaml.Controls.ComboBox DocumentPicker => documentPicker;
     internal CoreView ThemeView => view;
-    internal void CommitThemeForTesting() => preferences.SaveThemeStyles(view.Document.State.format, view.ExportStyleDefaults());
+    internal void CommitThemeForTesting() => preferences.SaveThemeStyles(view.State.format, view.ExportStyleDefaults());
     internal void RefreshForTesting() => Load(selected?.Key);
     internal bool EditPropertyForTesting(uint property, float number)
         => Try(() => EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property, CoreView.Number(number)));

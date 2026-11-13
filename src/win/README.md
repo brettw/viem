@@ -190,7 +190,9 @@ fullscreen bounds do not replace the saved normal frame.
   is saved as `editing.markdownFormattedView` in `config.json` and used for
   subsequent Markdown opens, including Ex commands. With no saved choice, Markdown
   opens with Preview on.
-  Existing documents and recovered sessions retain their view.
+  Existing views retain their own choice. A split copies its source view, and
+  reload preserves each view's display. Only an explicit Preview toggle saves
+  the preference; toggling adds no undo entry.
   The status bar shows mode, the current file path, and messages on
   the left and cursor position on the right. Paths are relative to the working
   directory unless that would traverse the root or cross drives; narrow panes
@@ -314,6 +316,15 @@ explicit bidi
 overrides are preserved but not rendered; Unicode bidi and paragraph direction
 work. IME protocol tests don't establish compatibility with every installed
 IME or speech service. Update this list and the native tests when these ship.
+
+### Diff windows
+
+Diff Mode opens a separate window on the same buffer, leaving the originating
+window and its Preview choice unchanged. Every pane in the comparison shows
+Code from its first frame, including Markdown selected from the file popup.
+Turning Diff Mode off focuses an ordinary window for the live document (or
+opens one) and closes the comparison. Source, undo history and the saved
+Preview choice are unchanged. See [diff mode](../../docs/diff_mode.md).
 
 ### External file changes
 

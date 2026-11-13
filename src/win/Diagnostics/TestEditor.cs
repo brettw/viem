@@ -63,13 +63,13 @@ internal sealed class TestEditor : IAsyncDisposable
     /// a failed case always takes the fresh-document path in Group instead.
     internal Task RestoreCaret(string expectedSource, uint format = VIEM_FORMAT_MARKDOWN)
     {
-        if (Window.Panes.Count != 1 || Document.State.format != format || Source != expectedSource
+        if (Window.Panes.Count != 1 || View.State.format != format || Source != expectedSource
             || Pane.LastError != null)
             throw new InvalidOperationException("The previous case did not restore its editor fixture.");
         View.Key(VIEM_KEY_ESCAPE);
         Pane.DismissLinkPopup(suppress: false);
         Pane.DismissImagePopup(suppress: false);
-        View.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, Document.State.document_revision);
+        View.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, View.State.document_revision);
         Window.FocusPane(Pane);
         return Task.CompletedTask;
     }
@@ -83,7 +83,7 @@ internal sealed class TestEditor : IAsyncDisposable
     private TestEditor(Preferences preferences, string source, uint format, DocumentWindowPlacement? placement)
     {
         Document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: format);
-        Window = new EditorWindow(preferences, Document, placement);
+        Window = new EditorWindow(preferences, Document, placement, display: CoreDocument.IsMarkdown(format) ? VIEM_VIEW_DISPLAY_PREVIEW : VIEM_VIEW_DISPLAY_SOURCE);
         App.Instance.Windows.Add(Window);
     }
 
@@ -112,7 +112,7 @@ internal sealed class TestEditor : IAsyncDisposable
         foreach (var pane in Window.Panes.Skip(1).ToArray())
             await Window.ClosePane(pane, force: true);
         Document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: format);
-        var next = Window.AddPane(Document, replacing: previous);
+        var next = Window.AddPane(Document, replacing: previous, display: CoreDocument.IsMarkdown(format) ? VIEM_VIEW_DISPLAY_PREVIEW : VIEM_VIEW_DISPLAY_SOURCE);
         View = await next.Ready;
         Window.FocusPane(next);
         next.UpdateLayout();

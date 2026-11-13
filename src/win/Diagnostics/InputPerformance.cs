@@ -105,7 +105,7 @@ internal static class InputPerformance
                         else if (resize) view.Resize(width - (i < 50 ? i : 99 - i) * 5, height);
                         else view.Place((float)(30 + random.NextDouble() * (pane.Canvas.ActualWidth - 60)), (float)(30 + random.NextDouble() * (pane.Canvas.ActualHeight - 60)), true);
                     }
-                    if (typing) await WaitForPaint(pane, view.Document.State.document_revision);
+                    if (typing) await WaitForPaint(pane, view.State.document_revision);
                     else { using var drawing = surface.CreateDrawingSession(); pane.Draw(drawing); }
                 }
                 steps.Add(new(i, phase, Stopwatch.GetElapsedTime(started).TotalMilliseconds,

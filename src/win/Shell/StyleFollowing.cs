@@ -48,7 +48,14 @@ internal sealed partial class StyleWindow
     }
     private void ViewChanged()
     {
-        if (closed || !followsCaret || documentView.Id == 0) return;
+        if (closed || documentView.Id == 0) return;
+        // Preview is view-local and can change without a buffer notification
+        // or a caret move. Retarget the inspector before following its styles.
+        if (!updating && sessionFamily != Preferences.StyleFamily(documentView.State.format)) {
+            DocumentChanged();
+            return;
+        }
+        if (!followsCaret) return;
         var next = documentView.Presentation;
         bool changed = SelectionChanged(followedPresentation, next);
         followedPresentation = next;
@@ -79,7 +86,7 @@ internal sealed partial class StyleWindow
     private void SyntaxChanged()
     {
         if (closed || !followsCaret || !followsSyntaxStyle || documentView.Id == 0
-            || documentView.Document.State.format != VIEM_FORMAT_CODE) return;
+            || documentView.State.format != VIEM_FORMAT_CODE) return;
         // Complete the caret lookup when asynchronous captures arrive, while
         // retaining explicit choices and allowing an existing timer to settle.
         caretFollowTimer ??= MakeCaretFollowTimer();
@@ -136,10 +143,10 @@ internal sealed partial class StyleWindow
     private void DocumentChanged()
     {
         if (updating || closed || documentView.Id == 0) return;
-        if (sessionFamily != Preferences.StyleFamily(documentView.Document.State.format)) {
+        if (sessionFamily != Preferences.StyleFamily(documentView.State.format)) {
             DismissColorPickers(commit: false);
             CancelCaretFollow();
-            CreateThemeSession(documentView.Document.State.format);
+            CreateThemeSession(documentView.State.format);
             followsSyntaxStyle = followsCaret;
             followedPresentation = documentView.Presentation;
             Load(followCaret: followsCaret);
@@ -200,8 +207,8 @@ internal sealed partial class StyleWindow
         try { await completed.Task.WaitAsync(TimeSpan.FromSeconds(5)); }
         finally { timer.Tick -= Followed; }
     }
-    internal string FollowingStateForTesting => $"document={documentView.Document.State.document_id}, view={documentView.Id}, "
-        + $"caret={followsCaret}, syntax={followsSyntaxStyle}, family={sessionFamily}, format={documentView.Document.State.format}, "
+    internal string FollowingStateForTesting => $"document={documentView.State.document_id}, view={documentView.Id}, "
+        + $"caret={followsCaret}, syntax={followsSyntaxStyle}, family={sessionFamily}, format={documentView.State.format}, "
         + $"scheduled={CaretFollowScheduled}, queries={CaretStyleQueries}, loads={StyleLoads}";
     internal int CaretStyleQueries { get; private set; }
     internal int StyleLoads { get; private set; }

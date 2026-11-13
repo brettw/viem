@@ -51,7 +51,7 @@ internal sealed unsafe partial class CoreView
     }
     public void SelectImage(ulong offset, ulong revision)
     {
-        ulong documentId = Document.State.document_id;
+        ulong documentId = State.document_id;
         Apply(outcome => viem_core_view_select_image(Document.Handle, Id, documentId, revision, offset, outcome));
     }
     public void EditImage(ImageContext expected, string text, string destination, bool remove = false, bool insertAtCaret = false,

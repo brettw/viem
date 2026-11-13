@@ -43,9 +43,9 @@ internal sealed unsafe partial class CoreView
         if (current.Info.session_id != state.Info.session_id || current.Info.generation != state.Info.generation) throw new InvalidOperationException("Completion changed. Select the item again.");
         long delta = index - current.Info.selected_index;
         for (long i = 0; i < Math.Abs(delta); i++) Key(VIEM_KEY_CONTROL_CHARACTER, delta > 0 ? 'n' : 'p');
-        ulong before = Document.State.document_revision;
+        ulong before = State.document_revision;
         byte changed = 0; Check(viem_core_view_accept_completion(Document.Handle, Id, &changed), "Accept completion");
-        if (Document.State.document_revision != before) Document.NotifySourceChanged();
+        if (State.document_revision != before) Document.NotifySourceChanged();
         else if (changed != 0) Changed?.Invoke();
     }
     public WhitespaceExport Whitespace(ViemLayoutSnapshotInfo layout)
@@ -58,7 +58,7 @@ internal sealed unsafe partial class CoreView
     }
     public byte[] ClipboardJson(ulong start, ulong end)
     {
-        var state = Document.State;
+        var state = State;
         var range = new ViemFormattedUtf8Range(); range.identity = new ViemFormattedSnapshotIdentity(); range.identity.document_id = state.document_id; range.identity.document_revision = state.document_revision; range.utf8_start = start; range.utf8_end = end;
         return Copy((p, n, r) => { var expected = range; return viem_core_copy_clipboard_json(Document.Handle, &expected, p, n, r); });
     }

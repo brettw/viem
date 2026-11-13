@@ -1,7 +1,6 @@
 # Per-view presentation: plan
 
-Status: **phases 0–4 (core) and the ABI and macOS parts of phases 5–6 are
-implemented; the Windows frontend (section 7.3) remains.** This document is the
+Status: **phases 0–6 are implemented on macOS and Windows.** This document is the
 study and the staged plan for making Markdown Preview and Text/Code properties
 of a view instead of the buffer, so a diff can show literal source while
 another view of the same document shows Preview. The syntax language stays a
@@ -44,32 +43,22 @@ Implementation notes, where the code differs from the text below:
   buffer-level state for persistence and themes while each surface reads its
   own view's state and format (`EVEditorSurfaceController.viewFormat`).
 
-### Remaining Windows work (section 7.3)
+### Windows implementation (section 7.3)
 
-The core and `Native.g.cs` are ready; the C# callers still use the old
-buffer-wide behavior and need:
+`CoreView.State`, `Display` and `DocumentModes.Read(view)` provide the view's
+format and revision. Buffer state remains authoritative for persistence and
+themes. New windows read `editing.markdownFormattedView`; splits copy their
+source view's display and reload preserves each display. Only an explicit
+Preview toggle writes the preference, after the view actually changes.
 
-- Per-view state: views read `viem_core_view_document_state` and
-  `viem_core_view_copy_document_mode_json` for their format, revision and mode
-  menu, and send that revision with view requests. The document-level state
-  is for persistence and themes only.
-- The Preview toggle changes the active view only (the existing
-  `SetDocumentMode` Markdown/Code-markdown request already does) and writes
-  `editing.markdownFormattedView` only when the view actually changed; stop
-  recording it on observed format changes. Formatted-text reads already
-  resolve their projection from the snapshot identity, so they need no
-  change. A new window of a Markdown buffer creates its view with
-  `VIEM_VIEW_DISPLAY_PREVIEW` or `SOURCE` from that setting; a split copies
-  its source view's `viem_core_view_display`.
-- Diff: delete `EnterDiff`, `LeaveDiff`, `InheritDiffMode`, `priorDiffMode`,
-  `diffViews` and `SwitchingDiffProjection`; create diff views with
-  `VIEM_VIEW_DISPLAY_DIFF` (or set it with `viem_core_view_set_display`).
-  Diff Mode on opens a new window with the diff frame; off shows the file in
-  an ordinary window (reusing one) and closes the diff window.
-- Menus, toolbar, status bar and Ctrl-0…5 read the active view's format.
-- Reload re-adds each view with the display it had.
-- Validate with `scripts/test-win.ps1 -Suite DiffMode,DiffCollapsedContext`
-  and the ABI check.
+Diff Mode opens a separate window sharing the live buffer. Every diff pane
+starts with `VIEM_VIEW_DISPLAY_DIFF`, including file-popup replacements.
+Turning Diff Mode off reuses or opens an ordinary window before closing the
+comparison. There is no buffer-format switch or restore bookkeeping.
+
+Windows coverage includes `DiffMode`, `DiffAlignedScroll`,
+`DiffCollapsedContext`, `MarkdownViewPreference` and `DocumentModeMenu` in
+`scripts/test-win.ps1`, plus the generated bindings and C ABI checks.
 
 Read [AGENTS.md](AGENTS.md) and [docs/diff_mode.md](docs/diff_mode.md) first.
 Line numbers below are from `main` at `1fc266e`.

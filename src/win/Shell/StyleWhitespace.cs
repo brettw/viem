@@ -53,7 +53,7 @@ internal sealed partial class StyleWindow
 
     private StyleSheet InspectorStyles(StyleSheet source)
     {
-        if (view.Document.State.format != VIEM_FORMAT_CODE) return source;
+        if (view.State.format != VIEM_FORMAT_CODE) return source;
         if (whitespaceStyle == null) RefreshWhitespaceSession();
         if (ReferenceEquals(source, whitespaceBaseSheet) && whitespaceInspectorSheet != null) return whitespaceInspectorSheet;
         whitespaceBaseSheet = source;

@@ -25,7 +25,30 @@ internal sealed unsafe partial class CoreView : IDisposable
     public string ClipboardText { get; set; } = "";
     public string ClipboardFragment { get; set; } = "";
     public ulong ClipboardGeneration { get; set; } = 1;
-    public CoreView(CoreDocument document, CanvasDevice device, DispatcherQueue dispatcher, float width, float height, ViemLayoutInsets padding = default)
+    public ViemDocumentState State
+    {
+        get { var state = new ViemDocumentState(); Check(viem_core_view_document_state(Document.Handle, Id, &state), "Read view document"); return state; }
+    }
+    public string FormattedText() {
+        ulong revision = State.document_revision;
+        return Encoding.UTF8.GetString(Copy((p, n, r) => viem_core_copy_formatted_utf8(Document.Handle, revision, p, n, r)));
+    }
+    public string FormattedRange(ulong start, ulong end)
+    {
+        var state = State;
+        var request = new ViemFormattedUtf8Range();
+        request.identity = new ViemFormattedSnapshotIdentity();
+        request.identity.document_id = state.document_id; request.identity.document_revision = state.document_revision;
+        request.utf8_start = start; request.utf8_end = end;
+        // Capture by value; lambda locals may safely have their addresses taken.
+        return Encoding.UTF8.GetString(Copy((p, n, r) => { var q = request; return viem_core_copy_formatted_utf8_range(Document.Handle, &q, p, n, r); }));
+    }
+    public uint Display
+    {
+        get { uint display = 0; Check(viem_core_view_display(Document.Handle, Id, &display), "Read view display"); return display; }
+    }
+    public void SetDisplay(uint display) => Apply(o => viem_core_view_set_display(Document.Handle, Id, display, o));
+    public CoreView(CoreDocument document, CanvasDevice device, DispatcherQueue dispatcher, float width, float height, ViemLayoutInsets padding = default, uint display = VIEM_VIEW_DISPLAY_DEFAULT)
     {
         Document = document;
         using (Diagnostics.StartupPerformance.Measure("view.provider")) Provider = new(device, dispatcher);
@@ -34,6 +57,7 @@ internal sealed unsafe partial class CoreView : IDisposable
         document.ImagePreviews.Seed(Provider, device, document.FilePath);
         var table = Provider.Table;
         var options = new ViemViewOptions(); options.execution_context = VIEM_LAYOUT_EXECUTION_FRONTEND_MAIN; options.width = Math.Max(1, width); options.height = Math.Max(1, height);
+        options.display = display;
         options.padding_top = padding.top; options.padding_left = padding.left;
         options.padding_bottom = padding.bottom; options.padding_right = padding.right;
         var outcome = new ViemCoreOutcome(); ulong id = 0;
@@ -182,7 +206,7 @@ internal sealed unsafe partial class CoreView : IDisposable
     {
         var state = new ViemViewRestoration();
         Check(viem_core_view_capture_restoration(previous.Document.Handle, previous.Id, &state), "Capture document position");
-        var target = Document.State;
+        var target = State;
         var captured = state;
         Apply(outcome => { var copy = captured; return viem_core_view_restore(Document.Handle, Id, target.document_id, target.document_revision, &copy, outcome); });
     }
@@ -200,7 +224,7 @@ internal sealed unsafe partial class CoreView : IDisposable
     public void Resize(float width, float height) => Apply(o => viem_core_view_resize(Document.Handle, Id, Math.Max(1, width), Math.Max(1, height), o));
     public void Undo() => Apply(o => viem_core_view_undo(Document.Handle, Id, o));
     public void Redo() => Apply(o => viem_core_view_redo(Document.Handle, Id, o));
-    public void SelectAll() => Apply(o => { var s = Document.State; return viem_core_view_select_all(Document.Handle, Id, s.document_id, s.document_revision, o); });
+    public void SelectAll() => Apply(o => { var s = State; return viem_core_view_select_all(Document.Handle, Id, s.document_id, s.document_revision, o); });
     public void UseSelectionForFind()
     {
         var info = new ViemVisualSelectionInfo();
@@ -227,7 +251,7 @@ internal sealed unsafe partial class CoreView : IDisposable
     public float DefaultColumnWidth { get { float width = 0; Check(viem_core_view_default_column_width(Document.Handle, Id, &width), "Read default column width"); return width; } }
     public float DefaultLineHeight { get { float height = 0; Check(viem_core_view_default_line_height(Document.Handle, Id, &height), "Read default line height"); return height; } }
     public void LineMode(uint value) => Apply(o => viem_core_view_set_line_mode(Document.Handle, Id, value, o));
-    public void GoToLine(ulong value) => Apply(o => { var s = Document.State; return viem_core_view_go_to_line(Document.Handle, Id, s.document_id, s.document_revision, value, o); });
+    public void GoToLine(ulong value) => Apply(o => { var s = State; return viem_core_view_go_to_line(Document.Handle, Id, s.document_id, s.document_revision, value, o); });
     public void Zoom(float scale)
     {
         Apply(o => viem_core_view_set_scale(Document.Handle, Id, scale, o));

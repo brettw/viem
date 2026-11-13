@@ -24,7 +24,7 @@ internal sealed partial class EditorWindow
     private MenuFlyoutItem undoItem = null!, redoItem = null!;
     private ToggleMenuFlyoutItem wrapItem = null!;
     private CoreView? View => ActivePane?.View;
-    private bool Rich => View != null && CoreDocument.IsMarkdown(ActivePane!.Document.State.format);
+    private bool Rich => View != null && CoreDocument.IsMarkdown(View!.State.format);
     private MenuFlyoutItem Item(string text, string accessKey, Func<Task> action, string shortcut = "", Func<bool>? enabled = null, bool inputTarget = false)
     {
         var item = new MenuFlyoutItem { Text = text, AccessKey = accessKey, KeyboardAcceleratorTextOverride = shortcut };
@@ -148,7 +148,7 @@ internal sealed partial class EditorWindow
                 return Task.CompletedTask;
             }, enabled: () => Rich && View?.Formatting(FormattingActions.Bit(VIEM_FORMATTING_TABLE)).Enabled(VIEM_FORMATTING_TABLE) == true));
         wrapItem = Toggle("Word wrap", "W", b => View?.Wrap(b));
-        bool CanAlignIndents() => View?.Document.State.format == VIEM_FORMAT_CODE;
+        bool CanAlignIndents() => View?.State.format == VIEM_FORMAT_CODE;
         var alignIndentsItem = Toggle("Align indents to previous line", "A", b => View?.AlignIndentsToPreviousLine(b),
             () => CanAlignIndents() && ActivePane?.AlignIndentsToPreviousLine == true);
         validation.Add((alignIndentsItem, CanAlignIndents));

@@ -35,7 +35,7 @@ internal sealed unsafe partial class CoreView
 
     public SelectedStyles SelectedNamedStyles()
     {
-        var state = Document.State;
+        var state = State;
         if (!HasFormattingSelection)
         {
             var unavailable = new ViemStyleSheetIdentity();

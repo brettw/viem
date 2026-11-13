@@ -89,12 +89,12 @@ internal static class DocumentModeMenuTests
             Check(alignIndents.IsEnabled && alignIndents.IsChecked,
                 "Code displays an enabled check for active indent alignment");
             await Choose(plain);
-            Check(document.State.format == VIEM_FORMAT_PLAIN_TEXT && plain.IsChecked && !auto.IsChecked
+            Check(view.State.format == VIEM_FORMAT_PLAIN_TEXT && plain.IsChecked && !auto.IsChecked
                 && !codeMode.IsChecked && ((FontIcon)code.Icon).Glyph == "", "Plain text menu action overrides a code filename");
             Check(!alignIndents.IsEnabled && !alignIndents.IsChecked,
                 "Plain text displays disabled indent alignment without a check");
             await Close();
-            view.SetDocumentMode(VIEM_DOCUMENT_MODE_CODE, "python", DocumentModes.Read(document));
+            view.SetDocumentMode(VIEM_DOCUMENT_MODE_CODE, "python", DocumentModes.Read(view));
             await Open();
             Check(python.IsChecked && !plain.IsChecked && !auto.IsChecked && auto.Text == "Auto (Rust)",
                 "forced Python keeps the independently detected Rust label");
@@ -110,17 +110,17 @@ internal static class DocumentModeMenuTests
             await Close();
             await Choose(obscureChoice);
             Check(obscureChoice.IsChecked && !python.IsChecked && !auto.IsChecked
-                && DocumentModes.Read(document).Language == obscureLanguage.Id && ((FontIcon)obscure.Icon).Glyph == "\uE73E",
+                && DocumentModes.Read(view).Language == obscureLanguage.Id && ((FontIcon)obscure.Icon).Glyph == "\uE73E",
                 "native obscure language selection updates its check and the document mode");
             await Close();
             await Choose(markdown);
-            Check(markdown.IsChecked && document.State.format == VIEM_FORMAT_MARKDOWN,
+            Check(markdown.IsChecked && view.State.format == VIEM_FORMAT_MARKDOWN,
                 "Markdown Preview choice selects formatted Markdown");
             Check(!alignIndents.IsEnabled && !alignIndents.IsChecked,
                 "Markdown Preview displays disabled indent alignment without a check");
             await Choose(codeMode);
-            Check(codeMode.IsChecked && !markdown.IsChecked && document.State.format == VIEM_FORMAT_CODE
-                && DocumentModes.Read(document).Language == obscureLanguage.Id && obscureChoice.IsChecked
+            Check(codeMode.IsChecked && !markdown.IsChecked && view.State.format == VIEM_FORMAT_CODE
+                && DocumentModes.Read(view).Language == obscureLanguage.Id && obscureChoice.IsChecked
                 && ((FontIcon)code.Icon).Glyph == "\uE73E",
                 "Code document type restores Code while retaining the chosen language");
             Check(alignIndents.IsEnabled && alignIndents.IsChecked,
@@ -133,15 +133,15 @@ internal static class DocumentModeMenuTests
                 ("notes.md", VIEM_FORMAT_CODE, "Auto (Markdown)") })
             {
                 var next = window.AddPane(new CoreDocument(source, filename)); var nextView = await next.Ready;
-                nextView.SetDocumentMode(VIEM_DOCUMENT_MODE_AUTO, "", DocumentModes.Read(next.Document));
+                nextView.SetDocumentMode(VIEM_DOCUMENT_MODE_AUTO, "", DocumentModes.Read(nextView));
                 await Open();
-                Check(next.Document.State.format == expectedFormat && auto.Text == label && auto.IsChecked
+                Check(nextView.State.format == expectedFormat && auto.Text == label && auto.IsChecked
                     && plain.IsChecked == (expectedFormat == VIEM_FORMAT_PLAIN_TEXT) && !markdown.IsChecked,
                     "Auto uses Code Markdown highlighting or Plain text fallback: " + filename);
                 Check(!python.IsChecked && !obscureChoice.IsChecked,
                     "changing active document refreshes both primary and obscure forced-language checks");
                 await Choose(codeMode);
-                Check(next.Document.State.format == VIEM_FORMAT_CODE && codeMode.IsChecked && !plain.IsChecked && !markdown.IsChecked,
+                Check(nextView.State.format == VIEM_FORMAT_CODE && codeMode.IsChecked && !plain.IsChecked && !markdown.IsChecked,
                     "Code document type stays Code independently of filename detection: " + filename);
                 await Close();
             }

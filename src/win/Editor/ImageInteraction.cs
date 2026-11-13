@@ -261,7 +261,7 @@ internal sealed partial class EditorPane
     private void RefreshImagePopup()
     {
         if (View is not { } view || !IsActive || (!window.IsWindowActive && !PickingImageLocation) || view.Composing || composing
-            || !view.HasFormattingSelection || Document.State.format != VIEM_FORMAT_MARKDOWN)
+            || !view.HasFormattingSelection || View!.State.format != VIEM_FORMAT_MARKDOWN)
         { DismissImagePopup(suppress: false); return; }
         if (!HasImageInteractionFocus()) { DismissImagePopup(suppress: false); return; }
         if (!editingImage && LinkEditorVisible) { DismissImagePopup(suppress: false); return; }
@@ -334,7 +334,7 @@ internal sealed partial class EditorPane
         imagePopup.BorderBrush = new SolidColorBrush(preferences.Theme.StatusForeground);
         imageError!.Foreground = new SolidColorBrush(preferences.Theme.StatusForeground);
         imagePopup.Padding = editingImage ? new(10) : new(5);
-        imageReload!.Visibility = Document.State.format == VIEM_FORMAT_MARKDOWN ? Visibility.Visible : Visibility.Collapsed;
+        imageReload!.Visibility = View!.State.format == VIEM_FORMAT_MARKDOWN ? Visibility.Visible : Visibility.Collapsed;
         double maximumWidth = Math.Min(360, Math.Max(180, Canvas.ActualWidth - 12));
         double actionsWidth = imageActions!.Children.OfType<Button>().Skip(1).Count(button => button.Visibility == Visibility.Visible) * 32 + 2;
         var label = (TextBlock)imageDestinationButton!.Content;

@@ -54,7 +54,7 @@ internal sealed partial class EditorPane
         ViemTableContext context = default;
         ViemTableCell? target = null;
         var kind = TableHoverKind.RowSelection;
-        if (Document.State.format == VIEM_FORMAT_MARKDOWN && !gutterSelectionDragging && tableColumnGesture == null
+        if (View!.State.format == VIEM_FORMAT_MARKDOWN && !gutterSelectionDragging && tableColumnGesture == null
             && tableSelection.active != 0 && tableSelection.document_revision == snapshot.Info.identity.document_revision) {
             context = View.TableContext();
             bool rows = (context.flags & VIEM_TABLE_ROW_SELECTION) != 0, columns = (context.flags & VIEM_TABLE_COLUMN_SELECTION) != 0;
@@ -98,7 +98,7 @@ internal sealed partial class EditorPane
     }
     private void TableHover(Point point)
     {
-        if (View == null || snapshot == null || Document.State.format != VIEM_FORMAT_MARKDOWN) { HideTableWidget(); return; }
+        if (View == null || snapshot == null || View!.State.format != VIEM_FORMAT_MARKDOWN) { HideTableWidget(); return; }
         if (point.X < 0 || point.Y < 0 || point.X >= Canvas.ActualWidth || point.Y >= Canvas.ActualHeight) { HideTableWidget(); return; }
         Rect? retention = null;
         if (tableWidget?.Visibility == Visibility.Visible) {
@@ -205,7 +205,7 @@ internal sealed partial class EditorPane
             while (menu.Items.Count > ordinaryItems) menu.Items.RemoveAt(menu.Items.Count - 1);
             bool pointer = tableContextFromPointer; tableContextFromPointer = false;
             var target = tableContextTarget; tableContextTarget = null;
-            if (View == null || Document.State.format != VIEM_FORMAT_MARKDOWN) return;
+            if (View == null || View!.State.format != VIEM_FORMAT_MARKDOWN) return;
             var selected = View.TableContext();
             var context = pointer ? target.GetValueOrDefault() : selected; if ((context.flags & 2) == 0) return;
             // Clicking inside selected complete rows or columns targets them.
@@ -231,7 +231,7 @@ internal sealed partial class EditorPane
     private void TargetTableContext(Point point)
     {
         tableContextFromPointer = true; tableContextTarget = null;
-        if (View == null || snapshot == null || Document.State.format != VIEM_FORMAT_MARKDOWN) return;
+        if (View == null || snapshot == null || View!.State.format != VIEM_FORMAT_MARKDOWN) return;
         foreach (var cell in snapshot.TableCells) {
             if (!OffsetRect(cell.rect, viewport).Contains(point)) continue;
             tableContextTarget = View.TableContextAt(cell.text_start, snapshot.Info.identity.document_id, snapshot.Info.identity.document_revision);
@@ -241,7 +241,7 @@ internal sealed partial class EditorPane
     /// The table cell whose column owns the strip along the table's top edge.
     private ViemTableCell? TableColumnStripCell(Point point)
     {
-        if (snapshot == null || Document.State.format != VIEM_FORMAT_MARKDOWN) return null;
+        if (snapshot == null || View!.State.format != VIEM_FORMAT_MARKDOWN) return null;
         if (tableWidget?.Visibility == Visibility.Visible && TableWidgetRectangle().Contains(point)) return null;
         var visible = new Rect(0, 0, Canvas.ActualWidth, Canvas.ActualHeight);
         foreach (var cell in snapshot.TableCells)
@@ -285,7 +285,7 @@ internal sealed partial class EditorPane
         var current = View.TableSelection();
         if (current.active != 0 && current.table_id == gesture.Table && current.anchor_row == anchorRow
             && current.anchor_column == gesture.Anchor && current.active_row == activeRow && current.active_column == column) return;
-        var selection = Interop.new ViemTableSelection(); selection.active = 1;
+        var selection = new Interop.ViemTableSelection(); selection.active = 1;
         selection.document_id = snapshot.Info.identity.document_id; selection.document_revision = snapshot.Info.identity.document_revision;
         selection.table_id = gesture.Table; selection.anchor_row = anchorRow; selection.anchor_column = gesture.Anchor;
         selection.active_row = activeRow; selection.active_column = column;
@@ -308,7 +308,7 @@ internal sealed partial class EditorPane
     private void BeginTableDrag(Point point)
     {
         tableCellDrag = false; tableDragAnchor = null; tableDragIdentity = null;
-        if (snapshot == null || Document.State.format != VIEM_FORMAT_MARKDOWN) return;
+        if (snapshot == null || View!.State.format != VIEM_FORMAT_MARKDOWN) return;
         foreach (var cell in snapshot.TableCells) if (OffsetRect(cell.rect, viewport).Contains(point)) { tableDragAnchor = cell; tableDragIdentity = snapshot.Info.identity; break; }
     }
     private bool DragTableCells(Point point)
@@ -326,7 +326,7 @@ internal sealed partial class EditorPane
             if (point.Y >= y && point.Y < y + line.line_advance && (previous.x > end.x ? point.X < x - 4 : point.X > x + 4) && OffsetRect(anchor.rect, viewport).Contains(point)) tableCellDrag = true;
         }
         if (!tableCellDrag) return false;
-        var selection = Interop.new ViemTableSelection(); selection.active = 1;
+        var selection = new Interop.ViemTableSelection(); selection.active = 1;
         selection.document_id = identity.document_id; selection.document_revision = identity.document_revision; selection.table_id = anchor.table_id;
         selection.anchor_row = anchor.row; selection.anchor_column = anchor.column; selection.active_row = destination.row; selection.active_column = destination.column;
         View.SelectTableCells(selection); return true;

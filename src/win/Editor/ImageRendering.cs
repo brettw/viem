@@ -99,7 +99,7 @@ internal sealed partial class EditorPane
 
     internal void ReloadShownImage()
     {
-        if (View is not { } view || Document.State.format != VIEM_FORMAT_MARKDOWN || shownImage is not { Image: { } image } context) return;
+        if (View is not { } view || View!.State.format != VIEM_FORMAT_MARKDOWN || shownImage is not { Image: { } image } context) return;
         view.ValidateImageContext(context);
         if (!view.Provider.AdmitImage(image.Destination)) { SetMessage("The image preview budget is full."); return; }
         SharedImages.Reload(image.Destination);

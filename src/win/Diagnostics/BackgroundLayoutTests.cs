@@ -85,7 +85,7 @@ internal static class BackgroundLayoutTests
         }
         byte[] tableSource = Encoding.UTF8.GetBytes("| A | B |\n| --- | --- |\n" + string.Join("\n",
             Enumerable.Range(0, 350).Select(i => $"| row {i} | {(i == 349 ? new string('W', 120) : "small")} |")));
-        using (var tableDoc = new CoreDocument(tableSource, format: VIEM_FORMAT_MARKDOWN, markdownFormattedView: true))
+        using (var tableDoc = new CoreDocument(tableSource, format: VIEM_FORMAT_MARKDOWN))
         using (var tableView = new CoreView(tableDoc, device, dispatcher, 600, 400))
         {
             tableView.BackgroundLayout.Enabled = false;

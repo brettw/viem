@@ -50,7 +50,7 @@ internal static partial class StyleInspectorBehaviorTests
         return ((SolidColorBrush)colorLayer.Background).Color;
     }
     private static void Move(CoreView view, ulong offset, bool extend = false)
-        => view.Place(offset, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, view.Document.State.document_revision, extend);
+        => view.Place(offset, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, view.State.document_revision, extend);
     private static IEnumerable<T> Children<T>(DependencyObject root) where T : DependencyObject
     {
         if (root is T match) yield return match;
@@ -381,6 +381,19 @@ internal static partial class StyleInspectorBehaviorTests
         }
         finally {
             codeInspector.Close();
+        }
+        using (var preview = new CoreDocument("# Heading"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN))
+        using (var previewView = new CoreView(preview, pane.Canvas.Device, pane.DispatcherQueue, 700, 400)) {
+            var fixedInspector = new StyleWindow(previewView, preferences, followCaret: false);
+            try {
+                previewView.SetMarkdownPreview(false);
+                Check(fixedInspector.DocumentPicker.SelectedIndex == 2,
+                    "Preview off retargets an attached inspector without caret following");
+                previewView.SetMarkdownPreview(true);
+                Check(fixedInspector.DocumentPicker.SelectedIndex == 1,
+                    "Preview on restores the attached inspector's Markdown family");
+            }
+            finally { fixedInspector.Close(); }
         }
         CommentAssignment(pane);
         await MarkdownCharacterFollowing(pane, preferences);
