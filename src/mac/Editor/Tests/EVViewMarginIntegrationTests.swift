@@ -53,6 +53,30 @@ final class EVViewMarginIntegrationTests: XCTestCase {
         XCTAssertFalse(backend.persistenceState.isDirty)
     }
 
+    func testAPreviewWindowOfAMarkdownFileOpenedAsSourceUsesTheMarkdownTheme() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("viem-preview-theme-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let configuration = EVConfigurationStore(directory: directory)
+        try saveMarkdownSize(21, configuration: configuration)
+        let backend = EVCoreDocumentBackend(configuration: configuration)
+        try backend.read(source: Data("# Heading\n\nBody\n".utf8), typeName: EVDocument.codeType,
+                         origin: .file(path: "notes.md", automaticCode: false))
+        XCTAssertTrue(backend.isMarkdownBuffer)
+        XCTAssertEqual(backend.sourceFormat, .code)
+        let source = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        source.loadViewIfNeeded()
+        let preview = try XCTUnwrap(backend.makeEditorSurface(display: .preview) as? EVEditorSurfaceController)
+        preview.loadViewIfNeeded()
+        XCTAssertEqual(preview.viewFormat, .markdown)
+        XCTAssertEqual(source.viewFormat, .code)
+        preview.refreshPresentation()
+        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.effective,
+                       .float(21), "the Preview view uses the saved Markdown theme")
+        XCTAssertNil(backend.configurationWarning)
+    }
+
     func testUntitledStartupAppliesViewMarginsBeforeTheFirstPresentationAndAcceptsTyping() throws {
         for margins in [EVViewMargins(), EVViewMargins(top: 23, left: 31, bottom: 17, right: 29)] {
             let directory = FileManager.default.temporaryDirectory

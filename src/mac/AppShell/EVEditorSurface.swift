@@ -423,8 +423,9 @@ public protocol EVEditorSurface: AnyObject {
   var lineNumberGutterWidth: CGFloat { get }
   var lineNumberGutterWidthWillChange: ((CGFloat, CGFloat) -> Void)? { get set }
   func inheritLineNumberOption(from surface: any EVEditorSurface)
-  /// What this surface's view shows when it attaches to its buffer. Set it
-  /// before the surface's view loads; afterwards use `currentDisplay`.
+  /// What this surface's view shows. A surface that is already attached
+  /// switches its view; prefer `makeEditorSurface(display:)` so a new view
+  /// never shows another display first.
   var requestedDisplay: EVViewDisplay { get set }
   /// What the attached view shows now, or `requestedDisplay` before it attaches.
   var currentDisplay: EVViewDisplay { get }
@@ -507,6 +508,8 @@ public protocol EVDocumentBackend: AnyObject {
   var isMarkdownBuffer: Bool { get }
 
   func makeEditorSurface() -> any EVEditorSurface
+  /// A surface whose view shows `display` from the moment it attaches.
+  func makeEditorSurface(display: EVViewDisplay) -> any EVEditorSurface
   func read(source: Data, typeName: String, origin: EVSourceOrigin) throws
   func updateFilename(_ filename: String)
   func serializedSource(typeName: String) throws -> Data
@@ -519,6 +522,11 @@ public protocol EVDocumentBackend: AnyObject {
 }
 
 extension EVDocumentBackend {
+  public func makeEditorSurface(display: EVViewDisplay) -> any EVEditorSurface {
+    let surface = makeEditorSurface()
+    surface.requestedDisplay = display
+    return surface
+  }
   public var prefersMarkdownFormattedView: Bool { true }
   public var isMarkdownBuffer: Bool { sourceFormat == .markdown }
   public func updateFilename(_ filename: String) {}

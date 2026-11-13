@@ -44,9 +44,12 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     var makeCoreViewSession: @MainActor (EVCoreDocumentBackend, CGSize, EVViewMargins, EVViewDisplay) throws -> EVCoreViewSession = { document, size, margins, display in
         try EVCoreViewSession(document: document, width: size.width, height: size.height, margins: margins, display: display)
     }
-    /// What this surface's view shows when it attaches: the buffer's default,
-    /// a split's source view's choice, or a diff's Code.
-    public var requestedDisplay: EVViewDisplay = .default
+    /// What this surface's view shows: the buffer's default, a split's
+    /// source view's choice, or a diff's Code. Setting it on an attached
+    /// surface switches the view.
+    public var requestedDisplay: EVViewDisplay = .default {
+        didSet { if session != nil, requestedDisplay != oldValue { setDisplay(requestedDisplay) } }
+    }
     public var currentDisplay: EVViewDisplay { (try? session?.display()) ?? requestedDisplay }
 
     /// Show this view as Preview, its source or a diff's Code. Only this view
@@ -146,9 +149,10 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         formattedSnapshot?.utf16Length ?? 0
     }
 
-    init(backend: EVCoreDocumentBackend, viewPreferences: EVViewPreferences? = nil) {
+    init(backend: EVCoreDocumentBackend, viewPreferences: EVViewPreferences? = nil, display: EVViewDisplay = .default) {
         self.viewPreferences = viewPreferences ?? .shared
         self.backend = backend
+        self.requestedDisplay = display
         super.init(nibName: nil, bundle: nil)
         themeObserver = NotificationCenter.default.addObserver(forName: .viemThemeDidChange, object: EVThemeStore.shared, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.applyTheme() }

@@ -141,7 +141,7 @@ fn returning_to_the_configured_view_format_keeps_its_installed_defaults() {
     document.replace_style_defaults(themed).unwrap();
     assert!(document.style_defaults_installed(themed));
     document.set_view_format(Format::Code).unwrap();
-    assert!(!document.style_defaults_installed(themed), "Code uses the application Code sheet");
+    assert!(document.style_defaults_installed(themed), "a Markdown buffer keeps its theme for Preview while it shows Code");
     document.set_view_format(Format::Markdown).unwrap();
     // Publication reinstalled the Markdown theme, so reapplying it is free.
     assert!(document.style_defaults_installed(themed));

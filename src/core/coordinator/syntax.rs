@@ -193,7 +193,16 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.syntax.detection = Some(detection);
         self.syntax.detected_for_code = self.code_layer_wanted();
         self.publish_reflow_language();
+        self.adopt_markdown_language();
         Ok(())
+    }
+    /// Code whose language is Markdown is a Markdown buffer showing its
+    /// source, as choosing the Markdown language makes it: any view may then
+    /// show Preview, and the Markdown theme is kept for that view.
+    fn adopt_markdown_language(&mut self) {
+        if self.document.buffer_format() == Format::Code {
+            self.document.set_markdown_buffer(self.is_markdown_source());
+        }
     }
     /// The canonical language name selecting reflow's comment profile.
     pub(super) fn reflow_language(&self) -> Option<String> {
@@ -225,6 +234,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             self.set_code_language(policy.selection);
         }
         self.syntax.automatic_mode = policy.automatic_mode;
+        self.adopt_markdown_language();
         Ok(())
     }
     fn refresh_code_detection(&mut self) {

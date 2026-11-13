@@ -396,6 +396,27 @@ final class EVDiffModeTests: XCTestCase {
         XCTAssertTrue(try shownLines(baseSurface).contains(14), "the base opens in the same turn")
     }
 
+    func testTheToolbarsOnlyFlexibleSpaceIsBeforeTheOpenWindowButton() throws {
+        let toolbar = EVDiffToolbar()
+        toolbar.fileCount.stringValue = "12"
+        toolbar.fileCountGroup.isHidden = false
+        toolbar.filePopup.addItem(withTitle: "notes.md")
+        let container = try XCTUnwrap(toolbar.accessory.view)
+        for width in [CGFloat(900), 1600] {
+            container.frame = NSRect(x: 0, y: 0, width: width, height: 34)
+            container.layoutSubtreeIfNeeded()
+            XCTAssertFalse(container.hasAmbiguousLayout)
+            func frame(_ view: NSView) -> NSRect { view.convert(view.bounds, to: container) }
+            let group = frame(toolbar.fileCountGroup), added = frame(toolbar.addedLines)
+            XCTAssertLessThanOrEqual(added.minX - group.maxX, 6.5, "the file count is followed directly by the added lines")
+            XCTAssertEqual(group.width, toolbar.fileCountGroup.fittingSize.width, accuracy: 0.5)
+            XCTAssertEqual(frame(toolbar.filePopup).width, 220, accuracy: 0.5, "the file popup keeps its preferred width")
+            XCTAssertEqual(frame(toolbar.openWindowButton).maxX, width - 10, accuracy: 0.5)
+            let last = frame(toolbar.nextChangeButton)
+            XCTAssertLessThan(last.maxX, frame(toolbar.openWindowButton).minX - 100, "the extra space is before the Open button")
+        }
+    }
+
     func testCollapseContextIsAnIconToggle() {
         let collapse = EVDiffToolbar().collapseButton
         XCTAssertEqual(collapse.title, "")

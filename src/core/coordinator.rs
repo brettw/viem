@@ -1213,7 +1213,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     pub fn replace_style_defaults(&mut self, json: &[u8]) -> Result<Vec<String>, crate::document::StyleDefaultsError> {
         // A view switch back to the configured format has already reinstalled
         // these defaults; keep layout work and syntax presentation.
-        if !self.document.format().is_code() && self.document.style_defaults_installed(json) {
+        if self.document.style_defaults_installed(json) {
             return Ok(Vec::new());
         }
         for view in self.views.values_mut() {

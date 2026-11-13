@@ -580,8 +580,7 @@ public final class EVDocument: NSDocument {
     }
 
     public func addEditorWindowController(display: EVViewDisplay = .default) {
-        let surface = editorBackend.makeEditorSurface()
-        surface.requestedDisplay = display
+        let surface = editorBackend.makeEditorSurface(display: display)
         let controller = EVDocumentWindowController(document: self, editorSurface: surface)
         addWindowController(controller)
     }

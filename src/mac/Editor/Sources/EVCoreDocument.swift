@@ -82,6 +82,17 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         currentDocumentState.flags & UInt32(VIEM_DOCUMENT_STATE_MARKDOWN_SOURCE) != 0
     }
 
+    /// The theme stylesheet this buffer's prose views use, or nil when every
+    /// view shows Code. A Markdown buffer always takes the Markdown sheet, even
+    /// while its views show source: a Preview view may open at any time.
+    var themeStyleFamily: EVSourceFormat? { Self.themeStyleFamily(from: currentDocumentState) }
+
+    private static func themeStyleFamily(from state: ViemDocumentState) -> EVSourceFormat? {
+        if state.flags & UInt32(VIEM_DOCUMENT_STATE_MARKDOWN_SOURCE) != 0 { return .markdown }
+        let format = sourceFormat(from: state)
+        return format == .code ? nil : format
+    }
+
     private(set) var core: ViemCoreHandle = 0
     private var source = Data()
     private var typeName = "public.plain-text"
@@ -174,8 +185,8 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         do {
             guard changedNames.contains(where: ["text", "markdown", "code"].contains) else { return }
             try EVCodeStyleSession.initialize(configuration: configuration)
-            guard sourceFormat != .code else { return }
-            let json = try configuration.themeStyleDefaults(for: sourceFormat)
+            guard let family = themeStyleFamily else { return }
+            let json = try configuration.themeStyleDefaults(for: family)
             let result = EVCoreStyleDefaults.initialize(core: core, revision: currentDocumentState.document_revision, json: json,
                 path: configuration.selectedThemeURL?.path ?? "Default", replacing: true)
             try checked(result.status, operation: "Apply theme styles")
@@ -240,7 +251,11 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     }
 
     public func makeEditorSurface() -> any EVEditorSurface {
-        let surface = EVEditorSurfaceController(backend: self)
+        makeEditorSurface(display: .default)
+    }
+
+    public func makeEditorSurface(display: EVViewDisplay) -> any EVEditorSurface {
+        let surface = EVEditorSurfaceController(backend: self, display: display)
         surfaces.removeAll { $0.value == nil }
         surfaces.append(WeakSurface(surface))
         return surface
@@ -622,8 +637,8 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         _ = try documentState()
         let defaultStyleFile = configuration.selectedThemeURL ?? configuration.themesDirectory.appendingPathComponent("Default")
         do {
-            if sourceFormat != .code {
-                let defaults = try configuration.themeStyleDefaults(for: sourceFormat)
+            if let family = themeStyleFamily {
+                let defaults = try configuration.themeStyleDefaults(for: family)
                 let result = EVCoreStyleDefaults.initialize(core: core,
                     revision: currentDocumentState.document_revision, json: defaults, path: defaultStyleFile.path)
                 var warnings = result.messages
@@ -894,14 +909,13 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
 
     private func installDocumentState(_ state: ViemDocumentState) {
         let oldPersistence = Self.persistenceState(from: currentDocumentState)
-        let previousFormat = sourceFormat
-        let nextFormat = Self.sourceFormat(from: state)
-        let changedFamily = currentDocumentState.document_id == state.document_id
-            && previousFormat.defaultStyleName != nextFormat.defaultStyleName
+        let previousFamily = themeStyleFamily
+        let nextFamily = Self.themeStyleFamily(from: state)
+        let changedFamily = currentDocumentState.document_id == state.document_id && previousFamily != nextFamily
         currentDocumentState = state
         // A source change refreshes every surface right after installing state.
         if changedFamily {
-            applyThemeStyles(changedNames: [sourceFormat.defaultStyleName], refreshSurfaces: !isRefreshingSurfaces)
+            applyThemeStyles(changedNames: [(nextFamily ?? .code).defaultStyleName], refreshSurfaces: !isRefreshingSurfaces)
         }
         let newPersistence = Self.persistenceState(from: state)
         if oldPersistence != newPersistence {

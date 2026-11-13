@@ -1523,13 +1523,14 @@ extension EVDocumentWindowController {
   }
 
   fileprivate func makePane(document: EVDocument, from source: EVDocumentContentViewController? = nil) -> EVDocumentContentViewController {
-    let surface = document.editorBackend.makeEditorSurface()
     // A diff window's panes are Code; a split shows what its source shows.
+    var display = EVViewDisplay.default
     if isDiffWindow {
-      surface.requestedDisplay = .diff
+      display = .diff
     } else if let source, source.document === document, source.editorSurface.currentDisplay != .diff {
-      surface.requestedDisplay = source.editorSurface.currentDisplay
+      display = source.editorSurface.currentDisplay
     }
+    let surface = document.editorBackend.makeEditorSurface(display: display)
     let pane = EVDocumentContentViewController(editorSurface: surface, configuration: configuration)
     pane.document = document
     let previous = source ?? documentContentController
@@ -2158,7 +2159,8 @@ extension EVDocumentWindowController: EVDiffModeHost {
 
   private func openDiffWindow() {
     guard let document = activeDocument else { return }
-    let target = EVDocumentWindowController(document: document, editorSurface: document.editorBackend.makeEditorSurface(),
+    let target = EVDocumentWindowController(document: document,
+                                            editorSurface: document.editorBackend.makeEditorSurface(display: .diff),
                                             diffPlacement: Self.folderDiffPlacement)
     target.markOpensForDiff()
     target.argumentDocumentOpener = argumentDocumentOpener
@@ -2171,18 +2173,22 @@ extension EVDocumentWindowController: EVDiffModeHost {
   /// shows it, then close this diff window. The buffer stays open throughout,
   /// so unsaved edits carry over without a save review.
   private func leaveDiffWindow() {
-    if let document = activeDocument {
-      if let ordinary = Self.instances.compactMap(\.value).first(where: { controller in
-        controller !== self && !controller.isClosed && !controller.isDiffWindow
-          && controller.paneContainer.panes.contains { $0.document === document }
-      }) {
-        ordinary.showWindow(nil)
-      } else {
-        document.showAdditionalWindow()
-      }
-    }
+    if let document = activeDocument { Self.showOrdinaryWindow(of: document) }
     diffMode?.disable()
     window?.performClose(nil)
+  }
+
+  /// Bring forward an ordinary (not diff) window that shows `document`,
+  /// focusing its pane, or open one when none does.
+  static func showOrdinaryWindow(of document: EVDocument) {
+    for controller in instances.compactMap(\.value) where !controller.isClosed && !controller.isDiffWindow {
+      guard let index = controller.paneContainer.panes.firstIndex(where: { $0.document === document }) else { continue }
+      controller.showWindow(nil)
+      controller.paneContainer.focusPane(at: index)
+      controller.updateActiveDocumentChrome()
+      return
+    }
+    document.showAdditionalWindow()
   }
   @objc func toggleDiffAlignSides(_ sender: Any?) { diffMode?.toggleAlign() }
   @objc func toggleDiffCollapseContext(_ sender: Any?) { diffMode?.toggleCollapse() }
@@ -2261,7 +2267,7 @@ extension EVDocumentWindowController: EVDiffModeHost {
             completion?(nil)
             return
           }
-          target = EVDocumentWindowController(document: empty, editorSurface: empty.editorBackend.makeEditorSurface(),
+          target = EVDocumentWindowController(document: empty, editorSurface: empty.editorBackend.makeEditorSurface(display: .diff),
                                               diffPlacement: folderDiffPlacement)
           target.argumentDocumentOpener = controller?.argumentDocumentOpener
           target.markOpensForDiff()
@@ -2290,7 +2296,7 @@ extension EVDocumentWindowController: EVDiffModeHost {
           controller.adoptDiffPlacement()
         } else {
           if replacement != nil { controller?.opensForDiff = wasDiffWindow }
-          target = EVDocumentWindowController(document: opened, editorSurface: opened.editorBackend.makeEditorSurface(),
+          target = EVDocumentWindowController(document: opened, editorSurface: opened.editorBackend.makeEditorSurface(display: .diff),
                                               diffPlacement: folderDiffPlacement)
           target.argumentDocumentOpener = controller?.argumentDocumentOpener
           target.markOpensForDiff()
@@ -2305,7 +2311,7 @@ extension EVDocumentWindowController: EVDiffModeHost {
   }
 
   static func openFileDiff(_ document: EVDocument, initialLine: UInt64?) -> EVDocumentWindowController {
-    let target = EVDocumentWindowController(document: document, editorSurface: document.editorBackend.makeEditorSurface(),
+    let target = EVDocumentWindowController(document: document, editorSurface: document.editorBackend.makeEditorSurface(display: .diff),
                                             diffPlacement: folderDiffPlacement)
     target.markOpensForDiff()
     document.addWindowController(target)

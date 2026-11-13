@@ -369,3 +369,62 @@ fn a_diff_view_follows_typing_while_another_view_shows_preview() {
     assert_ne!(session.line_totals(), (2, 0));
 }
 
+
+mod markdown_theme {
+    use super::*;
+    use crate::document::{FontSize, ProjectionKind};
+
+    const THEMED: &[u8] = br#"{"version":1,"block_styles":[{"id":"Paragraph","name":"Base Paragraph","role":"Paragraph","character":{"size":27},"block":{}}]}"#;
+
+    fn base_size(core: &Editor, view: ViewId) -> Option<FontSize> {
+        let document = core.view_document(view);
+        let sheet = document.projection().style_sheet();
+        sheet.block_style(&sheet.base_paragraph).and_then(|style| style.character.size.clone())
+    }
+
+    fn add(core: &mut Editor, presentation: ViewPresentation) -> ViewId {
+        core.try_add_view_with_presentation(MockTextMeasurementProvider::new(), ViewLayout::new(300., 120.),
+            LayoutExecutionContext::WorkerPool, presentation).unwrap()
+    }
+
+    #[test]
+    fn a_theme_loaded_while_the_buffer_shows_its_source_styles_a_later_preview_view() {
+        let mut document = Document::from_bytes(b"# Title\n\nBody\n".to_vec(), Encoding::Utf8, Format::Code).unwrap();
+        document.set_markdown_buffer(true);
+        let mut core = Editor::new(document);
+        core.focus_buffer();
+        core.initialize_style_defaults(THEMED).unwrap();
+        assert!(!core.document.has_lineage(ProjectionKind::Preview));
+        let source = add(&mut core, ViewPresentation::literal());
+        assert_eq!(core.view_format(source).unwrap(), Format::Code);
+        let preview = add(&mut core, ViewPresentation::preview());
+        assert_eq!(base_size(&core, preview), Some(FontSize::Points(27.)));
+    }
+
+    #[test]
+    fn a_rebuilt_preview_lineage_keeps_the_theme_loaded_at_open() {
+        let document = Document::from_bytes(b"# Title\n\nBody\n".to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let mut core = Editor::new(document);
+        core.initialize_style_defaults(THEMED).unwrap();
+        let view = add(&mut core, ViewPresentation::preview());
+        assert_eq!(base_size(&core, view), Some(FontSize::Points(27.)));
+        core.set_view_presentation(view, ViewPresentation::literal()).unwrap();
+        assert!(!core.document.has_lineage(ProjectionKind::Preview), "no view shows Preview");
+        core.set_view_presentation(view, ViewPresentation::preview()).unwrap();
+        assert_eq!(base_size(&core, view), Some(FontSize::Points(27.)));
+    }
+
+    #[test]
+    fn a_theme_replaced_while_a_source_view_is_focused_restyles_the_preview_view() {
+        let document = Document::from_bytes(b"# Title\n\nBody\n".to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let mut core = Editor::new(document);
+        let preview = add(&mut core, ViewPresentation::preview());
+        let source = add(&mut core, ViewPresentation::literal());
+        core.document.set_default_presentation(ViewPresentation::literal());
+        core.focus_view(source);
+        core.focus_buffer();
+        core.replace_style_defaults(THEMED).unwrap();
+        assert_eq!(base_size(&core, preview), Some(FontSize::Points(27.)));
+        assert!(core.document.style_defaults_installed(THEMED));
+    }
+}

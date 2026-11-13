@@ -181,8 +181,7 @@ window has its own base and file list.
   document in a new diff window, using the diff window frame. The
   originating window and its views are unchanged.
 - **Off**, in a diff window, shows the current file in an ordinary window
-  (bringing forward one that already shows it, otherwise opening one as
-  **Open in New Editor Window** does) and closes the diff window. The buffer
+  (as **Open in New Editor Window** does) and closes the diff window. The buffer
   stays open throughout, so unsaved edits carry over without a save review.
 
 Turning diff mode on selects the Unstaged (`git diff`) base when the document
@@ -276,8 +275,10 @@ shows each file's full path relative to the current working directory, including
 both paths of a rename. Files on another Windows drive or share use an absolute
 path.
 
-**Open in New Editor Window** at the right edge of the toolbar opens another
-view of the live buffer, including its unsaved edits. The diff stays open.
+**Open in New Editor Window** at the right edge of the toolbar brings forward
+an ordinary window that already shows the file, focusing its pane, or else
+opens another view of the live buffer, including its unsaved edits. The diff
+stays open.
 
 For the git bases the list holds tracked files that differ from the base,
 including files whose only differences are unsaved edits in an open buffer.

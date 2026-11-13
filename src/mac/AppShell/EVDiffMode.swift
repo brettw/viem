@@ -564,7 +564,9 @@ final class EVDiffToolbar: NSObject {
                 action: next ? #selector(nextChangeClicked(_:)) : #selector(previousChangeClicked(_:)))
       button.image = Self.changeIcon(next: next)
     }
-    filePopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
+    // The file popup is the one control that gives way when the toolbar is
+    // narrow; it never grows beyond its preferred width.
+    filePopup.setContentHuggingPriority(NSLayoutConstraint.Priority(730), for: .horizontal)
     filePopup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     filePopup.cell?.lineBreakMode = .byTruncatingHead
     configure(openWindowButton, symbol: "doc", label: "Open in New Editor Window", action: #selector(openWindowClicked(_:)))
@@ -579,8 +581,14 @@ final class EVDiffToolbar: NSObject {
     addedLines.textColor = .systemGreen
     removedLines.textColor = .systemRed
     let preferredWidth = filePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 220)
-    preferredWidth.priority = .defaultLow
+    // Above the popup's hugging, below the other controls' compression.
+    preferredWidth.priority = NSLayoutConstraint.Priority(740)
     preferredWidth.isActive = true
+    for label in [fileCount, addedLines, removedLines] {
+      label.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+    }
+    fileCountGroup.setHuggingPriority(.defaultHigh, for: .horizontal)
+    stack.setHuggingPriority(.defaultHigh, for: .horizontal)
     for view in [basePopup, refreshButton, fileCountGroup, addedLines, removedLines, previousButton, nextButton, filePopup, alignButton,
                  collapseButton, previousChangeButton, nextChangeButton] as [NSView] {
       stack.addArrangedSubview(view)
@@ -596,7 +604,9 @@ final class EVDiffToolbar: NSObject {
       stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
       stack.topAnchor.constraint(equalTo: container.topAnchor),
       stack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-      stack.trailingAnchor.constraint(equalTo: openWindowButton.leadingAnchor),
+      // The stack is as wide as its controls: the toolbar's only flexible
+      // space is before the Open button at the right edge.
+      stack.trailingAnchor.constraint(lessThanOrEqualTo: openWindowButton.leadingAnchor),
       openWindowButton.centerYAnchor.constraint(equalTo: stack.centerYAnchor),
       openWindowButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -10),
     ])
@@ -730,7 +740,9 @@ final class EVDiffModeController: NSObject {
     toolbar.toggleCollapse = { [weak self] in self?.toggleCollapse() }
     toolbar.previousChange = { [weak self] in self?.navigateChange(next: false) }
     toolbar.nextChange = { [weak self] in self?.navigateChange(next: true) }
-    toolbar.openWindow = { [weak self] in self?.activeDocument?.showAdditionalWindow() }
+    toolbar.openWindow = { [weak self] in
+      if let document = self?.activeDocument { EVDocumentWindowController.showOrdinaryWindow(of: document) }
+    }
   }
 
   private var activeDocument: EVDocument? { host?.diffActivePane?.document }

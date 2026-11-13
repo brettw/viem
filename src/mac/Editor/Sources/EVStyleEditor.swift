@@ -66,14 +66,14 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
     func show(document: EVEditorSurfaceController, sender: Any?) {
         followsActiveDocuments = true
         let styleKey = document.currentStyleEditorKey()
-        if document.backend.sourceFormat == .code {
+        if document.viewFormat == .code {
             showCode(configuration: document.backend.configuration, preferredStyle: styleKey,
                      following: document, sender: sender)
             return
         }
         do {
             let session = try proseSession(configuration: document.backend.configuration,
-                format: document.backend.sourceFormat)
+                format: document.viewFormat)
             themeSession = session
             stopFollowingSelection()
             observeTargetWindow(of: document)
@@ -226,7 +226,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
             MainActor.assumeIsolated {
                 guard let self, let document else { return }
                 let family = self.themeSession?.sourceFormat.defaultStyleName ?? "code"
-                if family != document.backend.sourceFormat.defaultStyleName {
+                if family != document.viewFormat.defaultStyleName {
                     self.retargetFollowingFamily(of: document)
                 }
             }
@@ -236,7 +236,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
         ) { [weak self, weak document] _ in
             guard let self, let document else { return }
             MainActor.assumeIsolated {
-                let format = document.backend.sourceFormat
+                let format = document.viewFormat
                 let currentFamily = self.themeSession?.sourceFormat.defaultStyleName ?? "code"
                 if currentFamily != format.defaultStyleName {
                     self.retargetFollowingFamily(of: document)
@@ -251,7 +251,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
         ) { [weak self, weak document] _ in
             MainActor.assumeIsolated {
                 guard let self, let document, self.followedDocument === document,
-                      self.followsCaretStyle, document.backend.sourceFormat == .code,
+                      self.followsCaretStyle, document.viewFormat == .code,
                       self.selectionFollowTimer == nil else { return }
                 // A mode switch or caret move can precede syntax publication.
                 // Finish that lookup when styles arrive, unless the user has
@@ -301,19 +301,19 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
         do {
             let configuration = document.backend.configuration
             let session: any EVStyleSettingsSession
-            if document.backend.sourceFormat == .code {
+            if document.viewFormat == .code {
                 let code = try codeSession(configuration: configuration)
                 themeSession = nil
                 session = code
             } else {
-                let theme = try proseSession(configuration: configuration, format: document.backend.sourceFormat)
+                let theme = try proseSession(configuration: configuration, format: document.viewFormat)
                 themeSession = theme
                 session = theme
             }
             (controller?.window as? EVStyleEditorPanel)?.settingsUndoManager = session.undoManager
             contentController?.retarget(settingsSession: session)
             contentController?.followCaretStyle(document.currentStyleEditorKey())
-            followSelection(of: document, globalCode: document.backend.sourceFormat == .code)
+            followSelection(of: document, globalCode: document.viewFormat == .code)
         } catch { NSApplication.shared.presentError(error) }
     }
 
@@ -346,7 +346,7 @@ final class EVStyleEditorCoordinator: NSObject, NSWindowDelegate {
                 guard let self else { return }
                 self.selectionFollowTimer = nil
                 guard let document, self.followedDocument === document,
-                      (document.backend.sourceFormat == .code) == globalCode else { return }
+                      (document.viewFormat == .code) == globalCode else { return }
                 self.caretFollowQueryCount += 1
                 self.contentController?.followCaretStyle(document.currentStyleEditorKey())
             }
@@ -1356,7 +1356,7 @@ final class EVStyleEditorViewController: NSViewController {
     }
 
     private func configureDocumentPopup() {
-        let format = settingsSession?.sourceFormat ?? document?.backend.sourceFormat
+        let format = settingsSession?.sourceFormat ?? document?.viewFormat
         documentPopup.selectItem(at: documentFormats.firstIndex {
             $0.defaultStyleName == format?.defaultStyleName
         } ?? 0)
@@ -1403,7 +1403,7 @@ final class EVStyleEditorViewController: NSViewController {
         guard let key = (sender.selectedItem?.representedObject as? EVStyleKeyBox)?.key else { return }
         let parentName = sender.titleOfSelectedItem ?? key.id.rawValue
         let childName = selectedDefinition?.name ?? selectedStyleKey.id.rawValue
-        let variant = (settingsSession?.sourceFormat ?? document?.backend.sourceFormat ?? .plainText).styleVariantTitle
+        let variant = (settingsSession?.sourceFormat ?? document?.viewFormat ?? .plainText).styleVariantTitle
         if !commit(key == .defaultParagraph ? .clearParent : .setParent(key.id)), lastStyleFailureWasCycle {
             presentInheritanceCycle(child: "\(variant): \(childName)", parent: "\(variant): \(parentName)")
         }

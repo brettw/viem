@@ -953,35 +953,6 @@ impl Document {
 
     /// Install immutable user defaults before the first view/edit. Source bytes,
     /// projection identity, savepoint, and undo depth remain unchanged.
-    pub fn initialize_style_defaults(&mut self, json: &[u8]) -> Result<Vec<String>, StyleDefaultsError> {
-        if self.revision().0 != 0 || self.history_status().node_count != 1 {
-            return Err(StyleDefaultsError::NotPristine);
-        }
-        let (mut sheet, diagnostics) = self.projection().style_sheet().with_default_json(json)?;
-        let generation = sheet
-            .revision
-            .0
-            .checked_add(1)
-            .ok_or_else(|| StyleDefaultsError::Json("style generation exhausted".into()))?;
-        sheet.set_configuration_revision(StyleSheetRevision(generation));
-        let mut state = {
-            self.state().clone()
-        };
-        let assignment = state.projection.document_style().clone();
-        state
-            .projection
-            .install_configuration_styles(state.revision, sheet, assignment);
-        let state = std::sync::Arc::new(state);
-        self.history.initialize_projection(lineage::HistoryState::recording(&state));
-        self.lineages = lineage::Lineages::single(lineage::LiveLineage::new(state));
-        self.configuration = None;
-        self.refresh_code_base();
-        // Reserve the consumed style generation so the next source/model
-        // transaction still advances both style and projection identities.
-        self.next_revision = self.next_revision.max(generation);
-        Ok(diagnostics)
-    }
-
     pub fn export_style_defaults(&self) -> Result<Vec<u8>, StyleDefaultsError> {
         self.projection()
             .style_sheet()

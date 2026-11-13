@@ -161,6 +161,11 @@ final class EVFolderDiffTests: XCTestCase {
         XCTAssertTrue(regular.activeDocument === document)
         XCTAssertFalse(regular.diffMode?.isEnabled ?? false)
         XCTAssertTrue(mode.isEnabled)
+        let windowCount = document.windowControllers.count
+        mode.toolbar.openWindowButton.performClick(nil)
+        XCTAssertEqual(document.windowControllers.count, windowCount,
+                       "a window that already shows the file is brought forward, not duplicated")
+        XCTAssertTrue(mode.isEnabled)
     }
 
     func testDiffLaunchUsesCallerDirectoryAndOpensEachDirectorySeparately() throws {
