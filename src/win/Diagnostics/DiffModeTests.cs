@@ -335,9 +335,20 @@ internal sealed partial class EditorWindow
                 var peer = new MenuBarItemAutomationPeer(menu);
                 await MenuTestHelpers.Transition(true, () => { peer.Expand(); return Task.CompletedTask; }, mode);
                 mode.Focus(FocusState.Programmatic);
-                await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
-                await WaitFor(() => App.Instance.Windows.Any(w => w != ordinary && w.comparison != null));
+                bool shownAlone = false;
+                var revealTimeout = EditorWindow.DiffRevealTimeout;
+                EditorWindow.DiffRevealTimeout = TimeSpan.FromSeconds(30);
+                try {
+                    await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
+                    await WaitFor(() => {
+                        foreach (var w in App.Instance.Windows)
+                            if (w.IsDiffWindow && !existingWindows.Contains(w) && w.comparison == null && w.root.Opacity != 0) shownAlone = true;
+                        return App.Instance.Windows.Any(w => w != ordinary && w.comparison != null);
+                    });
+                } finally { EditorWindow.DiffRevealTimeout = revealTimeout; }
                 window = App.Instance.Windows.Single(w => w != ordinary && w.comparison != null);
+                Check(!shownAlone && window.root.Opacity == 1 && !window.DiffContentHeldForTesting,
+                    "A new diff window shows its content only once both sides are installed");
                 var livePane = window.ActivePane!;
                 var liveView = livePane.View!;
                 Check(ordinary.View!.State.format == VIEM_FORMAT_MARKDOWN && ordinary.comparison == null

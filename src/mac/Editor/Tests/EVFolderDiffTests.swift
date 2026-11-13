@@ -203,6 +203,40 @@ final class EVFolderDiffTests: XCTestCase {
         XCTAssertFalse(busy.diffMode?.isEnabled ?? false)
     }
 
+    func testANewDiffWindowAppearsWithItsBaseAlreadyInPlace() throws {
+        let root = try repository()
+        let timeout = EVDocumentWindowController.diffRevealTimeout
+        EVDocumentWindowController.diffRevealTimeout = 60
+        defer { EVDocumentWindowController.diffRevealTimeout = timeout }
+        let busy = try window(text: "keep me\n")
+        var hadBase: Bool?
+        let shown = expectation(description: "the diff window appears")
+        var target: EVDocumentWindowController?
+        let (opened, _) = beginDiff(root.appendingPathComponent("sub"), from: busy)
+        EVDocumentWindowController.folderDiffDidOpen = { controller in
+            target = controller
+            self.windows.append(controller)
+            let mode = controller.diffMode
+            if let reveal = mode?.reveal {
+                XCTAssertFalse(controller.window?.isVisible ?? true, "the window waits for its base")
+                mode?.reveal = {
+                    hadBase = controller.documentContentController.diffBaseSurface != nil
+                    reveal()
+                    shown.fulfill()
+                }
+            } else {
+                hadBase = controller.documentContentController.diffBaseSurface != nil
+                shown.fulfill()
+            }
+            opened.fulfill()
+        }
+        wait(for: [opened, shown], timeout: 20)
+        let controller = try XCTUnwrap(target)
+        XCTAssertFalse(controller === busy)
+        XCTAssertEqual(hadBase, true, "both sides appear in the window's first frame")
+        XCTAssertTrue(controller.window?.isVisible ?? false)
+    }
+
     func testANewDiffWindowStartsFromAndRecordsTheDiffFrame() throws {
         let root = try repository()
         let remembered = NSRect(x: 120, y: 140, width: 1000, height: 560)
@@ -213,8 +247,12 @@ final class EVFolderDiffTests: XCTestCase {
         let busy = try window(text: "keep me\n")
         let target = try XCTUnwrap(diff(root, from: busy))
         let window = try XCTUnwrap(target.window)
-        XCTAssertEqual(window.frame.height, remembered.height, accuracy: 1)
+        XCTAssertEqual(window.frame.height, remembered.height, accuracy: 1, "the hidden window already has its diff frame")
         XCTAssertGreaterThanOrEqual(window.frame.width, remembered.width - 1)
+        let deadline = Date(timeIntervalSinceNow: 20)
+        while !window.isVisible, Date() < deadline { RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.02)) }
+        XCTAssertTrue(window.isVisible)
+        XCTAssertEqual(window.frame.height, remembered.height, accuracy: 1)
         saved.removeAll()
         window.setFrame(NSRect(x: 130, y: 150, width: 1100, height: 600), display: false)
         XCTAssertEqual(saved.last?.height, 600, "a diff window's resize is a diff frame")

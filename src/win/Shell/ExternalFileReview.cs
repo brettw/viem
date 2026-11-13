@@ -301,6 +301,7 @@ internal sealed partial class EditorWindow
     private async Task DeferExternalFileReviews(Func<Task> action)
     {
         openDialogs++;
+        RevealDiffContent();
         try { await action(); }
         finally { openDialogs--; RequestExternalFileChecks(); }
     }

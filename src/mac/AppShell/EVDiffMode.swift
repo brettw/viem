@@ -738,6 +738,16 @@ final class EVDiffModeController: NSObject {
   private(set) var lastMessage: String?
   /// Tests await this after a change to know the async work is installed.
   var didPresent: (() -> Void)?
+  /// Shows a new diff window once its comparison is complete, so it never
+  /// shows a pane without its base. It also runs when diff mode ends or needs
+  /// the window to ask or report. It runs once.
+  var reveal: (() -> Void)?
+
+  private func revealWhenReady(regardless: Bool = false) {
+    guard let reveal, regardless || (!pairs.isEmpty && pairs.allSatisfy { $0.baseBackend != nil }) else { return }
+    self.reveal = nil
+    reveal()
+  }
 
   init(host: any EVDiffModeHost, configuration: EVConfigurationStore) {
     self.host = host
@@ -843,6 +853,7 @@ final class EVDiffModeController: NSObject {
 
   func disable() {
     guard isEnabled else { return }
+    revealWhenReady(regardless: true)
     isEnabled = false
     commitPickerTask?.cancel()
     chosenFileLoad?.cancel()
@@ -1033,9 +1044,14 @@ final class EVDiffModeController: NSObject {
     } catch {
       lastMessage = error.localizedDescription
       surface.showDocumentMessage(error.localizedDescription)
+      revealWhenReady(regardless: true)
     }
     if pane === host?.diffActivePane { refreshToolbar() }
     prefetchNeighbours()
+    // Lay out the base before the window first draws, so both sides arrive
+    // in one frame.
+    if reveal != nil { host?.diffWindow?.contentView?.layoutSubtreeIfNeeded() }
+    revealWhenReady()
     didPresent?()
   }
 
@@ -1197,6 +1213,7 @@ final class EVDiffModeController: NSObject {
     }
     func cancel(_ error: Error? = nil) {
       guard isEnabled, generation == current else { return }
+      revealWhenReady(regardless: true)
       if isChoosingBase { disable() } else { refreshToolbar() }
       if let error { host?.diffActivePane?.editorSurface.showDocumentMessage(error.localizedDescription) }
     }
@@ -1404,6 +1421,7 @@ final class EVDiffModeController: NSObject {
       return
     }
     let reviewed = document.editorBackend.persistenceState
+    revealWhenReady(regardless: true) // The review is a sheet on this window.
     pendingReview = { approved in
       let state = document.editorBackend.persistenceState
       let saved = !state.isDirty && !document.isDocumentEdited

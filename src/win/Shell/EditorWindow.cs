@@ -59,6 +59,7 @@ internal sealed partial class EditorWindow : Window
         Diagnostics.StartupPerformance.Mark("window.resourcesReady");
         Title = "Viem";
         using (Diagnostics.StartupPerformance.Measure("window.attachContent")) Content = root;
+        if (diffWindow) HoldDiffContent();
         root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
         root.RowDefinitions.Insert(3, new() { Height = GridLength.Auto });
         // The diff base and its splitter, then the panes; the first two are
@@ -747,6 +748,7 @@ internal sealed partial class EditorWindow : Window
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto, MaxHeight = 450
         }, PrimaryButtonText = primary, CloseButtonText = close, SecondaryButtonText = secondary, DefaultButton = defaultButton };
         openDialogs++;
+        RevealDiffContent();
         try { return await dialog.ShowAsync(); }
         finally { openDialogs--; RequestExternalFileChecks(); }
     }

@@ -181,7 +181,11 @@ window has its own base and file list.
 
 - **On**, from an ordinary window, opens the comparison of the active
   document in a new diff window, using the diff window frame. The
-  originating window and its views are unchanged.
+  originating window and its views are unchanged. A new diff window appears
+  only once its base is installed, so both sides arrive together; macOS keeps
+  the window hidden until then, and Windows, which builds a pane's view only
+  in a shown window, keeps its content transparent. A slow base still shows
+  the window after 1.5 seconds, and a review dialog shows it at once.
 - **Off**, in a diff window, shows the current file in an ordinary window
   (as **Open in New Editor Window** does) and closes the diff window. The buffer
   stays open throughout, so unsaved edits carry over without a save review.

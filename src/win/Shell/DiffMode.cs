@@ -1,3 +1,4 @@
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -65,6 +66,35 @@ internal sealed partial class EditorWindow
             Item("Next File", "N", () => MoveDiffFile(1), ":n", enabled: () => diffEnabled && diffFiles.Length > 0));
     }
 
+    // A new diff window keeps its content transparent until its comparison
+    // is installed, so the panes and their base appear together. WinUI creates
+    // a pane's view only once its window is active, so the window cannot stay
+    // hidden as on macOS. A slow base still shows after the timeout, and the
+    // content shows at once when diff mode ends or a dialog needs it.
+    internal static TimeSpan DiffRevealTimeout = TimeSpan.FromSeconds(1.5);
+    private DispatcherQueueTimer? diffRevealTimer;
+#if DEBUG
+    internal bool DiffContentHeldForTesting => diffRevealTimer != null;
+#endif
+
+    private void HoldDiffContent()
+    {
+        root.Opacity = 0;
+        diffRevealTimer = DispatcherQueue.CreateTimer();
+        diffRevealTimer.Interval = DiffRevealTimeout;
+        diffRevealTimer.IsRepeating = false;
+        diffRevealTimer.Tick += (_, _) => RevealDiffContent();
+        diffRevealTimer.Start();
+    }
+
+    private void RevealDiffContent()
+    {
+        if (diffRevealTimer is not { } timer) return;
+        diffRevealTimer = null;
+        timer.Stop();
+        root.Opacity = 1;
+    }
+
     private void BeginDiff()
     {
         if (diffToolbar == null) {
@@ -127,6 +157,7 @@ internal sealed partial class EditorWindow
 
     private void EndDiff()
     {
+        RevealDiffContent();
         diffEnabled = false;
         ++diffGeneration;
         branchRequest?.Cancel();
@@ -494,6 +525,7 @@ internal sealed partial class EditorWindow
         UpdateDiffBaseStatus();
         PrefetchDiffNeighbours();
         live.FocusEditor();
+        RevealDiffContent();
     }
 
     // All native views, diff geometry and number settings are ready before either
@@ -544,6 +576,7 @@ internal sealed partial class EditorWindow
         if (firstBase) left.Refresh(); else left.FinishReplacement();
         live.FinishReplacement();
         left.Opacity = 1;
+        RevealDiffContent();
         if (!firstBase) oldBase.Dispose();
         ReleaseDetachedDocument(oldLive);
         TrackExternalFile(document);

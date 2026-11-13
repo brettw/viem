@@ -2140,6 +2140,30 @@ extension EVDocumentWindowController: EVDiffModeHost {
     return controller
   }
 
+  /// How long a new diff window waits for its base before appearing anyway.
+  static var diffRevealTimeout: TimeInterval = 1.5
+
+  /// Show this new diff window once its comparison is ready: its panes and
+  /// their bases arrive together instead of a lone pane appearing first. A
+  /// slow base still shows the window after `diffRevealTimeout`.
+  private func showWhenDiffReady(enabling enable: (EVDiffModeController) -> Void) {
+    var shown = false
+    let show = { [weak self] in
+      guard !shown, let self, !self.isClosed else { return }
+      shown = true
+      self.diffMode?.reveal = nil
+      self.showWindow(nil)
+    }
+    // Lay out at the window's final size while it is hidden.
+    if let window, !hasPresentedInitialWindow { prepareInitialFrame(of: window) }
+    diffController.reveal = show
+    enable(diffController)
+    if diffMode?.isEnabled != true { show() }
+    DispatchQueue.main.asyncAfter(deadline: .now() + Self.diffRevealTimeout) {
+      MainActor.assumeIsolated { show() }
+    }
+  }
+
   fileprivate func editorMenuCommandDidPerform(
     _ command: EVMenuCommand, on surface: any EVEditorSurface, in pane: EVDocumentContentViewController
   ) {
@@ -2167,8 +2191,7 @@ extension EVDocumentWindowController: EVDiffModeHost {
     target.markOpensForDiff()
     target.argumentDocumentOpener = argumentDocumentOpener
     document.addWindowController(target)
-    target.showWindow(nil)
-    target.diffController.enable()
+    target.showWhenDiffReady { $0.enable() }
   }
 
   /// Show the active document in an ordinary window, reusing one that already
@@ -2267,6 +2290,7 @@ extension EVDocumentWindowController: EVDiffModeHost {
           target = controller
           controller.markOpensForDiff()
           controller.adoptDiffPlacement()
+          target.diffController.enable(folder: folder, files: [], hasRepository: hasRepository)
         } else {
           guard let empty = folderDiffUntitledDocument?() ?? makeUntitledDiffDocument() else {
             reportDiffFolder("There are no changes in \(folder.path).", in: controller)
@@ -2278,9 +2302,8 @@ extension EVDocumentWindowController: EVDiffModeHost {
           target.argumentDocumentOpener = controller?.argumentDocumentOpener
           target.markOpensForDiff()
           empty.addWindowController(target)
-          target.showWindow(nil)
+          target.showWhenDiffReady { $0.enable(folder: folder, files: [], hasRepository: hasRepository) }
         }
-        target.diffController.enable(folder: folder, files: [], hasRepository: hasRepository)
         folderDiffDidOpen?(target)
         completion?(target)
         return
@@ -2300,6 +2323,7 @@ extension EVDocumentWindowController: EVDiffModeHost {
         if let controller, let replacement, replacement.install(opened) {
           target = controller
           controller.adoptDiffPlacement()
+          target.diffController.enable(folder: folder, files: files)
         } else {
           if replacement != nil { controller?.opensForDiff = wasDiffWindow }
           target = EVDocumentWindowController(document: opened, editorSurface: opened.editorBackend.makeEditorSurface(display: .diff),
@@ -2307,9 +2331,8 @@ extension EVDocumentWindowController: EVDiffModeHost {
           target.argumentDocumentOpener = controller?.argumentDocumentOpener
           target.markOpensForDiff()
           opened.addWindowController(target)
-          target.showWindow(nil)
+          target.showWhenDiffReady { $0.enable(folder: folder, files: files) }
         }
-        target.diffController.enable(folder: folder, files: files)
         folderDiffDidOpen?(target)
         completion?(target)
       }
@@ -2321,8 +2344,7 @@ extension EVDocumentWindowController: EVDiffModeHost {
                                             diffPlacement: folderDiffPlacement)
     target.markOpensForDiff()
     document.addWindowController(target)
-    target.showWindow(nil)
-    target.diffController.enable(singleFile: true, directory: directory)
+    target.showWhenDiffReady { $0.enable(singleFile: true, directory: directory) }
     if let initialLine { target.editorSurface.goToLine(initialLine) }
     return target
   }
