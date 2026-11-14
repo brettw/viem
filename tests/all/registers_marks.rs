@@ -324,3 +324,76 @@ fn global_deletion_rebases_the_new_previous_jump_mark() {
     }
     assert!(commands.cursor() <= document.text().len());
 }
+
+fn messages(outcome: &CoreOutcome) -> Vec<String> {
+    use viem_core::command::ex_execute::{ExFrontendRequest, ExInfoRequest};
+    outcome.command.as_ref().and_then(|command| command.ex_outcome.as_ref())
+        .map(|ex| ex.frontend_requests.iter().filter_map(|request| match request {
+            ExFrontendRequest::Info(ExInfoRequest::Message(text)) => Some(text.clone()),
+            _ => None,
+        }).collect())
+        .unwrap_or_default()
+}
+
+fn register(core: &Editor, view: ViewId, name: char) -> (String, viem_core::command::RegisterKind, Vec<usize>) {
+    let value = core.command_state(view).unwrap().register(name).unwrap();
+    (value.text.clone(), value.kind, value.hard_break_offsets().to_vec())
+}
+
+#[test]
+fn setreg_types_and_inference_match_vim() {
+    use viem_core::command::RegisterKind::{Blockwise, Characterwise, Linewise};
+    let (mut core, view) = editor("one");
+    for (call, text, kind, breaks) in [
+        ("setreg('a', 'qq')", "qq", Characterwise, vec![]),
+        ("setreg('a', \"qq\\n\")", "qq\n", Linewise, vec![2]),
+        ("setreg('a', \"x\\ny\")", "x\ny", Characterwise, vec![1]),
+        ("setreg('a', 'qq', 'l')", "qq\n", Linewise, vec![2]),
+        ("setreg('a', 'qq', 'V')", "qq\n", Linewise, vec![2]),
+        ("setreg('a', \"qq\\n\", 'c')", "qq\n", Characterwise, vec![2]),
+        ("setreg('a', \"qq\\n\", 'v')", "qq\n", Characterwise, vec![2]),
+        ("setreg('a', \"x\\nyy\", 'b')", "x\nyy", Blockwise, vec![]),
+        ("setreg('a', \"x\\nyy\", nr2char(22) .. '4')", "x\nyy", Blockwise, vec![]),
+        ("setreg('a', ['x', 'y'])", "x\ny\n", Linewise, vec![1, 3]),
+        ("setreg('a', ['x', 'y'], 'c')", "x\ny", Characterwise, vec![1]),
+        ("setreg('a', ['x', 'yy'], 'b')", "x\nyy", Blockwise, vec![]),
+        // A line feed inside a list item is that line's literal content.
+        ("setreg('a', [\"x\\ny\"])", "x\ny\n", Linewise, vec![3]),
+    ] {
+        ex(&mut core, view, &format!("call {call}"));
+        assert_eq!(register(&core, view, 'a'), (text.to_owned(), kind, breaks), "{call}");
+    }
+    ex(&mut core, view, "call setreg('a', 'qq', 'l')");
+    ex(&mut core, view, "call setreg('a', 'rr', 'a')");
+    assert_eq!(register(&core, view, 'a'), ("qq\nrr\n".to_owned(), Linewise, vec![2, 5]));
+    for (call, expected) in [
+        ("setreg('a', 'qq')", "v"),
+        ("setreg('a', 'qq', 'l')", "V"),
+        ("setreg('a', \"x\\nyyy\", 'b')", "\u{16}3"),
+    ] {
+        ex(&mut core, view, &format!("call {call}"));
+        assert_eq!(messages(&ex(&mut core, view, "echo getregtype('a')")), [expected], "{call}");
+    }
+    ex(&mut core, view, "call setreg('a', [\"x\\ny\", 'z'])");
+    assert_eq!(messages(&ex(&mut core, view, "echo len(getreg('a', 1, 1)) getreg('a', 1, 1)[0] ==# \"x\\ny\"")), ["2 1"]);
+}
+
+#[test]
+fn script_linewise_register_puts_whole_lines() {
+    for (format, source, keys_text, expected, expected_source) in [
+        (Format::Markdown, "p\n\nz", "\"ap", "p\nqq\nz", "p\n\nqq\n\nz"),
+        (Format::Markdown, "p\n\nz", "\"aP", "qq\np\nz", "qq\n\np\n\nz"),
+        (Format::PlainText, "p\nz", "\"ap", "p\nqq\nz", "p\nqq\nz"),
+        (Format::PlainText, "p\nz", "\"aP", "qq\np\nz", "qq\np\nz"),
+    ] {
+        let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
+        let mut core = Core::new(document);
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 500.);
+        ex(&mut core, view, "let @a = \"qq\\n\"");
+        keys(&mut core, view, keys_text);
+        assert_eq!(core.document().text(), expected, "{format:?} {keys_text}");
+        assert_eq!(core.document().source_bytes(), expected_source.as_bytes(), "{format:?} {keys_text}");
+        keys(&mut core, view, "u");
+        assert_eq!(core.document().source_bytes(), source.as_bytes(), "{format:?} {keys_text}: undo");
+    }
+}

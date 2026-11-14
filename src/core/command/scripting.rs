@@ -243,6 +243,19 @@ impl CommandInterpreter {
     }
 
     pub(crate) fn set_script_register(&mut self, name: char, value: &Value, append: bool) -> Result<(), VimError> {
+        self.set_script_register_with_type(name, value, append, None)
+    }
+
+    /// `:let @r` and `setreg()`. `kind` is `setreg()`'s explicit type; without
+    /// one, a List is linewise and a String is linewise only when it ends in
+    /// a line feed, as in Vim.
+    fn set_script_register_with_type(
+        &mut self,
+        name: char,
+        value: &Value,
+        append: bool,
+        kind: Option<RegisterKind>,
+    ) -> Result<(), VimError> {
         if name == '/' {
             self.last_search = Some((SearchDirection::Forward, value.to_text()?));
             self.search_highlight_suppressed = false;
@@ -252,19 +265,8 @@ impl CommandInterpreter {
             self.last_expression = Some(value.to_text()?);
             return Ok(());
         }
-        let (text, kind) = match value {
-            Value::List(list) => {
-                let lines: Vec<String> = list.snapshot().iter().map(|item| item.to_text()).collect::<Result<_, _>>()?;
-                (lines.join("\n") + "\n", RegisterKind::Linewise)
-            }
-            other => {
-                let text = other.to_text()?;
-                let kind = if text.ends_with('\n') { RegisterKind::Linewise } else { RegisterKind::Characterwise };
-                (text, kind)
-            }
-        };
+        let value = script_register_value(value, kind)?;
         let name = if append { name.to_ascii_uppercase() } else { name };
-        let value = RegisterValue::try_new(&text, kind, Vec::new()).map_err(|error| VimError::plain(format!("{error:?}")))?;
         self.write_script_register(name, value).map_err(|error| VimError::plain(format!("{error:?}")))
     }
 
@@ -474,6 +476,16 @@ impl CommandInterpreter {
                     return Ok(Value::from(self.last_expression.clone().unwrap_or_default()));
                 }
                 let as_list = args.get(2).map(|value| value.to_bool()).transpose()?.unwrap_or(false);
+                if as_list && !matches!(register, ':' | '/' | '%') {
+                    // Lines end only at semantic breaks (or block rows); a
+                    // literal line feed stays inside its line, as setreg()
+                    // reads it from a List item.
+                    return Ok(match self.read_register_value_for_put(document, register) {
+                        Ok(Some(value)) => Value::list(register_lines(&value).into_iter().map(Value::from).collect()),
+                        Ok(None) => Value::list(Vec::new()),
+                        Err(error) => return Err(VimError::plain(format!("{error:?}")).into()),
+                    });
+                }
                 let value = self.script_register(document, register)?;
                 if as_list {
                     let text = value.to_text()?;
@@ -487,20 +499,22 @@ impl CommandInterpreter {
             })(),
             "getregtype" => (|| {
                 let register = args.first().map(|value| value.to_text()).transpose()?.and_then(|text| text.chars().next()).unwrap_or('"');
-                Ok(Value::str(match self.read_register_value_for_put(document, register) {
+                Ok(Value::from(match self.read_register_value_for_put(document, register) {
                     Ok(Some(value)) => match value.kind {
-                        RegisterKind::Linewise => "V",
-                        RegisterKind::Blockwise => "\x16",
-                        RegisterKind::Characterwise => "v",
+                        RegisterKind::Linewise => "V".to_owned(),
+                        RegisterKind::Blockwise => format!("\x16{}",
+                            value.text.split('\n').map(|row| row.chars().count()).max().unwrap_or(0)),
+                        RegisterKind::Characterwise => "v".to_owned(),
                     },
-                    _ => "",
+                    _ => String::new(),
                 }))
             })(),
             "setreg" => (|| {
                 let register = args.first().map(|value| value.to_text()).transpose()?.and_then(|text| text.chars().next()).unwrap_or('"');
                 let value = args.get(1).cloned().unwrap_or_default();
-                let append = args.get(2).map(|value| value.to_text()).transpose()?.is_some_and(|options| options.contains('a'));
-                self.set_script_register(register, &value, append).map_err(Fail::Error)?;
+                let options = args.get(2).map(|value| value.to_text()).transpose()?.unwrap_or_default();
+                let (append, kind) = setreg_options(&options).map_err(Fail::Error)?;
+                self.set_script_register_with_type(register, &value, append, kind).map_err(Fail::Error)?;
                 Ok(Value::Number(0))
             })(),
             "hlexists" | "hlID" | "synID" | "synIDtrans" | "foldlevel" | "pumvisible" | "complete_check" | "getcmdwintype"
@@ -729,6 +743,94 @@ fn append_source_lines(document: &mut Document, after: usize, lines: &[String], 
         let at = physical.content_range.end;
         document.replace_physical_source(at..at, format!("{ending}{body}")).map(|_| ())
     }
+}
+
+/// `setreg()` options: `a` appends and `c`/`v`, `l`/`V` or `b`/CTRL-V (with
+/// an optional width, which block registers derive from their rows) choose the
+/// type. `u` is accepted; every write already updates the unnamed register.
+fn setreg_options(options: &str) -> Result<(bool, Option<RegisterKind>), VimError> {
+    let mut append = false;
+    let mut kind = None;
+    let mut characters = options.chars().peekable();
+    while let Some(option) = characters.next() {
+        match option {
+            'a' => append = true,
+            'u' => {}
+            'c' | 'v' => kind = Some(RegisterKind::Characterwise),
+            'l' | 'V' => kind = Some(RegisterKind::Linewise),
+            'b' | '\u{16}' => {
+                kind = Some(RegisterKind::Blockwise);
+                while characters.next_if(char::is_ascii_digit).is_some() {}
+            }
+            other => return Err(VimError::plain(format!("E475: Invalid argument: {other}"))),
+        }
+    }
+    Ok((append, kind))
+}
+
+/// Vim separates register lines with line feeds. In a String every line feed
+/// separates lines, so it is a semantic break; in a List each item is one
+/// line and a line feed inside an item is that line's literal content.
+fn script_register_value(value: &Value, kind: Option<RegisterKind>) -> Result<RegisterValue, VimError> {
+    let invalid = |error| VimError::plain(format!("{error:?}"));
+    match value {
+        Value::List(list) => {
+            let lines: Vec<String> = list.snapshot().iter().map(|item| item.to_text()).collect::<Result<_, _>>()?;
+            let kind = kind.unwrap_or(RegisterKind::Linewise);
+            if kind == RegisterKind::Blockwise {
+                if lines.iter().any(|line| line.contains('\n')) {
+                    return Err(VimError::plain("E475: Invalid argument: a block row cannot contain a line feed"));
+                }
+                return RegisterValue::try_new(lines.join("\n"), kind, Vec::new()).map_err(invalid);
+            }
+            let mut text = String::new();
+            let mut breaks = Vec::new();
+            for (index, line) in lines.iter().enumerate() {
+                if index > 0 {
+                    breaks.push(text.len());
+                    text.push('\n');
+                }
+                text.push_str(line);
+            }
+            if kind == RegisterKind::Linewise {
+                breaks.push(text.len());
+                text.push('\n');
+            }
+            RegisterValue::try_new(text, kind, breaks).map_err(invalid)
+        }
+        other => {
+            let mut text = other.to_text()?;
+            let kind = kind.unwrap_or(if text.ends_with('\n') { RegisterKind::Linewise } else { RegisterKind::Characterwise });
+            match kind {
+                RegisterKind::Blockwise => {
+                    if text.ends_with('\n') { text.pop(); }
+                    RegisterValue::try_new(text, kind, Vec::new()).map_err(invalid)
+                }
+                RegisterKind::Linewise => {
+                    if !text.ends_with('\n') { text.push('\n'); }
+                    Ok(RegisterValue::linewise(text))
+                }
+                RegisterKind::Characterwise => Ok(RegisterValue::characterwise(text)),
+            }
+        }
+    }
+}
+
+/// A register's lines for `getreg(r, 1, 1)`: split at semantic breaks, or at
+/// every row of a block, without a linewise value's final empty line.
+fn register_lines(value: &RegisterValue) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    for (offset, _) in value.text.match_indices('\n') {
+        if value.kind == RegisterKind::Blockwise || value.is_hard_break(offset) {
+            lines.push(value.text[start..offset].to_owned());
+            start = offset + 1;
+        }
+    }
+    if value.kind != RegisterKind::Linewise || start < value.text.len() {
+        lines.push(value.text[start..].to_owned());
+    }
+    lines
 }
 
 fn register_text(value: &RegisterValue) -> String {

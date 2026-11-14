@@ -30,6 +30,18 @@ results do not edit the document. Numbers become text; lists become lines.
 `:put =expression` and `:let @= = 'expression'` use the same evaluator.
 `getreg('=', 1)` returns the stored expression instead of evaluating it.
 
+## Script register values
+
+`:let @r` and `setreg()` follow Vim's register types. A List is linewise and a
+String is linewise only when it ends in a line feed; `setreg()`'s `c`/`v`,
+`l`/`V` and `b`/CTRL-V options choose a type explicitly, and `a` appends. Every
+line feed in a String separates lines, so it is a semantic hard break, as a
+yank's line ends are. In a List each item is one line, and a line feed inside an
+item is that line's literal content; `getreg(r, 1, 1)` returns the same items. A
+block row cannot contain a literal line feed. A block register has no stored
+width: `getregtype()` reports its widest row in characters, and a width given to
+`setreg()` is accepted and ignored.
+
 ## Register scope
 
 As in Vim, one application-wide bank holds the unnamed register `"`, the
