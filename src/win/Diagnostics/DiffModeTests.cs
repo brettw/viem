@@ -197,6 +197,13 @@ internal sealed partial class EditorWindow
             if (process.ExitCode != 0) throw new InvalidOperationException(error);
         }
         var existingWindows = App.Instance.Windows.ToHashSet();
+        var firstFrame = new EditorWindow(preferences, placement: placement, diffWindow: true);
+        try {
+            Check(firstFrame.diffEnabled && firstFrame.diffStarting && firstFrame.diffToolbar?.Visibility == Visibility.Visible
+                && firstFrame.diffSplitter != null && firstFrame.root.ColumnDefinitions[0].Width.IsStar
+                && !firstFrame.AppWindow.IsVisible,
+                "A new diff window has its toolbar and two-column layout before first activation");
+        } finally { firstFrame.closing = true; firstFrame.Close(); }
         try {
             string original = "# Heading\n\n" + string.Join("\n", Enumerable.Range(1, 110).Select(n => $"Line {n}")) + "\n";
             await using (var editor = await TestEditor.Open(preferences, original, placement: placement)) {
@@ -357,6 +364,48 @@ internal sealed partial class EditorWindow
             Check(folder.diffFiles.Length == 2 && SamePath(folder.ActivePane!.Document.FilePath!, a)
                 && folder.diffLeft?.Document.FormattedText() == "index a", "Folder diff reuses a pristine window, scopes the file list, and reads the Git index");
             var folderToolbar = folder.diffToolbar!;
+            string cwd = Environment.CurrentDirectory;
+            int windowCount = App.Instance.Windows.Count;
+            var openFile = FormattingToolbarTests.Descendants<Button>(folderToolbar).Single(button => AutomationProperties.GetName(button) == "Open File");
+            bool openCalled = false;
+            folder.OpenDialogForTesting = () => { openCalled = true; return Task.CompletedTask; };
+            ((Microsoft.UI.Xaml.Automation.Provider.IInvokeProvider)new ButtonAutomationPeer(openFile)).Invoke();
+            Check(openCalled, "Open File uses the normal native open flow");
+            folder.OpenDialogForTesting = null;
+            var openFolder = FormattingToolbarTests.Descendants<Button>(folderToolbar).Single(button => AutomationProperties.GetName(button) == "Open Folder");
+            folder.PickDiffDirectoryForTesting = () => Task.FromResult<string?>(directory);
+            ((Microsoft.UI.Xaml.Automation.Provider.IInvokeProvider)new ButtonAutomationPeer(openFolder)).Invoke();
+            await WaitFor(() => folder.DiffDirectory == directory && folder.diffFiles.Length == 3);
+            folder.PickDiffDirectoryForTesting = () => Task.FromResult<string?>(null);
+            await folder.ChooseDiffDirectory();
+            Check(App.Instance.Windows.Count == windowCount && folder.diffFiles.Length == 3
+                && Environment.CurrentDirectory == cwd && folder.DiffDirectory == directory,
+                "Changing the diff directory keeps the window and application cwd while listing the selected repository");
+            var filePicker = FormattingToolbarTests.Descendants<ComboBox>(folderToolbar).Single(box => AutomationProperties.GetName(box) == "Files in this diff");
+            Check(filePicker.Items.Cast<object>().OfType<string>().Contains(Path.GetRelativePath(cwd, a)),
+                "Diff file labels remain relative to the application cwd after changing the Git directory");
+            await folder.SetDiffDirectory(scoped);
+            string noRepo = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "viem-no-repo-" + Guid.NewGuid().ToString("N"))).FullName;
+            try {
+                folder.View!.Command("i"); folder.View.Text("unsaved"); folder.View.Key(VIEM_KEY_ESCAPE);
+                var retained = folder.ActivePane!.Document;
+                var retainedBytes = retained.Source(retained.State.document_revision);
+                folder.CloseReviewDecisionForTesting = _ => Task.FromResult(ContentDialogResult.None);
+                await folder.SetDiffDirectory(noRepo);
+                Check(folder.DiffDirectory == scoped && folder.ActivePane.Document == retained && folder.diffFiles.Length == 2
+                    && retained.Source(retained.State.document_revision).AsSpan().SequenceEqual(retainedBytes),
+                    "Canceling the save review retains the directory, source and file list");
+                folder.View.Undo();
+                folder.CloseReviewDecisionForTesting = null;
+                await folder.SetDiffDirectory(noRepo);
+                Check(folder.diffFiles.Length == 0 && folder.ActivePane!.Document.FilePath == null && !folder.diffGit
+                    && filePicker.PlaceholderText == DiffToolbar.NoChangesTitle && Environment.CurrentDirectory == cwd,
+                    "A non-repository directory replaces the current diff with no changes without changing cwd");
+                await folder.RefreshDiff();
+                Check(folder.diffBase.IsGit && folder.diffFiles.Length == 0 && !folder.diffGit,
+                    "Refreshing a non-repository folder retains the empty Git comparison");
+            } finally { Directory.Delete(noRepo); }
+            await folder.SetDiffDirectory(scoped);
             Check(folderToolbar.FileCount.Text == "2" && ((UIElement)folderToolbar.FileCount.Parent).Visibility == Visibility.Visible
                 && folderToolbar.AddedLines.Text == "+1" && folderToolbar.RemovedLines.Text == "–2",
                 "Bare --diff shows totals for all changes under the launch working directory");
@@ -383,11 +432,10 @@ internal sealed partial class EditorWindow
                 string? launchError = null;
                 try { await folder.OpenArgumentsForTesting(new(["--diff", ".git", "outside", "sub/a", "sub", "."], directory)); }
                 catch (IOException error) { launchError = error.Message; }
-                Check(launchError?.Contains(Path.Combine(directory, ".git")) == true,
-                    "A directory outside the working tree reports its path while the other diff arguments open");
+                Check(launchError == null, "A directory outside the working tree opens without an error");
                 var opened = App.Instance.Windows.Where(w => !priorWindows.Contains(w)).ToArray();
                 var fileWindows = opened.Where(w => w.singleFileDiff).ToArray();
-                Check(opened.Length == 4 && opened.All(w => w.comparison != null)
+                Check(opened.Length == 5 && opened.All(w => w.comparison != null)
                     && fileWindows.Length == 2 && fileWindows.All(w => w.diffFiles.Length == 1
                         && ((UIElement)w.diffToolbar!.FileCount.Parent).Visibility == Visibility.Collapsed
                         && w.diffToolbar.AddedLines.Text == "+1" && w.diffToolbar.RemovedLines.Text == "–1")
@@ -395,7 +443,7 @@ internal sealed partial class EditorWindow
                     && fileWindows.Any(w => SamePath(w.diffFiles[0].Path, Path.Combine(directory, "outside")))
                     && opened.Any(w => w.diffScope != null && SamePath(w.diffScope, scoped) && w.diffFiles.Length == 2)
                     && opened.Any(w => w.diffScope != null && SamePath(w.diffScope, directory) && w.diffFiles.Length == 3),
-                    "Mixed --diff arguments open two single-file windows and two independently scoped folder windows");
+                    "Mixed --diff arguments open two single-file windows and three independently scoped folder windows");
             } finally {
                 foreach (var w in App.Instance.Windows.Where(w => !priorWindows.Contains(w)).ToArray())
                     await w.ClosePane(w.ActivePane!, force: true);

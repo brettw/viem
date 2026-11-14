@@ -21,6 +21,12 @@ internal sealed record DiffFile(string Path, string BasePath, uint Change, ulong
     }
 }
 
+internal sealed class DiffSourceException(uint result, string message) : IOException(message)
+{
+    internal bool NoRepository => result == VIEM_DIFF_RESULT_UNAVAILABLE
+        && Message is "base unavailable: not in a git repository" or "base unavailable: not in a working tree";
+}
+
 internal sealed record DiffCommit(string Hash, string Short, string Title);
 
 internal sealed record DiffBase(uint Kind, string Argument = "", string ShortHash = "")
@@ -72,7 +78,7 @@ internal static unsafe class DiffSources
                 var info = new ViemDiffResultInfo();
                 Check(viem_diff_result_info(result, &info), "Read diff result");
                 if (info.result != VIEM_DIFF_RESULT_OK)
-                    throw new IOException(Encoding.UTF8.GetString(Copy((p, n, r) => viem_diff_result_copy_message(resultHandle, p, n, r))));
+                    throw new DiffSourceException(info.result, Encoding.UTF8.GetString(Copy((p, n, r) => viem_diff_result_copy_message(resultHandle, p, n, r))));
                 return read(result, info);
             } finally { viem_diff_result_release(result); }
         } finally { viem_diff_cancellation_release(cancellation); }

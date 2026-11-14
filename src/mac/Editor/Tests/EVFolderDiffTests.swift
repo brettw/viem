@@ -266,22 +266,54 @@ final class EVFolderDiffTests: XCTestCase {
         }
     }
 
-    func testAFolderOutsideARepositoryIsReportedInsteadOfOpening() throws {
+    func testAFolderOutsideARepositoryOpensWithoutChanges() throws {
         let placeholder = try window(text: nil)
-        var reports: [String] = []
-        let reported = expectation(description: "reported")
-        EVDocumentWindowController.folderDiffReport = { message in
-            reports.append(message)
-            reported.fulfill()
-        }
-        EVDocumentWindowController.folderDiffDidOpen = { _ in XCTFail("no window opens") }
         let outside = FileManager.default.temporaryDirectory.appendingPathComponent("viem-no-repo-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: outside) }
-        folderDiffs.append(EVDocumentWindowController.diffFolder(outside, from: placeholder))
-        wait(for: [reported], timeout: 20)
-        XCTAssertEqual(reports.count, 1)
-        XCTAssertFalse(placeholder.diffMode?.isEnabled ?? false)
+        let (opened, result) = beginDiff(outside, from: placeholder)
+        wait(for: [opened], timeout: 20)
+        let target = try XCTUnwrap(result())
+        XCTAssertTrue(target === placeholder)
+        let mode = try XCTUnwrap(target.diffMode)
+        XCTAssertTrue(mode.isEnabled)
+        XCTAssertTrue(mode.files.isEmpty)
+        XCTAssertEqual(mode.toolbar.filePopup.titleOfSelectedItem, EVDiffModeController.noChangesTitle)
+        XCTAssertNil(mode.lastMessage)
+    }
+
+    func testToolbarDirectoryChangesOnlyThisDiffAndPreservesRelativeLabels() throws {
+        let root = try repository()
+        let placeholder = try window(text: nil)
+        let cwd = FileManager.default.currentDirectoryPath
+        let (opened, result) = beginDiff(root, from: placeholder)
+        wait(for: [opened], timeout: 20)
+        let target = try XCTUnwrap(result())
+        let mode = try XCTUnwrap(target.diffMode)
+        let presented = expectation(description: "selected folder presented")
+        var completed = false
+        mode.didPresent = {
+            guard mode.directory == root.appendingPathComponent("sub"), !completed else { return }
+            completed = true
+            presented.fulfill()
+        }
+        target.openFilePanelPresenter = { panel, _, selected in
+            XCTAssertTrue(panel.canChooseDirectories)
+            XCTAssertFalse(panel.canChooseFiles)
+            selected(root.appendingPathComponent("sub"))
+        }
+        mode.toolbar.openFolderButton.performClick(nil)
+        wait(for: [presented], timeout: 20)
+        XCTAssertEqual(FileManager.default.currentDirectoryPath, cwd)
+        XCTAssertEqual(mode.files.count, 1)
+        XCTAssertEqual(mode.toolbar.filePopup.titleOfSelectedItem,
+                       mode.files[0].title(relativeTo: URL(fileURLWithPath: cwd, isDirectory: true)))
+        XCTAssertTrue(target === placeholder)
+        mode.didPresent = nil
+        target.openFilePanelPresenter = { _, _, selected in selected(nil) }
+        mode.toolbar.openFolderButton.performClick(nil)
+        XCTAssertEqual(mode.directory, root.appendingPathComponent("sub"))
+        XCTAssertEqual(mode.files.count, 1)
     }
 
     func testACancelledFolderDiffNeitherOpensNorReports() async throws {

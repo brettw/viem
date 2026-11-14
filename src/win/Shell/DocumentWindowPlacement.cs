@@ -54,18 +54,32 @@ internal sealed class DocumentWindowPlacement(Preferences preferences)
         if (screens.Count == 0) screens.Add(primary);
         var frame = lastFrame ?? preferences.DocumentWindowFrame
             ?? new WindowFrame(primary.X + (primary.Width - 1100) / 2, primary.Y + (primary.Height - 780) / 2, 1100, 780);
+        bool initialDiff = diffMode?.Invoke() == true;
+        if (initialDiff) frame = lastDiffFrame ?? preferences.DiffWindowFrame ?? (frame with { Width = frame.Width * 2 });
         frame = Fitting(IncludingGutter(frame, GutterPixels()), screens);
         appWindow.MoveAndResize(frame.Native);
-        if (hasPlacedWindow) {
+        if (initialDiff ? lastDiffFrame.HasValue : hasPlacedWindow) {
             // Moving first gives the caption metric the destination monitor's DPI.
             uint dpi = Math.Max(96, GetDpiForWindow(hwnd));
             int offset = Math.Max(1, GetSystemMetricsForDpi(4 /* SM_CYCAPTION */, dpi));
             frame = Fitting(frame with { X = frame.X + offset, Y = frame.Y + offset }, screens);
             appWindow.MoveAndResize(frame.Native);
         }
-        lastFrame = ExcludingGutter(frame, GutterPixels()); hasPlacedWindow = true;
+        if (initialDiff) lastDiffFrame = ExcludingGutter(frame, GutterPixels());
+        else { lastFrame = ExcludingGutter(frame, GutterPixels()); hasPlacedWindow = true; }
         WindowFrame normalFrame = ExcludingGutter(WindowFrame.From(appWindow), GutterPixels());
-        bool shown = false, closed = false, captureQueued = false, recordedDiff = false;
+        bool shown = false, closed = false, captureQueued = false, recordedDiff = initialDiff;
+        var watcher = DisplayArea.CreateWatcher();
+        void Refit() {
+            if (closed || appWindow.Presenter is not OverlappedPresenter { State: OverlappedPresenterState.Restored }) return;
+            var current = WindowFrame.From(appWindow);
+            var fitted = Fitting(current, CurrentWorkAreas());
+            if (fitted != current) appWindow.MoveAndResize(fitted.Native);
+        }
+        void QueueRefit() => window.DispatcherQueue.TryEnqueue(Refit);
+        watcher.Removed += (_, _) => QueueRefit();
+        watcher.Updated += (_, _) => QueueRefit();
+        watcher.Start();
         void RecordNormal(bool requireVisible = true)
         {
             if (closed || !shown || !GetWindowRect(hwnd, out var bounds) || (requireVisible && !appWindow.IsVisible)
@@ -79,6 +93,7 @@ internal sealed class DocumentWindowPlacement(Preferences preferences)
         }
         window.Activated += (_, args) => {
             if (args.WindowActivationState == WindowActivationState.Deactivated) return;
+            Refit();
             // Initial activation may precede the AppWindow visibility update.
             if (!shown) { shown = true; RecordNormal(); }
         };
@@ -98,6 +113,7 @@ internal sealed class DocumentWindowPlacement(Preferences preferences)
             // If native teardown already occurred, keep the last normal frame.
             RecordNormal(requireVisible: false);
             closed = true;
+            watcher.Stop();
             if (shown) Record(normalFrame, recordedDiff);
             Flush();
         };
@@ -116,6 +132,15 @@ internal sealed class DocumentWindowPlacement(Preferences preferences)
         return frame with { X = frame.X - width, Width = frame.Width + width };
     }
 
+    private static List<WindowFrame> CurrentWorkAreas()
+    {
+        var displays = DisplayArea.FindAll();
+        var screens = new List<WindowFrame>();
+        for (int i = 0; i < displays.Count; ++i) screens.Add(WorkArea(displays[i]));
+        if (screens.Count == 0) screens.Add(WorkArea(DisplayArea.Primary));
+        return screens;
+    }
+
     internal static WindowFrame WorkArea(DisplayArea screen) => DesktopWorkArea(screen.OuterBounds, screen.WorkArea);
     // WinUI reports work-area offsets relative to the monitor, while AppWindow
     // positions are desktop coordinates. Include the monitor's origin once.
@@ -132,10 +157,7 @@ internal sealed class DocumentWindowPlacement(Preferences preferences)
             int offset = Math.Max(1, GetSystemMetricsForDpi(4, GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(window))));
             frame = frame with { X = frame.X + offset, Y = frame.Y + offset };
         }
-        var displays = DisplayArea.FindAll();
-        var screens = new List<WindowFrame>();
-        for (int i = 0; i < displays.Count; ++i) screens.Add(WorkArea(displays[i]));
-        window.AppWindow.MoveAndResize(Fitting(frame, screens).Native);
+        window.AppWindow.MoveAndResize(Fitting(frame, CurrentWorkAreas()).Native);
     }
 
     private void Record(WindowFrame frame, bool diff)

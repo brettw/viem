@@ -31,7 +31,7 @@ internal sealed partial class DiffToolbar : EditorToolbar
     internal event Action<bool>? AlignmentChanged;
     internal event Action<bool>? CollapseChanged;
 
-    internal DiffToolbar(Action choose, Action refresh, Action<int> move, Action<bool> navigate, Action openWindow) : base("Diff toolbar")
+    internal DiffToolbar(Action choose, Action refresh, Action<int> move, Action<bool> navigate, Action openWindow, Action openFolder, Action openFile) : base("Diff toolbar")
     {
         var open = IconButton(new Button(), "Open in New Editor Window");
         open.Content = new PathIcon { Width = 16, Height = 18, Data = (Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(
@@ -44,6 +44,12 @@ internal sealed partial class DiffToolbar : EditorToolbar
         files.ItemTemplate = (DataTemplate)Resources["DiffFilePath"];
         SetLayout(viewport, open);
 
+        var opening = Group();
+        row.Children.Add(opening);
+        SetIcon(AddButton(opening, "Open Folder", "", openFolder),
+            "M1.5,6.5 V2.5 H6.5 L8.5,4.5 H15.5 V6.5 M1.5,6.5 H17 L14.5,13.5 H1.5 Z");
+        SetIcon(AddButton(opening, "Open File", "", openFile),
+            "M3,1.5 H10 L15,6.5 V14.5 H3 Z M10,1.5 V6.5 H15");
         var sources = Group();
         row.Children.Add(sources);
         sources.Children.Add(bases);
@@ -95,7 +101,7 @@ internal sealed partial class DiffToolbar : EditorToolbar
         };
     }
 
-    private static void SetIcon(ToggleButton button, string path)
+    private static void SetIcon(ButtonBase button, string path)
     {
         var geometry = (Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Geometry), path);
         var icon = new Canvas { Width = 18, Height = 16 };
@@ -128,6 +134,7 @@ internal sealed partial class DiffToolbar : EditorToolbar
                     bases.Items.Add(choice.ToString());
                 }
                 Add(new(Interop.Native.VIEM_DIFF_BASE_LAST_SAVED));
+                if (!git && basis.Kind == Interop.Native.VIEM_DIFF_BASE_UNSTAGED) Add(basis);
                 if (git) {
                     Add(new(Interop.Native.VIEM_DIFF_BASE_UNSTAGED));
                     Add(new(Interop.Native.VIEM_DIFF_BASE_HEAD));

@@ -132,7 +132,7 @@ internal sealed partial class EditorWindow
                 try {
                     if (Directory.Exists(path)) await DiffFolder(path);
                     else {
-                        await OpenLaunchDiffFile(path, line);
+                        await OpenLaunchDiffFile(path, line, request.Directory);
                         line = null;
                     }
                 } catch (Exception error) when (error is IOException or UnauthorizedAccessException) {

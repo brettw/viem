@@ -501,6 +501,11 @@ Deliberate presentation differences from GitHub:
   leaves the current one unchanged; turning it off shows the file in an
   ordinary window and closes the diff window. Every view a diff window
   creates is Code from its first frame. See [preview_diff.md](preview_diff.md).
+- Each diff window has its own Git directory, initially the current directory.
+  Open Folder in its toolbar changes only that window's Git directory; ordinary
+  file paths and labels remain relative to the application's current directory.
+  A folder outside a Git working tree opens with no changes, without an error.
+  Open File uses the normal open flow in the current diff window.
 - The Git base source runs bounded, cancellable read-only Git commands with
   argument lists. See [diff mode](docs/diff_mode.md) for the base sources,
   comparison layout and navigation contracts.

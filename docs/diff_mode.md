@@ -184,9 +184,9 @@ window has its own base and file list.
   (as **Open in New Editor Window** does) and closes the diff window. The buffer
   stays open throughout, so unsaved edits carry over without a save review.
 
-Turning diff mode on selects the Unstaged (`git diff`) base when the document
-is in a git repository, and Last saved otherwise. Outside a repository the git
-bases are unavailable.
+Turning diff mode on selects the Unstaged (`git diff`) base using the window's
+Git directory, and Last saved for a single document when Git is unavailable.
+Outside a repository the Git bases are unavailable.
 
 Two further items compare a whole folder:
 
@@ -206,15 +206,32 @@ windows (`windows.diffFrame` beside `windows.documentFrame` in
 `config.json`), since a diff is normally about twice as wide. A new diff
 window starts from the last diff window's frame, or, before there is one, a
 regular window's frame at twice the width; later diff windows cascade from
-it. A window records its frame as a diff frame while it shows a diff,
-including when it closes. The folder stays the scope of the
+it. Windows establishes the diff size, toolbar, and split layout before first
+activation. Restored windows are fitted to an available monitor when activated
+and when the display configuration changes. A window records its frame as a
+diff frame while it shows a diff, including when it closes. The folder stays
+the scope of the
 window's file list when the base changes to HEAD or a branch. A folder
 without changes still opens its window, with an empty untitled buffer; the
 file dropdown is disabled and says *no changes* in italics. Choosing HEAD or
 a branch then lists that folder's changes. A folder outside a git repository
-is reported instead of opening a window.
+also opens with no changes, without an error. Refresh checks again for a
+repository and changes.
 
 ## Diff toolbar
+
+The two leftmost buttons are **Open Folder** and **Open File**. Open Folder
+chooses the Git directory for this diff window, selects Unstaged, and shows
+its changes in the same window. A clean or non-Git folder shows an empty
+comparison with *no changes*. Canceling the picker or save review keeps the
+previous comparison. Open File runs the normal file-opening flow and compares
+the selected file in this window.
+
+Each diff window starts with the application's current directory as its Git
+directory. Choosing a folder overrides it for this window only. Branch and
+commit choices, file listings, and Refresh use that directory. This never
+changes `:pwd`, `:cd`, ordinary file resolution, or the directory used to
+shorten paths in the file popup and status bar.
 
 Launch with `viem --diff` to compare the caller's working directory against
 the Git index. Pass files or directories in any order to open one comparison

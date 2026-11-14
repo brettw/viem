@@ -2103,14 +2103,14 @@ extension EVDocumentWindowController: EVDiffModeHost {
     openFilePanelPresenter
   }
 
-  func openDiffFile(_ url: URL, beforeReplacing: @escaping @MainActor () -> Bool,
+  func openDiffFile(_ url: URL?, beforeReplacing: @escaping @MainActor () -> Bool,
                     completion: @escaping @MainActor (Error?) -> Void) {
     let pane = documentContentController
     guard let document = pane.document else { completion(EVDocumentHostError.staleRequest); return }
     let expected = document.editorBackend.persistenceState
     // The caller has already shown the window-close save review. Moving
     // between diff files opens through the argument commands' boundary.
-    loadArgumentDocument(url) { [weak self] opened, error in
+    let install: @MainActor (EVDocument?, Error?) -> Void = { [weak self] opened, error in
       guard let self, let opened else { completion(error ?? EVDocumentHostError.unsupportedRequest); return }
       guard self.canReplace(pane, document: document, expected: expected), beforeReplacing() else {
         self.closeIfUnrepresented(opened)
@@ -2121,6 +2121,8 @@ extension EVDocumentWindowController: EVDiffModeHost {
       self.closeIfUnrepresented(document)
       completion(nil)
     }
+    if let url { loadArgumentDocument(url, completion: install) }
+    else { install(Self.folderDiffUntitledDocument?() ?? Self.makeUntitledDiffDocument(), nil) }
   }
 
   func unsavedDocumentURLs() -> [URL] {
@@ -2231,7 +2233,7 @@ extension EVDocumentWindowController: EVDiffModeHost {
   /// Show the first file `git diff -- <folder>` lists in diff mode, in the
   /// given window when it holds only a pristine untitled buffer, otherwise
   /// in a new window. A folder without changes shows an empty buffer there;
-  /// a folder outside a repository is reported instead. Cancelling the
+  /// a folder outside a repository also shows no changes. Cancelling the
   /// returned task before the listing finishes opens and reports nothing,
   /// and completes with `nil`.
   @discardableResult
@@ -2245,9 +2247,13 @@ extension EVDocumentWindowController: EVDiffModeHost {
         return
       }
       let files: [EVDiffFile]
+      var hasRepository = true
       switch listed {
       case let .success(found):
         files = found
+      case let .failure(error) where error.noRepository:
+        files = []
+        hasRepository = false
       case let .failure(error):
         reportDiffFolder(error.localizedDescription, in: controller)
         completion?(nil)
@@ -2274,7 +2280,7 @@ extension EVDocumentWindowController: EVDiffModeHost {
           empty.addWindowController(target)
           target.showWindow(nil)
         }
-        target.diffController.enable(folder: folder, files: [])
+        target.diffController.enable(folder: folder, files: [], hasRepository: hasRepository)
         folderDiffDidOpen?(target)
         completion?(target)
         return
@@ -2310,13 +2316,13 @@ extension EVDocumentWindowController: EVDiffModeHost {
     }
   }
 
-  static func openFileDiff(_ document: EVDocument, initialLine: UInt64?) -> EVDocumentWindowController {
+  static func openFileDiff(_ document: EVDocument, initialLine: UInt64?, directory: URL) -> EVDocumentWindowController {
     let target = EVDocumentWindowController(document: document, editorSurface: document.editorBackend.makeEditorSurface(display: .diff),
                                             diffPlacement: folderDiffPlacement)
     target.markOpensForDiff()
     document.addWindowController(target)
     target.showWindow(nil)
-    target.diffController.enable(singleFile: true)
+    target.diffController.enable(singleFile: true, directory: directory)
     if let initialLine { target.editorSurface.goToLine(initialLine) }
     return target
   }

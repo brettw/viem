@@ -117,6 +117,10 @@ public struct EVDiffFile: Equatable, Sendable {
 struct EVDiffLoadFailure: Error, Sendable, LocalizedError {
   var result: UInt32
   var message: String
+  var noRepository: Bool {
+    result == UInt32(VIEM_DIFF_RESULT_UNAVAILABLE)
+      && (message == "base unavailable: not in a git repository" || message == "base unavailable: not in a working tree")
+  }
   var errorDescription: String? { message.isEmpty ? "The diff base is unavailable." : message }
 }
 
@@ -398,6 +402,8 @@ final class EVDiffSplitView: NSView {
 final class EVDiffToolbar: NSObject {
   let accessory = NSTitlebarAccessoryViewController()
   let basePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+  let openFolderButton = NSButton()
+  let openFileButton = NSButton()
   let refreshButton = NSButton()
   let previousButton = NSButton()
   let filePopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -412,6 +418,8 @@ final class EVDiffToolbar: NSObject {
   let nextChangeButton = NSButton()
   let openWindowButton = NSButton()
   var selectBase: ((Int) -> Void)?
+  var openFolder: (() -> Void)?
+  var openFile: (() -> Void)?
   var refresh: (() -> Void)?
   var previous: (() -> Void)?
   var next: (() -> Void)?
@@ -541,6 +549,8 @@ final class EVDiffToolbar: NSObject {
     basePopup.action = #selector(baseChanged(_:))
     basePopup.toolTip = "Diff base"
     basePopup.setAccessibilityLabel("Diff base")
+    configure(openFolderButton, symbol: "folder", label: "Open Folder", action: #selector(openFolderClicked(_:)))
+    configure(openFileButton, symbol: "doc", label: "Open File", action: #selector(openFileClicked(_:)))
     configure(refreshButton, symbol: "arrow.clockwise", label: "Refresh Base", action: #selector(refreshClicked(_:)))
     configure(previousButton, symbol: "chevron.left", label: "Previous File", action: #selector(previousClicked(_:)))
     configure(nextButton, symbol: "chevron.right", label: "Next File", action: #selector(nextClicked(_:)))
@@ -589,7 +599,7 @@ final class EVDiffToolbar: NSObject {
     }
     fileCountGroup.setHuggingPriority(.defaultHigh, for: .horizontal)
     stack.setHuggingPriority(.defaultHigh, for: .horizontal)
-    for view in [basePopup, refreshButton, fileCountGroup, addedLines, removedLines, previousButton, nextButton, filePopup, alignButton,
+    for view in [openFolderButton, openFileButton, basePopup, refreshButton, fileCountGroup, addedLines, removedLines, previousButton, nextButton, filePopup, alignButton,
                  collapseButton, previousChangeButton, nextChangeButton] as [NSView] {
       stack.addArrangedSubview(view)
     }
@@ -614,6 +624,8 @@ final class EVDiffToolbar: NSObject {
   }
 
   @objc private func baseChanged(_ sender: NSPopUpButton) { selectBase?(sender.indexOfSelectedItem) }
+  @objc private func openFolderClicked(_ sender: Any?) { openFolder?() }
+  @objc private func openFileClicked(_ sender: Any?) { openFile?() }
   @objc private func refreshClicked(_ sender: Any?) { refresh?() }
   @objc private func previousClicked(_ sender: Any?) { previous?() }
   @objc private func nextClicked(_ sender: Any?) { next?() }
@@ -649,8 +661,8 @@ protocol EVDiffModeHost: AnyObject {
   var diffActivePane: EVDocumentContentViewController? { get }
   var diffOpenPanelPresenter: ((NSOpenPanel, NSWindow, @escaping @MainActor (URL?) -> Void) -> Void)? { get }
   /// Replace the active pane's document with `url`, discarding unsaved
-  /// changes the caller has already reviewed.
-  func openDiffFile(_ url: URL, beforeReplacing: @escaping @MainActor () -> Bool,
+  /// changes the caller has already reviewed. Nil opens an empty comparison.
+  func openDiffFile(_ url: URL?, beforeReplacing: @escaping @MainActor () -> Bool,
                     completion: @escaping @MainActor (Error?) -> Void)
   /// Unsaved open documents, for the file list.
   func unsavedDocumentURLs() -> [URL]
@@ -698,8 +710,10 @@ final class EVDiffModeController: NSObject {
   private(set) var branches: [String] = []
   private(set) var isAligned: Bool
   private(set) var isCollapsed: Bool
-  /// The folder a folder diff lists; nil lists the whole repository.
+  /// An explicitly selected folder; the default Git directory is captured below.
   private(set) var scope: URL?
+  /// Git's directory is window-local; ordinary paths still use the application cwd.
+  private(set) var directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
   private var singleFile = false
   private var hasRepository = false
   private var commitPickerTask: Task<Void, Never>?
@@ -732,6 +746,8 @@ final class EVDiffModeController: NSObject {
     isCollapsed = configuration.diffCollapseContext
     super.init()
     toolbar.selectBase = { [weak self] index in self?.selectBase(at: index) }
+    toolbar.openFolder = { [weak self] in self?.chooseDirectory() }
+    toolbar.openFile = { NSApp.sendAction(#selector(NSDocumentController.openDocument(_:)), to: nil, from: nil) }
     toolbar.refresh = { [weak self] in self?.refresh() }
     toolbar.previous = { [weak self] in self?.moveFile(by: -1) }
     toolbar.next = { [weak self] in self?.moveFile(by: 1) }
@@ -777,12 +793,13 @@ final class EVDiffModeController: NSObject {
 
   /// Compare the files `git diff -- <folder>` lists, starting with the
   /// active document (normally the first of `files`).
-  func enable(folder: URL, files: [EVDiffFile]) {
+  func enable(folder: URL, files: [EVDiffFile], hasRepository: Bool = true) {
     guard isEnabled || begin() else { return }
     baseCache.removeAll()
     scope = folder
+    directory = folder
     singleFile = false
-    hasRepository = true
+    self.hasRepository = hasRepository
     base = .unstaged
     self.files = files
     generation += 1
@@ -790,8 +807,9 @@ final class EVDiffModeController: NSObject {
     present()
   }
 
-  func enable(singleFile: Bool = false) {
+  func enable(singleFile: Bool = false, directory: URL? = nil) {
     guard begin() else { return }
+    if let directory { self.directory = directory }
     self.singleFile = singleFile
     hasRepository = false
     scope = nil
@@ -806,7 +824,7 @@ final class EVDiffModeController: NSObject {
       return
     }
     Task { @MainActor in
-      let listed = await EVDiffBaseLoader.listFiles(.unstaged, path: url.path, unsaved: self.unsavedPaths())
+      let listed = await EVDiffBaseLoader.listFiles(.unstaged, path: url.path, unsaved: self.unsavedPaths(), scope: self.directory.path)
       guard current == self.generation, self.isEnabled else { return }
       guard self.activeDocument === document else { self.disable(); return }
       switch listed {
@@ -963,6 +981,9 @@ final class EVDiffModeController: NSObject {
             pair.pane?.document === document else { return }
       switch loaded {
       case let .success(result): self.install(base: result.bytes, from: base, in: pair, editable: !deleted)
+      case let .failure(error) where error.noRepository:
+        let saved = (document.editorBackend as? any EVDiffBackend)?.diffSavedSource() ?? Data()
+        self.install(base: saved, from: .lastSaved, in: pair)
       case let .failure(error):
         self.lastMessage = error.localizedDescription
         pair.pane?.editorSurface.showDocumentMessage(error.localizedDescription)
@@ -1040,6 +1061,42 @@ final class EVDiffModeController: NSObject {
 
   // MARK: Toolbar and menu actions
 
+  func chooseDirectory() {
+    guard isEnabled, let window = host?.diffWindow else { return }
+    let panel = NSOpenPanel()
+    panel.canChooseFiles = false
+    panel.canChooseDirectories = true
+    panel.allowsMultipleSelection = false
+    panel.showsHiddenFiles = true
+    panel.directoryURL = directory
+    let current = generation
+    let selected: @MainActor (URL?) -> Void = { [weak self] url in
+      guard let self, let url, self.isEnabled, self.generation == current else { return }
+      self.setDirectory(url)
+    }
+    if let presenter = host?.diffOpenPanelPresenter { presenter(panel, window, selected) }
+    else { panel.beginSheetModal(for: window) { selected($0 == .OK ? panel.url : nil) } }
+  }
+
+  func setDirectory(_ directory: URL) {
+    guard isEnabled, let document = activeDocument else { return }
+    generation += 1
+    let current = generation
+    Task { @MainActor in
+      let result = await EVDiffBaseLoader.listFiles(.unstaged, path: directory.path,
+                                                   unsaved: self.unsavedPaths(), scope: directory.path)
+      guard self.isEnabled, self.generation == current, self.activeDocument === document else { return }
+      switch result {
+      case let .success(files):
+        self.selectListedBase(.unstaged, files: files, for: document, directory: directory, hasRepository: true)
+      case let .failure(error) where error.noRepository:
+        self.selectListedBase(.unstaged, files: [], for: document, directory: directory, hasRepository: false)
+      case let .failure(error):
+        self.host?.diffActivePane?.editorSurface.showDocumentMessage(error.localizedDescription)
+      }
+    }
+  }
+
   func refresh() {
     guard isEnabled, let document = activeDocument else { return }
     generation += 1
@@ -1060,15 +1117,19 @@ final class EVDiffModeController: NSObject {
       then(url.map { [EVDiffFile(url: $0, baseURL: $0, change: UInt32(VIEM_DIFF_FILE_MODIFIED))] } ?? [])
     default:
       // A folder diff's empty buffer finds the repository from its folder.
-      guard let path = url?.path ?? scope?.path else { then([]); return }
+      let path = url?.path ?? directory.path
       let current = generation
       Task { @MainActor in
         let listed = await EVDiffBaseLoader.listFiles(base, path: path, unsaved: self.unsavedPaths(),
-                                                      scope: self.scope?.path)
+                                                      scope: self.directory.path)
         guard current == self.generation, self.isEnabled, self.activeDocument === document else { return }
         switch listed {
         case let .success(files):
+          self.hasRepository = true
           then(self.singleFile ? files.filter { $0.url.standardizedFileURL == url?.standardizedFileURL } : files)
+        case let .failure(error) where error.noRepository:
+          self.hasRepository = false
+          then([])
         case let .failure(error):
           self.lastMessage = error.localizedDescription
           self.host?.diffActivePane?.editorSurface.showDocumentMessage(error.localizedDescription)
@@ -1112,14 +1173,18 @@ final class EVDiffModeController: NSObject {
 
   /// A base and its first file install together after any save review and
   /// file open. Until then the toolbar and panes describe the previous base.
-  private func selectListedBase(_ next: EVDiffBase, files: [EVDiffFile], for document: EVDocument) {
+  private func selectListedBase(_ next: EVDiffBase, files: [EVDiffFile], for document: EVDocument,
+                                directory: URL? = nil, hasRepository: Bool? = nil) {
     func installSelection() {
       baseCache.removeAll()
       base = next
       self.files = files
+      if let directory { self.directory = directory; scope = directory; singleFile = false; branches = [] }
+      if let hasRepository { self.hasRepository = hasRepository }
     }
-    guard let first = files.first,
-          !files.contains(where: { $0.url.standardizedFileURL == document.fileURL?.standardizedFileURL }) else {
+    let first = files.first
+    if (first == nil && directory == nil)
+        || files.contains(where: { $0.url.standardizedFileURL == document.fileURL?.standardizedFileURL }) {
       installSelection()
       isChoosingBase = false
       present()
@@ -1139,21 +1204,23 @@ final class EVDiffModeController: NSObject {
       guard proceed, isCurrent() else { cancel(); return }
       let reviewed = document.editorBackend.persistenceState
       Task { @MainActor in
-        let result = await EVDiffBaseLoader.load(next, path: first.baseURL.path)
+        let result: Result<EVDiffBaseLoader.Loaded, EVDiffLoadFailure>
+        if let first { result = await EVDiffBaseLoader.load(next, path: first.baseURL.path) }
+        else { result = .success(.init(bytes: Data(), exists: false)) }
         guard isCurrent(), document.editorBackend.persistenceState == reviewed else { cancel(); return }
         switch result {
         case let .failure(error): cancel(error)
         case let .success(loaded):
-          self.host?.openDiffFile(first.url, beforeReplacing: {
+          self.host?.openDiffFile(first?.url, beforeReplacing: {
             guard isCurrent() else { return false }
             installSelection()
-            self.baseCache.store(loaded, for: .init(base: next, path: first.baseURL.path))
+            if let first { self.baseCache.store(loaded, for: .init(base: next, path: first.baseURL.path)) }
             self.isChoosingBase = true // Replace the pane before presenting its new comparison.
             return true
           }) { error in
             if let error { cancel(error); return }
             self.isChoosingBase = false
-            self.present(loadedBase: loaded.bytes, forFile: first.url)
+            self.present(loadedBase: first == nil ? nil : loaded.bytes, forFile: first?.url)
           }
         }
       }
@@ -1175,8 +1242,8 @@ final class EVDiffModeController: NSObject {
 
   private func chooseCommit() {
     refreshToolbar()
-    guard let document = activeDocument, let path = scope?.path ?? document.fileURL?.path,
-          let window = host?.diffWindow else { return }
+    guard let document = activeDocument, let window = host?.diffWindow else { return }
+    let path = directory.path
     commitPickerTask?.cancel()
     let current = generation
     commitPickerTask = Task { @MainActor in
@@ -1209,7 +1276,7 @@ final class EVDiffModeController: NSObject {
   }
 
   private func chooseBranch() {
-    guard let path = scope?.path ?? activeDocument?.fileURL?.path else { return }
+    let path = directory.path
     let current = generation
     let document = activeDocument
     Task { @MainActor in
@@ -1298,21 +1365,32 @@ final class EVDiffModeController: NSObject {
   }
 
   private func selectFile(at index: Int) {
-    guard isEnabled, files.indices.contains(index), let host, let document = activeDocument else { return }
-    let file = files[index]
-    let target = file.url
-    guard target.standardizedFileURL != document.fileURL?.standardizedFileURL else { return }
+    guard isEnabled, files.indices.contains(index) else { return }
+    openDocument(files[index].url)
+  }
+
+  func openDocuments(_ urls: [URL]) {
+    guard let first = urls.first else { return }
+    openDocument(first) { [weak self] opened in
+      if opened { self?.openDocuments(Array(urls.dropFirst())) }
+    }
+  }
+
+  func openDocument(_ target: URL, completion: @escaping (Bool) -> Void = { _ in }) {
+    guard isEnabled, let host, let document = activeDocument else { completion(false); return }
+    guard target.standardizedFileURL != document.fileURL?.standardizedFileURL else { completion(true); return }
     generation += 1
     let current = generation
     func isCurrent() -> Bool { isEnabled && generation == current && activeDocument === document }
     reviewUnsavedChanges(of: document) { [weak self] proceed in
-      guard let self, proceed, isCurrent() else { self?.refreshToolbar(); return }
+      guard let self, proceed, isCurrent() else { self?.refreshToolbar(); completion(false); return }
       // Load the base while the document opens.
-      self.prefetch(file)
+      if let file = self.files.first(where: { $0.url == target }) { self.prefetch(file) }
       host.openDiffFile(target, beforeReplacing: isCurrent) { error in
         if let error { host.diffActivePane?.editorSurface.showDocumentMessage(error.localizedDescription) }
         self.panesDidChange()
         self.refreshToolbar()
+        completion(error == nil)
       }
     }
   }
@@ -1367,6 +1445,7 @@ final class EVDiffModeController: NSObject {
     let fileURL = activeDocument?.fileURL
     var choices: [EVDiffBase] = [.lastSaved]
     if hasRepository { choices += [.unstaged, .head] }
+    else if base == .unstaged { choices.append(.unstaged) }
     choices += branches.map { .branch($0) }
     if hasRepository { choices.append(.branch("")) }
     if case .file = base { choices.append(base) }

@@ -92,6 +92,13 @@ internal static class WindowPlacementTests
                 "subsequent document windows cascade down and right at the saved size");
             second.Activate(); await second.ActivePane!.Ready; await Task.Delay(100);
             second.Close(); second = null;
+            owner.Activate();
+            first.AppWindow.MoveAndResize((moved with { X = 100000, Y = -100000 }).Native);
+            first.Activate(); await Task.Delay(150);
+            var recovered = WindowFrame.From(first.AppWindow);
+            var screen = DocumentWindowPlacement.WorkArea(DisplayArea.GetFromWindowId(first.AppWindow.Id, DisplayAreaFallback.Nearest));
+            Check(DocumentWindowPlacement.Fitting(recovered, (WindowFrame[])[screen]) == recovered,
+                "activation brings an offscreen window fully onto an available monitor");
             var final = moved with { X = moved.X + 10, Width = moved.Width + 20 };
             first.AppWindow.MoveAndResize(final.Native);
             var nativeFinal = WindowFrame.From(first.AppWindow);

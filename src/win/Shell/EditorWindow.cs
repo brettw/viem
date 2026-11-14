@@ -51,7 +51,7 @@ internal sealed partial class EditorWindow : Window
     {
         using var startup = Diagnostics.StartupPerformance.Measure("window.initialize");
         this.preferences = preferences;
-        IsDiffWindow = diffWindow;
+        IsDiffWindow = diffWindow || openLaunchFiles && ParseArguments(App.Instance.LaunchInvocation.Arguments).Diff;
         paneGrid.Configure(preferences);
         paneGrid.DragClosedPanes = ForgetDragClosedPanes;
         titleBar.Resources = new ResourceDictionary { Source = new Uri("ms-appx:///Shell/MenuToggleResources.xaml") };
@@ -77,7 +77,6 @@ internal sealed partial class EditorWindow : Window
         Diagnostics.StartupPerformance.Mark("window.chromeReady");
         windowPlacement = placement ?? App.Instance.WindowPlacement;
         capturePlacement = windowPlacement.Track(this, () => IsDiffWindow ? 0 : paneGrid.OrderedPanes.FirstOrDefault()?.GutterWidth ?? 0, () => IsDiffWindow);
-        if (IsDiffWindow) windowPlacement.ApplyDiffFrame(this, cascade: true);
         WindowSizing.Appearance(this, preferences.Midnight);
         Diagnostics.StartupPerformance.Mark("window.placementReady");
         AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Standard;
@@ -124,6 +123,11 @@ internal sealed partial class EditorWindow : Window
             root.Loaded += (_, _) => BeginFileLaunch();
         }
         else using (Diagnostics.StartupPerformance.Measure("window.initialPane")) AddPane(document ?? NewDocument(), display: display);
+        if (IsDiffWindow) {
+            diffStarting = true;
+            BeginDiff();
+            AttachDiffSplitter();
+        }
         WindowSizing.TrackMinimumSize(this, () => new(Math.Max(480, paneGrid.MinimumSize.Width),
             Math.Max(280, paneGrid.MinimumSize.Height + Math.Max(0, root.ActualHeight - paneGrid.ActualHeight))));
         poll.Tick += (_, _) => {
@@ -281,7 +285,7 @@ internal sealed partial class EditorWindow : Window
         {
             lastPane = ActivePane; ActivePane = pane;
         }
-        if (diffEnabled && diffLive != pane) Safe(() => LoadDiff(probeAvailability: true,
+        if (diffEnabled && !diffStarting && diffLive != pane) Safe(() => LoadDiff(probeAvailability: true,
             listedFiles: diffBase.IsGit && CurrentDiffFile >= 0 ? diffFiles : null));
         if (IsWindowActive && pane.View is { } view) pane.Run(() => styleInspector?.FollowActiveView(view));
         foreach (var item in Panes) item.IsActive = item == pane;

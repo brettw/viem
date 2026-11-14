@@ -268,6 +268,7 @@ final class EVApplicationDelegate: NSObject,
     }
 
     @objc func openDocument(_ sender: Any?) {
+        let diff = (NSApp.keyWindow?.windowController as? EVDocumentWindowController)?.diffMode
         let replacement = captureUntitledReplacement()
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = true
@@ -277,8 +278,9 @@ final class EVApplicationDelegate: NSObject,
         panel.allowsOtherFileTypes = true
         panel.begin { [weak self] response in
             guard response == .OK else { return }
-            for url in panel.urls {
-                _ = self?.presentDocument(at: url, replacing: replacement)
+            if let diff, diff.isEnabled { diff.openDocuments(panel.urls) }
+            else {
+                for url in panel.urls { _ = self?.presentDocument(at: url, replacing: replacement) }
             }
         }
     }
@@ -408,7 +410,7 @@ final class EVApplicationDelegate: NSObject,
                     }
                     do {
                         let document = try loadLaunchDocument(at: url)
-                        window = EVDocumentWindowController.openFileDiff(document, initialLine: initialLine).window
+                        window = EVDocumentWindowController.openFileDiff(document, initialLine: initialLine, directory: workingDirectory).window
                         initialLine = nil
                     } catch {
                         if (error as? CocoaError)?.code != .userCancelled { NSApplication.shared.presentError(error) }
