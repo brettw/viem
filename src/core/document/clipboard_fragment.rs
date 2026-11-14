@@ -862,8 +862,8 @@ impl Document {
         count: usize,
     ) -> Result<Option<(PreparedModelTransaction, usize, usize)>, ModelTransactionError> {
         // Literal hard lines inside a code paragraph stay in that owner.
-        // Its ordinary payload path can preserve the copied code treatment
-        // without opening a following-style paragraph outside the fence.
+        // The plain put inserts them without the copied fence, keeping the
+        // code treatment rather than opening a nested or following block.
         if self.projection().blocks_for_region(&(origin..origin)).iter().any(|block|
             block.style.is_code_block() && block.range.start <= origin && origin <= block.range.end) {
             return Ok(None);
@@ -876,6 +876,49 @@ impl Document {
             return Ok(None);
         }
         let body = fragment.as_seen();
+        let candidate = self.prepare_open_line_put(origin, before, count, export.source_plain_text.len(), |scratch, at| {
+            let Some(inserted) = scratch.prepare_clipboard_fragment(at..at, &body, &export.source_plain_text)? else {
+                return Ok(None);
+            };
+            verify_styles(inserted, &export, at..at, true, scratch).map(Some)
+        })?;
+        Ok(candidate)
+    }
+
+    /// Put complete lines without rich source, such as a register yanked in a
+    /// source view or rich rows inside code. Each copy goes on a line that the
+    /// open-line intention creates, so it joins the caret's container exactly
+    /// as `o` or `O` would, and code receives literal lines.
+    pub(crate) fn prepare_plain_linewise_put(
+        &self,
+        origin: usize,
+        before: bool,
+        text: &str,
+        hard_breaks: &[usize],
+        count: usize,
+    ) -> Result<Option<(PreparedModelTransaction, usize, usize)>, ModelTransactionError> {
+        if !self.format().is_markdown() || text.is_empty() {
+            return Ok(None);
+        }
+        self.prepare_open_line_put(origin, before, count, text.len(), |scratch, at| {
+            let payload = FormattedTextPayload::new(&scratch.hard_line_snapshot(), text.to_owned(), hard_breaks.to_vec())
+                .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?;
+            scratch.prepare_formatted_payload_edits(vec![FormattedPayloadEdit::new(at..at, payload)]).map(Some)
+        })
+    }
+
+    /// The shared placement for every linewise put: open a line after (or
+    /// before) the caret's line as `o`/`O` do, then insert one copy there,
+    /// once per count. Only how a copy is inserted differs between callers.
+    /// The steps compose into one verified, undoable source edit.
+    fn prepare_open_line_put(
+        &self,
+        origin: usize,
+        before: bool,
+        count: usize,
+        copy_len: usize,
+        insert: impl Fn(&Document, usize) -> Result<Option<PreparedModelTransaction>, ModelTransactionError>,
+    ) -> Result<Option<(PreparedModelTransaction, usize, usize)>, ModelTransactionError> {
         let mut scratch = self.scratch_document();
         let mut sources = replacement::PatchComposition::new(self.source_byte_len());
         let mut formatted = replacement::PatchComposition::new(self.projection().text_tree().byte_len());
@@ -906,11 +949,8 @@ impl Document {
                 publish(&mut scratch, opened, &mut sources, &mut formatted)?;
                 target
             };
-            let Some(inserted) = scratch.prepare_clipboard_fragment(at..at, &body, &export.source_plain_text)? else {
-                return Ok(None);
-            };
-            let inserted = verify_styles(inserted, &export, at..at, true, &scratch)?;
-            last = at.checked_add(export.source_plain_text.len()).ok_or(DocumentError::UnsupportedFormatting)?;
+            let Some(inserted) = insert(&scratch, at)? else { return Ok(None) };
+            last = at.checked_add(copy_len).ok_or(DocumentError::UnsupportedFormatting)?;
             publish(&mut scratch, inserted, &mut sources, &mut formatted)?;
             first.get_or_insert(at);
             origin = last;

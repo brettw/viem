@@ -12516,9 +12516,25 @@ impl CommandInterpreter {
             Err(error) => return Ok(error.into_command_output()),
         };
         if value.kind == RegisterKind::Linewise && self.mode == Mode::Normal {
-            if let Some((prepared, start, end)) = value.clipboard_fragment().map(|fragment|
+            let rich = value.clipboard_fragment().map(|fragment|
                 document.prepare_rich_linewise_put(self.cursor, before, fragment, count)
-            ).transpose().map_err(command_document_error)?.flatten() {
+            ).transpose().map_err(command_document_error)?.flatten();
+            // Without rich source (or inside code), Markdown still places each
+            // copy on a line opened like `o`/`O`, so every container keeps the
+            // new lines that the caret's line owns.
+            let put = match rich {
+                Some(put) => Some(put),
+                None => match register_lines(&value) {
+                    Some(copy) if document.format().is_markdown() => {
+                        let origin = line_end(&document.hard_line_snapshot(), self.cursor);
+                        let copy = self.assist_input_payload(document, origin..origin, BoundaryAffinity::Upstream, &copy)?;
+                        document.prepare_plain_linewise_put(self.cursor, before, &copy.text, copy.hard_break_offsets(), count)
+                            .map_err(command_document_error)?
+                    }
+                    _ => None,
+                },
+            };
+            if let Some((prepared, start, end)) = put {
                 document.commit_model_transaction(prepared).map_err(command_document_error)?;
                 self.cursor = if follow { normalize_normal_cursor_document(document, &document.hard_line_snapshot(), end) }
                     else { first_nonblank_document(document, &document.hard_line_snapshot(), start) };
@@ -16611,6 +16627,15 @@ fn checked_block_register_rows(
         .split('\n')
         .map(|row| checked_text_repetition(row, count))
         .collect()
+}
+
+/// A linewise value's lines without their final semantic break, or `None`
+/// when the value does not end in one (a literal LF is content).
+fn register_lines(value: &RegisterValue) -> Option<RegisterValue> {
+    let end = value.text.len().checked_sub(1).filter(|offset| value.is_hard_break(*offset))?;
+    let mut breaks = value.hard_break_offsets().to_vec();
+    breaks.pop();
+    RegisterValue::try_new(value.text[..end].to_owned(), value.kind, breaks).ok()
 }
 
 fn linewise_register_at_eof(

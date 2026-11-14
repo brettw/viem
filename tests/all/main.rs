@@ -86,6 +86,7 @@ mod markdown_blank_line_runs;
 mod markdown_local_paragraph_edits;
 mod markdown_list_document_end;
 mod markdown_paste_structure;
+mod container_parity;
 mod edit_boundary_matrix;
 mod support;
 mod markdown_gfm;

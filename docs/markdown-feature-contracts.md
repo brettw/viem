@@ -104,6 +104,30 @@ deliberate distinctions. Before changing this behavior, warn the user about any
 conflict and its consequences as required by AGENTS.md; update the requirement,
 this contract, code comments and tests together when the policy changes.
 
+## Container parity
+
+Quotes, alerts, code blocks (fenced, indented, quoted and front matter) and lists
+follow the same line-placement rules unless a rule below or in AGENTS.md names a
+difference. A line that a command adds beside the caret's line belongs to that
+line's container, whichever command adds it and wherever the line sits in its
+container, including its first and last lines.
+
+- Linewise puts (`p`, `P`, counts, plain or rich registers) open each new line
+  with the same open-line intention as `o`/`O`; only how a copy is inserted
+  differs. Rich rows are inserted with their copied formatting; code receives
+  them, and plain registers everywhere, as literal lines.
+- `o`, `O` and Enter at a line's end keep the new line in the container.
+
+Deliberate code differences include literal line endings, Enter's exit after
+blank code lines, and Shift-Enter adding a literal code line. Lists differ only
+in that a new line can be a new item of the same list.
+
+`tests/all/container_parity.rs` runs each line command on the first, a middle
+and the last line of every container kind and checks the new line's container
+path, container count, reopening and exact undo/redo. A new container kind or
+line command joins that matrix; a deliberate difference is an entry in its
+`EXCEPTIONS` table that names the rule requiring it.
+
 ## Preview source reflow
 
 `gq` and `gw` in Preview tidy the underlying Markdown source while preserving

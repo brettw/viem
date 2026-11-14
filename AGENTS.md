@@ -413,6 +413,11 @@ Deliberate presentation differences from GitHub:
   front-matter envelope just as it removes an empty code fence. Until exit,
   blank rows retain their code-owner caret geometry and bottom padding.
   Passive HTML preformatted blocks retain literal Enter behavior.
+- Quotes, alerts, code blocks and lists share line-placement rules: a line a
+  command adds beside the caret's line stays in that line's container, and
+  linewise puts open lines like `o`/`O`. Code differences are listed rules, not
+  divergent paths; see
+  [container parity](docs/markdown-feature-contracts.md#container-parity).
 - Headings, quotes, lists and Code Blocks change through semantic operations.
   List actions apply to whole items with their descendants and renumber
   affected ordered runs in the same transaction, keeping the first run's

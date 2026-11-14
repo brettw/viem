@@ -211,6 +211,14 @@ impl Document {
             // Code lines continue the fence body with one ending; a prose
             // paragraph separator would add a quote-only row.
             format!("\n{continuation_prefix}")
+        } else if at == block.range.start && block.containers.iter().any(|member|
+            member.starts_here && member.container.alert.is_some()) {
+            // The hidden alert marker absorbs the first blank line after it,
+            // so an empty paragraph before the first body needs a separator
+            // on each side. Its own line keeps the prefix for later typing.
+            let blank = prefix.trim_end_matches([' ', '\t']);
+            let syntax = format!("{blank}\n{prefix}\n{blank}\n").replace('\n', self.file_format().spelling());
+            return Ok(Some((TextEdit::new(at..at, "\n"), line.start..line.start, syntax)));
         } else {
             format!("\n{}\n{continuation_prefix}", prefix.trim_end_matches([' ', '\t']))
         };

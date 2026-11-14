@@ -1157,3 +1157,38 @@ fn repository_fence_line_commands_use_current_content_positions() {
         }
     }
 }
+
+#[test]
+fn linewise_put_in_code_block_stays_inside_code_block() {
+    for (source, keys, expected_text, expected_source, cursor) in [
+        ("```\na\nb\n```\n\nz", "jyyp", "a\nb\nb\nz", "```\na\nb\nb\n```\n\nz", 4),
+        ("```\na\nb\n```", "jyyp", "a\nb\nb", "```\na\nb\nb\n```", 4),
+        ("```\na\nb\n```\n\nz", "jyy2p", "a\nb\nb\nb\nz", "```\na\nb\nb\nb\n```\n\nz", 4),
+        ("```\na\nb\n```\n\nz", "yyjp", "a\nb\na\nz", "```\na\nb\na\n```\n\nz", 4),
+        ("```\na\nb\n```\n\nz", "jyykP", "b\na\nb\nz", "```\nb\na\nb\n```\n\nz", 0),
+    ] {
+        let (mut core, view) = open(source, Format::Markdown);
+        for key in keys.chars() { input(&mut core, view, InputEvent::key(key)); }
+        assert_eq!(core.document().text(), expected_text, "{source:?}: {keys}");
+        assert_eq!(core.document().source_bytes(), expected_source.as_bytes(), "{source:?}: {keys}");
+        assert_eq!(core.command_state(view).unwrap().cursor(), cursor, "{source:?}: {keys}");
+        verify_history(&mut core, view, source);
+    }
+}
+
+#[test]
+fn open_above_alert_first_paragraph_stays_in_alert() {
+    let source = "> [!NOTE]\n> aa\n>\n> bb";
+    for (keys, expected_text, expected_source) in [
+        ("Oqq\x1b", "qq\naa\nbb", "> [!NOTE]\n>\n> qq\n>\n> aa\n>\n> bb"),
+        ("yyP", "aa\naa\nbb", "> [!NOTE]\n>\n> aa\n>\n> aa\n>\n> bb"),
+    ] {
+        let (mut core, view) = open(source, Format::Markdown);
+        for key in keys.chars() {
+            input(&mut core, view, if key == '\x1b' { InputEvent::Key(Key::Escape) } else { InputEvent::key(key) });
+        }
+        assert_eq!(core.document().text(), expected_text, "{keys:?}");
+        assert_eq!(core.document().source_bytes(), expected_source.as_bytes(), "{keys:?}");
+        verify_history(&mut core, view, source);
+    }
+}
