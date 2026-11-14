@@ -326,6 +326,7 @@ fn native_language_families_share_reflow_join_and_literal_protection_policy() {
         ("typescript", "const s: string = '// literal';", "//"),
         ("tsx", "const s = '// literal';", "//"),
         ("c_sharp", "var s = @\"// literal\";", "//"),
+        ("c_sharp", "var s = $\"{string.Join(\"//\", values)}\";", "//"),
         ("swift", "let s = \"// literal\"", "//"),
         ("kotlin", "val s = \"// literal\"", "//"),
         ("scala", "val s = \"// literal\"", "//"),
@@ -435,7 +436,7 @@ fn unsupported_forms_stay_unknown_instead_of_using_literal_defaults() {
     for (language, prelude, leader) in [
         ("javascript", "const re = /[//]/;", "//"),
         ("python", "s = f'{nested}'", "#"),
-        ("c_sharp", "var s = $\"{nested}\";", "//"),
+        ("c_sharp", "var s = $\"\"\"raw {nested}\"\"\";", "//"),
         ("swift", "let s = #\"raw\"#", "//"),
         ("scala", "val s = s\"${nested}\"", "//"),
         ("scss", "$s: #{nested};", "//"),

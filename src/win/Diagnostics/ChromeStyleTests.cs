@@ -467,6 +467,56 @@ internal static class ChromeStyleTests
         finally {
             foreach (var font in fonts.Distinct()) font.Dispose();
         }
+        // Exercise the actual status painter with ink that extends past its
+        // advance width, including a tightly fitted filename and recording.
+        status["character"]!["font_families"] = new JsonArray("Georgia");
+        status["character"]!["font_face"] = "";
+        status["character"]!["font_axes"] = new JsonObject();
+        status["character"]!["slant"] = "Italic";
+        status["character"]!["letter_spacing"] = 0;
+        preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture));
+        string? oldPath = pane.Document.FilePath;
+        double oldWidth = pane.FilePathHost.Width;
+        try {
+            pane.Document.FilePath = Path.Combine(Environment.CurrentDirectory, "status-fff");
+            using var reference = preferences.StatusStyles.Status.Layout(pane.Canvas.Device, "status-fff");
+            pane.FilePathHost.Width = Math.Ceiling(reference.LayoutBounds.Width);
+            pane.View!.Command("qf");
+            pane.Refresh();
+            await InputRoutingTests.Settle();
+            pane.UpdateLayout();
+            DrawStatus();
+            foreach (var label in new[] { pane.FilePathControl, pane.ModeControl }) {
+                var layout = pane.StatusTextLayoutForTesting(label)!;
+                var painted = pane.DrawnStatusTexts.Single(text => text.Original == label.Text);
+                double inkWidth = layout.DrawBounds.Right - Math.Min(layout.DrawBounds.X, layout.LayoutBounds.X);
+                Check(inkWidth <= painted.SlotWidth + .01,
+                    $"status paints complete rightmost glyphs for {label.Text} (ink={inkWidth}, slot={painted.SlotWidth}, text={painted.Text})");
+            }
+            pane.FilePathHost.Width += 20;
+            pane.Refresh();
+            pane.UpdateLayout();
+            DrawStatus();
+            Check(pane.DrawnStatusTexts.Any(text => text.Original == "status-fff" && text.Text == text.Original)
+                && pane.DrawnStatusTexts.Any(text => text.Original == "Recording @f" && text.Text == text.Original),
+                "filename and recording label remain complete when their allocated slots fit their ink");
+            foreach (float dpi in new[] { 96f, 120f, 144f, 192f }) {
+                byte[] Pixels() {
+                    using var target = new CanvasRenderTarget(pane.Canvas.Device,
+                        (float)(Math.Ceiling(pane.StatusControl.ActualWidth * dpi / 96) * 96 / dpi),
+                        (float)(Math.Ceiling(pane.StatusBarHeight * dpi / 96) * 96 / dpi), dpi);
+                    using (var drawing = target.CreateDrawingSession()) pane.DrawStatusTextForTesting(drawing);
+                    return target.GetPixelBytes();
+                }
+                byte[] cached = Pixels();
+                pane.ClearStatusTextForTesting();
+                Check(cached.SequenceEqual(Pixels()), $"status glyph pixels match fresh shaping at {dpi} DPI");
+            }
+        } finally {
+            pane.View!.Command("q");
+            pane.Document.FilePath = oldPath;
+            pane.FilePathHost.Width = oldWidth;
+        }
         status["character"] = originalStatusCharacter;
         preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture));
         await InputRoutingTests.Settle();

@@ -71,7 +71,8 @@ internal sealed partial class EditorPane
         {
             if (control.Visibility != Visibility.Visible) return false;
             var origin = control.TransformToVisual(status).TransformPoint(new global::Windows.Foundation.Point());
-            double width = Math.Min(control.ActualWidth, textWidth ?? control.ActualWidth);
+            double slot = control is TextBlock label ? StatusTextSlotWidth(label) : control.ActualWidth;
+            double width = Math.Min(slot, textWidth ?? slot);
             return new global::Windows.Foundation.Rect(origin.X, origin.Y, width, control.ActualHeight).Contains(point);
         }
         if (Over(locationToggle)) return false;

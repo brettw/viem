@@ -110,7 +110,7 @@ and nesting identities for later features. They do not enable Markdown editing.
 | Go | `//`, `/*…*/`, strings/characters and raw backticks | No language runtime or generated-code interpretation. |
 | Java | `//`, `/*…*/`, ordinary strings/characters and triple-quoted text blocks | Unicode escape preprocessing is unknown. |
 | JavaScript, TypeScript, TSX | `//`, `/*…*/`, ordinary strings and noninterpolated templates | Regular expressions, template interpolation, JSX/TSX embedding. |
-| C# | `//`, `/*…*/`, ordinary supported quoted literals | Interpolated and raw strings. |
+| C# | `//`, `/*…*/`, ordinary and verbatim strings, ordinary/verbatim interpolated strings with nested expressions | Raw strings. Interpolated literals, including expression contents, remain protected from comment editing. |
 | Swift | `//`, nested `/*…*/`, ordinary and triple strings | Raw `#` literals and regex forms. |
 | Kotlin, Scala, Dart | `//`, nested `/*…*/`, ordinary and triple strings, Dart raw strings, Kotlin/Scala raw triples | Scala interpolation/XML and other unsupported interpolation constructs. |
 | Groovy | `//`, `/*…*/`, ordinary and triple strings | Slashy literals and ambiguous forms. |

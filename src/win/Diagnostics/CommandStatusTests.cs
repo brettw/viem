@@ -136,9 +136,10 @@ internal static class CommandStatusTests
 
     private static async Task UnicodePromptAndCaret(EditorPane pane, Action<bool, string> Check)
     {
+        string expectedWrap = (pane.View!.Viewport.flags & VIEM_VIEWPORT_STATE_WRAP) != 0 ? "wrap" : "nowrap";
         await InputRoutingTests.Text(":set wrap?");
         await InputRoutingTests.Key(VirtualKey.Enter);
-        Check(pane.CommandOutputText == "wrap", ":set queries use status output without a modal dialog");
+        Check(pane.CommandOutputText == expectedWrap, ":set queries use status output without a modal dialog");
         await InputRoutingTests.Text(":e café 日本語");
         Check(pane.PromptControl.LastDrawnText == ":e café 日本語", "command prompt draws Unicode text");
         await InputRoutingTests.Key(VirtualKey.Back);

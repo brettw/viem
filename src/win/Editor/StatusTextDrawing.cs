@@ -4,8 +4,10 @@ using Microsoft.Graphics.Canvas.Text;
 using Microsoft.Graphics.Canvas.UI.Xaml;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using Viem.Windows.Core;
+using Viem.Windows.Shell;
 using Windows.Foundation;
 
 namespace Viem.Windows.Editor;
@@ -43,21 +45,23 @@ internal sealed partial class EditorPane
             bool visible = true;
             for (DependencyObject? control = label; control != null && control != status; control = VisualTreeHelper.GetParent(control))
                 if (control is UIElement { Visibility: Visibility.Collapsed }) { visible = false; break; }
-            if (!visible || label.ActualWidth <= 0 || label.Text.Length == 0) continue;
+            double width = StatusTextSlotWidth(label);
+            if (!visible || width <= 0 || label.Text.Length == 0) continue;
             var origin = label.TransformToVisual(status).TransformPoint(new Point());
-            string text = label == message ? TrimStatusRight(label.Text, label.ActualWidth, MeasureStatusText) : label.Text;
+            string text = label == message ? TrimStatusRight(label.Text, width, MeasureStatusText)
+                : label == filePath ? StatusFilePath.Fit(label.Text, width, MeasureStatusText) : label.Text;
             if (text.Length == 0) continue;
             if (!statusTextShapes.TryGetValue(label, out var shape) || shape.Text != text || shape.Style.FontIdentity != style.FontIdentity) {
                 shape?.Layout.Dispose();
                 shape = new(text, style, style.Layout(statusTextCanvas.Device, text));
                 statusTextShapes[label] = shape;
             }
-            var bounds = shape.Layout.LayoutBounds;
+            var bounds = StatusTextBounds(shape.Layout);
             double y = top + (height - bounds.Height) / 2;
-            using var clip = drawing.CreateLayer(1, new Rect(origin.X, top, label.ActualWidth, height));
+            using var clip = drawing.CreateLayer(1, new Rect(origin.X, top, width, height));
             drawing.DrawTextLayout(shape.Layout, (float)(origin.X - bounds.X), (float)(y - bounds.Y), style.Foreground);
 #if DEBUG
-            DrawnStatusTexts.Add(new(label.Text, text, style, new(origin.X, y, bounds.Width, bounds.Height)));
+            DrawnStatusTexts.Add(new(label.Text, text, style, new(origin.X, y, bounds.Width, bounds.Height), width));
 #endif
         }
     }
@@ -67,8 +71,25 @@ internal sealed partial class EditorPane
         if (statusTextWidths.TryGetValue(text, out double width)) return width;
         if (statusTextWidths.Count >= 256) statusTextWidths.Clear();
         using var layout = (statusStyle ?? preferences.StatusStyles.Status).Layout(CanvasDevice.GetSharedDevice(), text);
-        width = layout.LayoutBounds.Width; statusTextWidths[text] = width;
+        width = StatusTextBounds(layout).Width; statusTextWidths[text] = width;
         return width;
+    }
+
+    private static Rect StatusTextBounds(CanvasTextLayout layout)
+    {
+        var advance = layout.LayoutBounds;
+        var ink = layout.DrawBounds;
+        double left = Math.Min(advance.X, ink.X);
+        return new(left, advance.Y, Math.Max(advance.Right, ink.Right) - left, advance.Height);
+    }
+
+    private static double StatusTextSlotWidth(TextBlock label)
+    {
+        // TextBlock.ActualWidth reports its own text metrics, even when Width
+        // reserves a larger slot. Our font axes/features and ink overhang are
+        // shaped separately, so only the arranged slot is a valid paint clip.
+        double slot = LayoutInformation.GetLayoutSlot(label).Width - label.Margin.Left - label.Margin.Right;
+        return Math.Max(0, Math.Min(slot, label.Width));
     }
 
     private void ClearStatusText()
@@ -95,9 +116,10 @@ internal sealed partial class EditorPane
     }
 
 #if DEBUG
-    internal readonly record struct DrawnStatusText(string Original, string Text, ChromeStyle Style, Rect Bounds);
+    internal readonly record struct DrawnStatusText(string Original, string Text, ChromeStyle Style, Rect Bounds, double SlotWidth);
     internal List<DrawnStatusText> DrawnStatusTexts { get; } = [];
     internal void DrawStatusTextForTesting(CanvasDrawingSession drawing) => DrawStatusText(drawing);
+    internal void ClearStatusTextForTesting() => ClearStatusText();
     internal CanvasTextLayout? StatusTextLayoutForTesting(TextBlock label) => statusTextShapes.GetValueOrDefault(label)?.Layout;
 #endif
 }

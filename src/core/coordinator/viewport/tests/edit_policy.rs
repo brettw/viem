@@ -1,5 +1,31 @@
 use super::*;
 
+#[test]
+fn pasting_at_the_viewport_start_moves_the_caret_and_only_scrolls_to_reveal_it() {
+    use crate::command::clipboard::{ClipboardCommandContext, ClipboardContent, ClipboardGeneration, ClipboardSnapshot, ClipboardTarget};
+    for format in [Format::PlainText, Format::Code, Format::Markdown] {
+        for lines in [2, 30] {
+            for key in [Key::PasteClipboard, Key::PasteClipboardMatchingStyle] {
+                let source = format!("\n{}", "# Please enter the commit message\n".repeat(30));
+                let mut core = Core::new(Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap());
+                let view = core.add_view(MockTextMeasurementProvider::new(), 600., 180.);
+                core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
+                let text = "Commit message line\n".repeat(lines);
+                let clipboard = ClipboardCommandContext::new().with_read(ClipboardSnapshot::new(
+                    ClipboardTarget::Clipboard, ClipboardGeneration(1), ClipboardContent::from_plain_text(text)));
+                let outcome = core.handle_with_layout(view, CoreEvent::InputWithClipboard { input: InputEvent::Key(key), clipboard }).unwrap();
+                assert!(outcome.document_changed, "{format:?}, {lines}, {key:?}");
+                let layout = core.layout(view).unwrap();
+                let bounds = caret_row(&core, view).reveal_bounds();
+                let expected = (bounds.end - layout.height()).max(0.);
+                assert!((layout.viewport_top() - expected).abs() < 0.05,
+                    "{format:?}, {lines}, {key:?}: top {}, minimum {expected}", layout.viewport_top());
+                assert_caret_visible(&core, view);
+            }
+        }
+    }
+}
+
 fn code_padding_defaults(document: &Document, top: u32) -> Vec<u8> {
     let mut defaults: serde_json::Value =
         serde_json::from_slice(&document.export_style_defaults().unwrap()).unwrap();

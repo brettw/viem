@@ -12,6 +12,12 @@ coordinate of its anchor. Adjusting the offset to compensate keeps the visible
 text stationary. Geometry estimates must not introduce premature clamps, and
 cache-only pre-layout must not move displayed content.
 
+Native paste in the acting view keeps the viewport boundary before newly
+inserted content at that boundary. Pasting into the top of a commit template
+therefore grows down the page: retain the viewport while the resulting caret
+fits, then scroll only enough to reveal it, as with typing. Other views of the
+buffer continue to follow their existing text anchors.
+
 ## Why the caret baseline is not the default anchor
 
 A structural edit can intentionally change the space above the caret. Removing

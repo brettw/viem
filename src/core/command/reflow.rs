@@ -216,6 +216,25 @@ mod tests {
     use super::*;
     use crate::document::{Encoding, Format};
 
+    #[test]
+    fn csharp_gqj_reflows_comments_after_interpolated_strings_and_undoes_exactly() {
+        let prefix = "var label = $\"{string.Join(\"//\", values)}: {count:N2}\";\n";
+        let source = format!("{prefix}// alpha beta\n// gamma delta\nclass After {{}}\n");
+        let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Code).unwrap();
+        let mut commands = CommandInterpreter::new();
+        commands.set_reflow_language(Some("c_sharp".into()));
+        assert!(commands.set_cursor(&document, prefix.len()));
+        // This regression includes the ordinary j motion; the locality helper
+        // below is for formatting itself, without that shared motion's work.
+        for key in "gqj".chars() {
+            let output = commands.handle(&mut document, InputEvent::key(key)).unwrap();
+            assert!(!matches!(output.status, CommandStatus::Error(_)), "{:?}", output.status);
+        }
+        assert_eq!(document.source_bytes(), format!("{prefix}// alpha beta gamma delta\nclass After {{}}\n").as_bytes());
+        commands.handle(&mut document, InputEvent::key('u')).unwrap();
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
+
     fn event(commands: &mut CommandInterpreter, document: &mut Document, event: InputEvent) {
         let previous = document.projection().clone();
         let output = commands.handle(document, event.clone()).unwrap();

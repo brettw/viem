@@ -3,6 +3,7 @@
 //! Coordinates are UTF-8 offsets within one hard line. Checkpoints are attached
 //! to an immutable projection and only an unchanged prefix may cross an edit.
 use super::{DocumentId, HardLineSnapshot, Revision};
+mod csharp;
 use std::{
     collections::BTreeMap,
     ops::Range,
@@ -116,6 +117,7 @@ struct HereDoc {
 }
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
 struct State {
+    csharp_interpolation: Option<csharp::Interpolation>,
     block: Option<BlockState>,
     string: Option<StringState>,
     heredocs: Vec<HereDoc>,
@@ -668,9 +670,27 @@ fn lex_line(provider: Family, text: &str, line: usize, state: &mut State) -> Com
     while at < text.len()
         || state.block.is_some() && at == 0
         || state.string.is_some() && string_start.is_some()
+        || state.csharp_interpolation.is_some()
     {
         if result.comments.len() + result.protected.len() >= MAX_PARTS {
             return unknown(state, text.len());
+        }
+        if let Some(interpolation) = &mut state.csharp_interpolation {
+            let begin = at;
+            match interpolation.scan(text, at) {
+                Ok(Some(end)) => {
+                    result.protected.push(begin..end);
+                    state.csharp_interpolation = None;
+                    at = end;
+                    continue;
+                }
+                Ok(None) => {
+                    result.protected.push(begin..text.len());
+                    result.protected_to_line_end = true;
+                    break;
+                }
+                Err(()) => return unknown(state, text.len()),
+            }
         }
         if let Some(block) = &mut state.block {
             let segment_start = at;
@@ -821,10 +841,6 @@ fn lex_line(provider: Family, text: &str, line: usize, state: &mut State) -> Com
                     || rest.starts_with("f\"")
                     || rest.starts_with("raw\"")
                     || rest.starts_with('<')))
-            || (provider == Family::CSharp
-                && (rest.starts_with("$\"")
-                    || rest.starts_with("$@\"")
-                    || rest.starts_with("@$\"")))
             || (provider == Family::Scss && rest.starts_with("#{"))
             || (provider == Family::Hcl && rest.starts_with("<<"))
             || (provider == Family::PowerShell
@@ -898,6 +914,20 @@ fn lex_line(provider: Family, text: &str, line: usize, state: &mut State) -> Com
                     .is_some_and(|b| matches!(b, b'\"' | b'\''))
             {
                 return unknown(state, text.len());
+            }
+        }
+        if provider == Family::CSharp {
+            if let Some((mut interpolation, width)) = csharp::Interpolation::start(rest) {
+                match interpolation.scan(text, at + width) {
+                    Ok(Some(end)) => { result.protected.push(at..end); at = end; continue; }
+                    Ok(None) => {
+                        result.protected.push(at..text.len());
+                        result.protected_to_line_end = true;
+                        state.csharp_interpolation = Some(interpolation);
+                        break;
+                    }
+                    Err(()) => return unknown(state, text.len()),
+                }
             }
         }
         if provider == Family::Shell && rest.starts_with("$'") {
@@ -1518,6 +1548,33 @@ mod tests {
         }
     }
     #[test]
+    fn csharp_interpolation_protects_literals_and_resumes_at_real_comments() {
+        for literal in [
+            r#"$"value {string.Join("//", values)} {count:N2}""#,
+            r#"$"{{escaped}} {new[] { "/*", $"nested {value}" }}""#,
+            r#"$@"verbatim "" // {value}""#,
+            "@$\"first\n// still literal {value}\nlast\"",
+            "$\"{\n// expression comment\nCall(/* block\ncomment */ \"//\")}\"",
+            r#"$"{(flag ? "//" : "/*"),10:yyyy/MM/dd}""#,
+            r#"$"{global::System.String.Empty}""#,
+        ] {
+            let source = format!("var value = {literal}; // actual\n// next");
+            let last = literal.lines().count() - 1;
+            for line in 0..=last {
+                let result = context("c_sharp", &source, line);
+                assert!(!result.is_unknown(), "{source}, line {line}");
+                assert_eq!(result.comments.len(), usize::from(line == last), "{source}, line {line}");
+            }
+            let next = context("c_sharp", &source, last + 1);
+            assert!(!next.is_unknown());
+            assert_eq!(next.comments.len(), 1);
+        }
+        assert!(context("c_sharp", "$\"unterminated\n// not safe", 1).is_unknown());
+        let deep = format!("{}value{}\n// later", "$\"{".repeat(MAX_NESTING), "}\"".repeat(MAX_NESTING));
+        assert!(context("c_sharp", &deep, 1).is_unknown());
+    }
+
+    #[test]
     fn unsupported_or_ambiguous_forms_never_degrade_to_code() {
         for (language, text, line) in [
             ("javascript", "const re = /a[//]b/;\n// later", 1),
@@ -1538,7 +1595,7 @@ mod tests {
                 "vim9script\nvar lines =<< END\n#not a comment\nEND",
                 2,
             ),
-            ("c_sharp", "$\"{\"// nested\"}\"", 0),
+            ("c_sharp", "$\"\"\"raw {value}\"\"\"", 0),
             ("kotlin", "\"${\"// nested\"}\"", 0),
             ("swift", "\"\\(\"// nested\")\"", 0),
             ("scala", "s\"// interpolated\"", 0),

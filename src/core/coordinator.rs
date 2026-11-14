@@ -6731,6 +6731,19 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .get_mut(&view_id)
                     .expect("view existence checked above");
                 update_viewport_anchor(&self.document, target_view);
+                if matches!(input, Some(InputEvent::Key(crate::command::Key::PasteClipboard | crate::command::Key::PasteClipboardMatchingStyle))) {
+                    if let Some(viewport) = &mut target_view.viewport_anchor {
+                        // A paste at the first visible boundary should grow
+                        // down the page, like incremental typing. Other views
+                        // still follow their existing text after insertion.
+                        viewport.anchor = self.document.text_anchor(
+                            self.document.text_point(viewport.anchor.offset())?,
+                            Association::BeforeInsertion,
+                            viewport.anchor.affinity(),
+                            viewport.anchor.deletion_recovery(),
+                        )?;
+                    }
+                }
                 let before = self.document.revision();
                 let old_viewport_top = target_view.layout.viewport_top();
                 let (command_result, committed_position_map) = self.document.capture_position_maps(
