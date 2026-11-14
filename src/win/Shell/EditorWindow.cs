@@ -740,7 +740,12 @@ internal sealed partial class EditorWindow : Window
     }
     internal async Task<ContentDialogResult> Dialog(string title, string text, string primary = "OK", string close = "", string secondary = "", ContentDialogButton defaultButton = ContentDialogButton.Primary)
     {
-        var dialog = new ContentDialog { XamlRoot = root.XamlRoot, RequestedTheme = root.RequestedTheme, Title = title, Content = new ScrollViewer { Content = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true }, MaxHeight = 450 }, PrimaryButtonText = primary, CloseButtonText = close, SecondaryButtonText = secondary, DefaultButton = defaultButton };
+        var dialog = new ContentDialog { XamlRoot = root.XamlRoot, RequestedTheme = root.RequestedTheme, Title = title, Content = new ScrollViewer {
+            Content = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true },
+            // A permanently visible scrollbar increases even a one-line prompt's
+            // desired height when its mouse indicator expands.
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, MaxHeight = 450
+        }, PrimaryButtonText = primary, CloseButtonText = close, SecondaryButtonText = secondary, DefaultButton = defaultButton };
         openDialogs++;
         try { return await dialog.ShowAsync(); }
         finally { openDialogs--; RequestExternalFileChecks(); }

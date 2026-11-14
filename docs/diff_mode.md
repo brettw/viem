@@ -122,10 +122,12 @@ toggled, the base is refreshed or another file is shown, when:
 Editing reflows the collapsed regions around the changed hunks; regions that
 were opened stay open while their lines remain equal.
 
-When a diff view starts (including after Refresh or another file), a caret
-inside a region that collapses moves to the nearest line beside it. Turning
-collapsing on later, or an edit that makes the caret's lines equal, leaves the
-caret's own region open instead.
+When a diff view starts (including after Refresh or another file), or the user
+turns Collapse Context on, a Normal-mode caret inside a region that collapses
+moves to the nearest line beside it. This makes the explicit toggle collapse
+the same context as opening the file. Other modes preserve the caret and keep
+its region open. An edit that makes the caret's lines equal also keeps its
+region open instead of moving it.
 
 ## Styles
 
@@ -626,9 +628,9 @@ context), built in this order:
     view and drops its divider (`Core::open_collapsed_at_caret`), so no
     caret geometry is requested for a hidden line; the session takes those
     runs on its next sync and opens them on both sides. On a session's first
-    install a Normal-mode caret inside a collapsing run moves to the nearest
-    line beside it instead; later (toggling, or an edit that makes the
-    caret's lines equal) the caret's run stays open. A viewport anchored in
+    install or explicit collapse toggle a Normal-mode caret inside a collapsing
+    run moves to the nearest line beside it instead. Ordinary synchronization,
+    including an edit that makes the caret's lines equal, keeps its run open. A viewport anchored in
     a newly hidden run is anchored after it, with its divider just above.
   - ABI: `VIEM_DIFF_SESSION_COLLAPSED` (create flag and info),
     `viem_diff_session_set_collapsed`, `viem_diff_session_open_collapsed`

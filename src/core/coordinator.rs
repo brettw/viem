@@ -4788,12 +4788,12 @@ impl<P: TextMeasurementProvider> Core<P> {
         if let Some(open) = self.edit_group_restoration.as_ref() {
             let current = self.document.history_status().current;
             if current != open.parent {
-                let after = self
-                    .views
-                    .get(&owner)
-                    .ok_or(CoreError::UnknownView(owner))?
-                    .commands
-                    .capture_history_restoration(&self.document)?;
+                let owner_view = self.views.get(&owner).ok_or(CoreError::UnknownView(owner))?;
+                // Host boundaries such as Save answer for the buffer's default
+                // projection, which can differ from the typing view (a Markdown
+                // diff is literal). Its restoration must use its own lineage.
+                let after = self.document.with_lineage_focus(self.document.kind_for(owner_view.presentation),
+                    |document| owner_view.commands.capture_history_restoration(document))?;
                 self.document.attach_history_restoration(
                     current.node,
                     HistoryRestoration::new(open.before.clone(), after),

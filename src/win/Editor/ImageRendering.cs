@@ -75,7 +75,9 @@ internal sealed partial class EditorPane
         // Admission covers the visible screen and one screen beyond each edge,
         // so nearby bitmaps are ready before scrolling reveals them.
         double height = Canvas.ActualHeight, width = Math.Max(Canvas.ActualWidth, PaintViewportWidth);
+        // Filter before copying or sorting: ordinary glyphs are not image work.
         var nearby = snapshot.Clusters
+            .Where(c => View.Provider.IsInlineImage(c.render_run))
             .Where(c => c.typographic_bounds.y + c.typographic_bounds.height > viewport.top - height
                 && c.typographic_bounds.y < viewport.top + 2 * height
                 && c.typographic_bounds.x + c.typographic_bounds.width > viewport.left - width

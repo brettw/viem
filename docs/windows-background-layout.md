@@ -6,7 +6,7 @@ when a result is installed; foreground input proceeds while workers run.
 
 ## Window and retention
 
-`FULL_PRELAYOUT_SOURCE_BYTES` (100 KiB) is the single tuning point. A document
+`FULL_PRELAYOUT_SOURCE_BYTES` is the single tuning point. A document
 whose source is no larger is prepared completely and its regional geometry is
 retained without eviction (a 256 MiB estimated-byte guard remains). A larger
 document prepares a window of that much text around the viewport, two thirds in

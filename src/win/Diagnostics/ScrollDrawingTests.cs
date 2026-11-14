@@ -23,6 +23,27 @@ internal static class ScrollDrawingTests
         byte[] Draw() { using (var drawing = surface.CreateDrawingSession()) pane.Draw(drawing); return surface.GetPixelBytes(); }
         pane.InvalidateDrawingCache();
         byte[] initial = Draw();
+        int notifications = 0;
+        void Changed() => notifications++;
+        view.Changed += Changed;
+        try {
+            // A refresh repairs stale geometry before exporting it. Rebuilding
+            // must not request another presentation of the same result.
+            view.Provider.InvalidateMetrics();
+            view.Resize((float)pane.Canvas.ActualWidth, (float)pane.Canvas.ActualHeight, notify: false);
+            Check(notifications == 0 && view.LayoutInfo().identity.metrics_generation == view.Provider.Generation,
+                "presentation-owned layout repair rebuilds stale metrics without a second change notification");
+            pane.Refresh();
+            Check(Draw().AsSpan().SequenceEqual(initial), "presentation-owned layout repair draws the same pixels with fresh resources");
+            view.Resize((float)pane.Canvas.ActualWidth, (float)pane.Canvas.ActualHeight);
+            Check(notifications == 1, "ordinary native resize still publishes its presentation change");
+        }
+        finally { view.Changed -= Changed; }
+        // The metrics reset starts a new speculative pass. Restore the original
+        // scrolling test's prepared-cache precondition before measuring reuse.
+        await BackgroundLayoutTests.Idle(view);
+        pane.InvalidateDrawingCache();
+        initial = Draw();
         int builds = pane.DrawingCacheBuilds;
         var identity = view.LayoutInfo().identity;
         float top = view.Viewport.top;

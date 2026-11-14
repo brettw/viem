@@ -694,12 +694,12 @@ fn a_caret_moving_onto_collapsed_context_opens_it_on_both_sides() {
 }
 
 #[test]
-fn a_starting_caret_moves_beside_collapsed_context_but_later_keeps_its_run_open() {
+fn explicit_collapse_moves_carets_beside_hidden_context() {
     // Both carets start on line 0, which collapses: they move after the run.
     let (base, base_view, new, new_view, _) = collapsing(true);
     assert_eq!(cursor_line(&new, new_view), 7);
     assert_eq!(cursor_line(&base, base_view), 7);
-    // Collapsing later leaves the caret's own run open.
+    // Explicit collapse uses the same placement as opening a collapsed diff.
     let (mut base, base_view) = core(&lines(40, |line| Some(format!("line {line}"))));
     let (mut new, new_view) = core(&lines(40, collapse_lines));
     let mut session = DiffSession::new(base.document(), new.document(), true);
@@ -707,8 +707,28 @@ fn a_starting_caret_moves_beside_collapsed_context_but_later_keeps_its_run_open(
     place(&mut new, new_view, 20);
     session.set_collapsed(true);
     session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+    assert_eq!(cursor_line(&new, new_view), 27);
+    assert_eq!(cursor_line(&base, base_view), 7);
+    assert_eq!(new.layout(new_view).unwrap().elided().runs(), [0..7, 14..27, 34..41]);
+}
+
+#[test]
+fn explicit_collapse_preserves_an_insert_mode_caret_and_its_region() {
+    let (mut base, base_view) = core(&lines(40, |line| Some(format!("line {line}"))));
+    let (mut new, new_view) = core(&lines(40, collapse_lines));
+    let mut session = DiffSession::new(base.document(), new.document(), true);
+    session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+    place(&mut new, new_view, 20);
+    key(&mut new, new_view, Key::Char('i'));
+    let source = new.document().source_bytes();
+    let history = new.document().history_status();
+    session.set_collapsed(true);
+    session.sync(&mut base, base_view, &mut new, new_view).unwrap();
     assert_eq!(cursor_line(&new, new_view), 20);
-    assert_eq!(new.layout(new_view).unwrap().elided().runs(), [34..41]);
+    assert_eq!(new.command_state(new_view).unwrap().mode(), Mode::Insert);
+    assert_eq!(new.layout(new_view).unwrap().elided().runs(), [0..7, 34..41]);
+    assert_eq!(new.document().source_bytes(), source);
+    assert_eq!(new.document().history_status(), history);
 }
 
 #[test]

@@ -40,8 +40,8 @@ internal static class BackgroundLayoutTests
         await Idle(view);
         Check(view.Provider.BackgroundShapedCharacters > 0 && view.Provider.BackgroundShapingThread != uiThread,
             "large Markdown pre-layout shapes on an independent worker");
-        // Beyond the 100 KiB retention threshold, speculation covers a window
-        // of that much text around the viewport, not the whole file.
+        // Beyond the retention threshold, speculation covers a window of that
+        // much text around the viewport, not the whole file.
         Check(view.Provider.BackgroundShapedCharacters < 150_000 && view.BackgroundLayout.Started <= 64,
             "background work stops after a bounded window, not the whole file");
         Check(view.Viewport.top == original.top && view.Presentation.cursor_utf8_offset == caret,

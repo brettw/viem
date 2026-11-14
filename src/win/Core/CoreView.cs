@@ -189,11 +189,11 @@ internal sealed unsafe partial class CoreView : IDisposable
     internal delegate uint Operation(ViemCoreOutcome* outcome);
     internal void Apply(Operation operation)
     { var outcome = new ViemCoreOutcome(); uint status; using (Diagnostics.InputPerformance.Measure("core.operation")) status = operation(&outcome); Finish(status, outcome); }
-    private void Finish(uint status, ViemCoreOutcome outcome, string? diagnostic = null)
+    private void Finish(uint status, ViemCoreOutcome outcome, string? diagnostic = null, bool notify = true)
     {
         Check(status, Provider.LastError ?? "Editor operation"); Outcome = outcome;
         if ((outcome.flags & VIEM_OUTCOME_DOCUMENT_CHANGED) != 0) Document.NotifySourceChanged();
-        else Changed?.Invoke();
+        else if (notify) Changed?.Invoke();
         BackgroundLayout.Update();
         TableWidthRefinement.Update();
         if (outcome.command_status == VIEM_COMMAND_STATUS_READ_ONLY) throw new InvalidOperationException("E45: readonly option is set (use ! to override)");
@@ -221,7 +221,14 @@ internal sealed unsafe partial class CoreView : IDisposable
         return changed != 0;
     }
     public void Refresh() => Apply(o => viem_core_view_state(Document.Handle, Id, o));
-    public void Resize(float width, float height) => Apply(o => viem_core_view_resize(Document.Handle, Id, Math.Max(1, width), Math.Max(1, height), o));
+    public void Resize(float width, float height, bool notify = true)
+    {
+        var outcome = new ViemCoreOutcome();
+        uint status;
+        using (Diagnostics.InputPerformance.Measure("core.Resize"))
+            status = viem_core_view_resize(Document.Handle, Id, Math.Max(1, width), Math.Max(1, height), &outcome);
+        Finish(status, outcome, notify: notify);
+    }
     public void Undo() => Apply(o => viem_core_view_undo(Document.Handle, Id, o));
     public void Redo() => Apply(o => viem_core_view_redo(Document.Handle, Id, o));
     public void SelectAll() => Apply(o => { var s = State; return viem_core_view_select_all(Document.Handle, Id, s.document_id, s.document_revision, o); });

@@ -15,26 +15,24 @@ internal sealed partial class EditorWindow
         FrontendSmokeTests.WriteProgress("initialization");
         if (Environment.GetEnvironmentVariable("VIEM_PERF_DOCUMENT") is string performancePath)
         {
+            long openedAt = System.Diagnostics.Stopwatch.GetTimestamp();
             bool typing = Environment.GetEnvironmentVariable("VIEM_PERF_SCENARIO") == "typing";
-            string? copy = null;
-            if (typing) {
-                var directory = Directory.CreateDirectory(Path.Combine(preferences.DirectoryPath, "input"));
-                copy = Path.Combine(directory.FullName, Path.GetFileName(performancePath));
-                File.Copy(performancePath, copy);
-            }
-            var performancePane = AddPane(NewDocument(File.ReadAllBytes(copy ?? performancePath), copy,
-                format: typing ? VIEM_FORMAT_CODE : VIEM_FORMAT_MARKDOWN));
+            var directory = Directory.CreateDirectory(Path.Combine(preferences.DirectoryPath, "input"));
+            string copy = Path.Combine(directory.FullName, Path.GetFileName(performancePath));
+            File.Copy(performancePath, copy);
+            var performancePane = AddPane(NewDocument(File.ReadAllBytes(copy), copy,
+                format: typing ? VIEM_FORMAT_CODE : null));
             await ClosePane(pane);
             if (typing) {
                 performancePane.Width = 440;
                 performancePane.Height = 320;
             }
-            if (typing && Environment.GetEnvironmentVariable("VIEM_PERF_BASE") is string basis) {
+            if (Environment.GetEnvironmentVariable("VIEM_PERF_BASE") is string basis) {
                 await performancePane.Ready;
                 BeginDiff();
                 await ChooseDiffBase(new(VIEM_DIFF_BASE_FILE, basis));
             }
-            await InputPerformance.Run(performancePane, FrontendSmokeTests.ReportPath!);
+            await InputPerformance.Run(performancePane, FrontendSmokeTests.ReportPath!, openedAt, diffLeft?.View);
             Environment.Exit(0);
             return;
         }
@@ -117,6 +115,8 @@ internal sealed partial class EditorWindow
             new("DiffMode", () => TestDiffMode(preferences)),
             new("DiffAlignedScroll", () => TestAlignedDiffScroll(preferences)),
             new("DiffCollapsedContext", () => TestCollapsedDiff(preferences)),
+            new("DiffCollapseExpanded", () => TestCollapseExpandedDiff(preferences)),
+            new("DiffSaveNavigation", () => TestDiffSaveNavigation(preferences)),
             ListInteractionTests.Group(preferences),
             new("CodeStyles", () => StyleAndSettingsTests.CodeStyleChecks(pane, preferences)),
             new("StylePreview", async () => {

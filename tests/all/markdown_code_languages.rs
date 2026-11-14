@@ -789,7 +789,8 @@ fn wait_for_fixture_syntax(
 
 #[test]
 fn markdown_syntax_uses_code_provider_preserves_prose_and_only_requests_visible_blocks() {
-    let source = format!("**prose**\n\n```rust\nlet x = 1;\n```\n\n```\nunhighlighted\n```\n\n{}\n\n```python\nfar_away\n```", "paragraph\n\n".repeat(20_000));
+    // Stay beyond the 256 KiB complete-preparation limit: only visible blocks apply.
+    let source = format!("**prose**\n\n```rust\nlet x = 1;\n```\n\n```\nunhighlighted\n```\n\n{}\n\n```python\nfar_away\n```", "paragraph\n\n".repeat(256 * 1024 / 11 + 1));
     let calls = Arc::new(Mutex::new(Vec::new()));
     let mut core = Core::new(
         Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap(),

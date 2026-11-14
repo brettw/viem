@@ -428,3 +428,53 @@ mod markdown_theme {
         assert!(core.document.style_defaults_installed(THEMED));
     }
 }
+
+#[test]
+fn saving_a_markdown_diff_during_typing_closes_its_own_projection_group() {
+    for insert_key in ['i', 'R'] {
+        let original = b"# Title\n\n**word** here\n";
+        let document = Document::from_bytes(original.to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let mut core = Editor::new(document);
+        let preview = core.add_view(MockTextMeasurementProvider::new(), 400., 200.);
+        let diff = core.try_add_view_with_presentation(MockTextMeasurementProvider::new(), ViewLayout::new(400., 200.),
+            LayoutExecutionContext::WorkerPool, ViewPresentation::diff()).unwrap();
+        core.focus_buffer();
+        let stale = core.document.revision();
+        core.handle(diff, CoreEvent::Input(InputEvent::key(insert_key))).unwrap();
+        core.handle(diff, CoreEvent::Input(InputEvent::text("X"))).unwrap();
+        core.focus_buffer();
+        let history = core.document.history_status();
+        assert!(core.mark_saved(core.document.id(), stale).is_err());
+        assert_eq!(core.document.history_status(), history, "stale saves must not close typing groups");
+        core.handle(diff, CoreEvent::Input(InputEvent::text("Y"))).unwrap();
+        core.focus_buffer();
+        let saved = core.document.source_bytes();
+        let revision = core.document.revision();
+        let focus = core.document.focus();
+        let history = core.document.history_status();
+        let caret = core.views[&diff].commands.cursor();
+        let mode = core.views[&diff].commands.mode();
+        core.mark_saved(core.document.id(), revision).unwrap();
+        assert_eq!(core.document.focus(), focus);
+        assert_eq!(core.document.revision(), revision);
+        assert_eq!(core.document.source_bytes(), saved);
+        assert!(!core.document.is_dirty());
+        assert_eq!(core.document.history_status().current, history.current);
+        assert_eq!(core.views[&diff].commands.cursor(), caret);
+        assert_eq!(core.views[&diff].commands.mode(), mode);
+        let restoration = core.document.history_node_details(history.current.node).unwrap().restoration.unwrap();
+        assert_eq!(restoration.after().cursor().revision(), core.view_document(diff).revision());
+        assert_ne!(core.view_document(diff).revision(), core.view_document(preview).revision());
+        core.handle(diff, CoreEvent::Input(InputEvent::text("Z"))).unwrap();
+        core.handle(diff, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+        assert!(core.document.is_dirty());
+        core.handle(diff, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+        assert_eq!(core.document.source_bytes(), saved);
+        assert!(!core.document.is_dirty(), "typing after saving has its own undo group");
+        core.handle(diff, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+        assert_eq!(core.document.source_bytes(), original);
+        core.handle(diff, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
+        assert_eq!(core.document.source_bytes(), saved);
+        assert!(!core.document.is_dirty());
+    }
+}

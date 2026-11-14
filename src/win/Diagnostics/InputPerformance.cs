@@ -30,17 +30,26 @@ internal static class InputPerformance
         finally { Microsoft.UI.Xaml.Media.CompositionTarget.Rendered -= Frame; }
     }
 
-    internal static async Task Run(Editor.EditorPane pane, string report)
+    internal static async Task Run(Editor.EditorPane pane, string report, long openedAt, Core.CoreView? basis = null)
     {
         var view = await pane.Ready;
+        using var process = Process.GetCurrentProcess();
+        InputPerformanceResources Resources() {
+            process.Refresh();
+            return new(Stopwatch.GetElapsedTime(openedAt).TotalMilliseconds, process.TotalProcessorTime.TotalMilliseconds,
+                process.PrivateMemorySize64, process.WorkingSet64, GC.GetTotalMemory(false), process.PeakWorkingSet64,
+                view.Provider.LiveResourceCount + (basis?.Provider.LiveResourceCount ?? 0),
+                view.BackgroundLayout.IsIdle && (basis?.BackgroundLayout.IsIdle ?? true));
+        }
+        var readyResources = Resources();
         await Task.Delay(300);
         string scenario = Environment.GetEnvironmentVariable("VIEM_PERF_SCENARIO") ?? "drag";
         bool resize = scenario == "resize", page = scenario == "page", roundtrip = scenario == "roundtrip";
-        bool scroll = scenario == "scroll", typing = scenario == "typing";
+        bool scroll = scenario == "scroll", thumb = scenario == "thumb", typing = scenario == "typing";
         // Markdown Preview on/off from a caret in the middle of the document,
         // as the toolbar and title-bar buttons do.
         bool preview = scenario == "preview";
-        if (typing && Environment.GetEnvironmentVariable("VIEM_PERF_BASE") != null) scenario = "diff-typing";
+        if (Environment.GetEnvironmentVariable("VIEM_PERF_BASE") != null) scenario = "diff-" + scenario;
         int count = preview ? 20 : roundtrip ? 120 : 100;
         var steps = new List<InputPerformanceStep>();
         float width = (float)pane.Canvas.ActualWidth, height = (float)pane.Canvas.ActualHeight;
@@ -52,7 +61,7 @@ internal static class InputPerformance
             else view.Place(50f + i * 10, 60f, true);
             using var drawing = surface.CreateDrawingSession(); pane.Draw(drawing);
         }
-        if (page || scroll || roundtrip || preview || typing) view.Key(Interop.Native.VIEM_KEY_ESCAPE);
+        if (page || scroll || thumb || roundtrip || preview || typing) view.Key(Interop.Native.VIEM_KEY_ESCAPE);
         if (preview || typing) view.Command("50%");
         if (typing) {
             view.Number(true);
@@ -63,12 +72,25 @@ internal static class InputPerformance
             view.Command("u50%zzA");
             if (view.Document.IsDirty) throw new InvalidOperationException("Typing warmup did not restore the input file.");
         }
-        if (page || scroll || roundtrip || preview || typing) await BackgroundLayoutTests.Idle(view);
+        int settle = int.TryParse(Environment.GetEnvironmentVariable("VIEM_PERF_SETTLE_MS"), out var settleDelay) ? settleDelay : -1;
+        bool preparationTimedOut = false;
+        if (settle < 0 && (page || scroll || thumb || roundtrip || preview || typing)) {
+            FrontendSmokeTests.WriteProgress("input-profile preparation");
+            var preparation = Stopwatch.StartNew();
+            while ((!view.BackgroundLayout.IsIdle || basis?.BackgroundLayout.IsIdle == false)
+                && preparation.Elapsed < TimeSpan.FromSeconds(30)) await Task.Delay(10);
+            preparationTimedOut = !view.BackgroundLayout.IsIdle || basis?.BackgroundLayout.IsIdle == false;
+            if (view.BackgroundLayout.LastError != null) throw new InvalidOperationException(view.BackgroundLayout.LastError);
+            if (basis?.BackgroundLayout.LastError is { } error) throw new InvalidOperationException(error);
+        }
         if (typing) {
             width = (float)pane.Canvas.ActualWidth;
             height = (float)pane.Canvas.ActualHeight;
         }
         int interval = int.TryParse(Environment.GetEnvironmentVariable("VIEM_PERF_INTERVAL_MS"), out var delay) ? delay : 16;
+        if (settle > 0) await Task.Delay(settle);
+        var preparedResources = Resources();
+        FrontendSmokeTests.WriteProgress("input-profile measurement");
         samples.Clear(); Enabled = true;
         long shaped = view.Provider.ShapedCharacters;
         long backgroundShaped = view.Provider.BackgroundShapedCharacters;
@@ -84,7 +106,7 @@ internal static class InputPerformance
                 string phase = scenario switch {
                     "typing" or "diff-typing" => i % 10 == 9 ? "enter" : "character",
                     "preview" => i % 2 == 0 ? "code" : "preview",
-                    "roundtrip" => new[] { "down.cold", "up.cached", "down.revisit", "up.revisit" }[i / 30],
+                    "roundtrip" or "diff-roundtrip" => new[] { "down.cold", "up.cached", "down.revisit", "up.revisit" }[i / 30],
                     _ => i < 75 ? "down" : "up"
                 };
                 long started = Stopwatch.GetTimestamp(), beforeShape = view.Provider.ShapedCharacters;
@@ -100,6 +122,8 @@ internal static class InputPerformance
                             else view.Text("x");
                         }
                         else if (preview) view.SetMarkdownPreview(i % 2 != 0);
+                        else if (thumb) pane.ScrollVerticallyFromScrollbar(pane.VerticalScrollControl.Maximum
+                            * (i < 75 ? i / 74d : (99 - i) / 25d));
                         else if (scroll) { var origin = view.Viewport; view.Scroll(origin.left, Math.Max(0, origin.top + (i < 75 ? 60 : -60))); }
                         else if (page || roundtrip) view.Key((roundtrip ? (i / 30) % 2 == 0 : i < 75) ? Interop.Native.VIEM_KEY_PAGE_DOWN : Interop.Native.VIEM_KEY_PAGE_UP);
                         else if (resize) view.Resize(width - (i < 50 ? i : 99 - i) * 5, height);
@@ -135,7 +159,7 @@ internal static class InputPerformance
             view.BackgroundLayout.Enabled, view.Provider.BackgroundShapedCharacters - backgroundShaped,
             new(view.BackgroundLayout.Started, view.BackgroundLayout.Installed, view.BackgroundLayout.Discarded),
             layout.Rows.Length, layout.Clusters.Length, layout.Info.coverage_hard_line_end - layout.Info.coverage_hard_line_start,
-            results), NativeTestJsonContext.Default.InputPerformanceReport));
+            results, settle, preparationTimedOut, readyResources, preparedResources, Resources()), NativeTestJsonContext.Default.InputPerformanceReport));
     }
 #endif
 }

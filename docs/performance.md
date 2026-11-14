@@ -314,6 +314,98 @@ The Rust diff cases drew the base surface 20–22 times per 100 inputs,
 down from 200. Adding a line can still change filler and both panes'
 geometry, and Enter through paint remained slower than in regular Code.
 
+### Windows diff scrollbar measurements
+
+`-ProfileScenario thumb -ProfileDocument <live> -ProfileBase <base>` traverses
+both directions through the native scrollbar handler. The default waits for
+background layout; `-ProfileSettleMs 0` begins after the initial 300 ms warmup.
+See the [profiler controls](../src/win/README.md) for memory and CPU snapshots.
+
+On 2026-11-13, the fixture was `src/mac/AppShell/EVDocumentWindowController.swift`
+at `cdd21f9f` and its parent (105,644 and 105,243 bytes). Windows x64 used Release
+Rust and optimized managed diagnostics, Midnight, wrapping, aligned sides,
+line numbers, visible whitespace and indent alignment. Each live canvas was
+774.67 × 990 DIPs at 144 DPI. Two runs per variant reversed variant order;
+each run made 100 updates, with no concurrent compilation. Values below are
+ranges across runs, in milliseconds of synchronous input plus live drawing,
+not physical display latency.
+
+All variants include the Windows refresh cleanup: a pane consumes its own
+synchronous syntax publication without scheduling a redundant refresh, layout
+repair inside refresh suppresses another change notification, and image preview
+admission filters out text glyphs before allocating and sorting geometry.
+
+| Collapse off | Immediate p50 | Prepared p50 | Prepared p95 | Prepared process private memory |
+| --- | ---: | ---: | ---: | ---: |
+| Existing 100 KiB policy + cleanup | 41.0–41.2 | 34.1–34.2 | 66.8–72.8 | 240–242 MiB |
+| Experimental nearby syntax lookahead | 30.8–31.0 | 15.8–21.4 | 44.8–45.1 | 242–249 MiB |
+| Experimental 128 KiB full preparation | 26.4–27.9 | 11.2–12.6 | 25.8–32.2 | 347–348 MiB |
+
+With collapse on, prepared p50/p95 were 15–16/118–120 ms for cleanup,
+6–7/15–16 ms for lookahead, and 8–9/18–20 ms for full preparation. The full
+preparation experiment shaped no text on the foreground during its prepared
+scroll runs. It finished preparation around 6.2–6.7 seconds after setup began,
+versus 3.9–4.0 seconds for cleanup with collapse off; file/base setup itself
+completed in about 0.8 seconds. Private process memory after the entire sweep
+was 403–415 MiB versus 383–386 MiB. These memory figures include allocator slack
+and the rest of the app, not just retained geometry.
+
+The lookahead experiment retained the existing cache limits and requested
+nearby 8 KiB syntax chunks after visible coverage. It improved typical latency
+but still produced 178–227 ms pauses in immediate scrolling. Full preparation
+had 65–89 ms worst updates in those runs. Neither experiment establishes
+instant response for arbitrary large files. The final threshold decision is
+recorded below. Raw reports, variant DLL hashes and
+experimental patches are retained under `target/diff-scroll/`.
+
+### Larger full-preparation limits
+
+A second Windows experiment compared the 100 KiB policy with 256, 512 and
+1024 KiB, twice each with reversed order and the same refresh cleanup. Swift
+fixtures used `src/mac/Editor/Sources/EVEditorView.swift`, repeated once, twice
+and four times, with sparse comment changes in the live side. Markdown Preview
+fixtures repeated `docs/markdown_demo.md` 16, 32 and 64 times in one ordinary
+pane. These are controlled scaling fixtures, not a representative language
+corpus. Hashes and byte lengths are in `target/diff-scroll/larger-fixtures.json`;
+all 24 report paths and summary values are in `larger-comparison.json` and
+`larger-summary.json` alongside it.
+
+This batch ran at 96 DPI: Code live canvases were 454 x 595 DIPs (448 wide for
+the largest file), Preview 994 x 595. Every within-fixture comparison matched
+geometry, but absolute timings are not directly comparable with the earlier
+144-DPI batch. Preparation now waits for both panes' layout schedulers to become
+idle, capped at 30 seconds. Syntax may still be pending when layout is idle.
+The measurements below are ranges across two runs; preparation elapsed time
+includes setup, and private memory is for the whole process before scrolling.
+
+| Code diff source | Limit | p50, 100 KiB to candidate (ms) | p95, 100 KiB to candidate (ms) | Preparation, candidate (s) | Private memory, 100 KiB to candidate (MiB) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 206 KiB | 256 KiB | 55.8-59.1 to 21.2-27.7 | 104.5-127.2 to 32.4-44.1 | 11.9-12.2 | 252-255 to 537 |
+| 411 KiB | 512 KiB | 66.9-67.0 to 40.7-44.6 | 109.5-117.7 to 85.9-87.8 | 23.0-26.0 | 270-271 to 913-920 |
+| 823 KiB | 1024 KiB | 63.6-63.8 to 58.9-63.1 | 120.4-123.8 to 90.2-106.1 | 31.2 (both timed out) | 302-310 to 867-890 |
+
+Code setup took 0.7-0.9 seconds; baseline preparation took 3.6-3.9 seconds.
+The 512/1024 KiB runs still shaped 119,005-165,441 foreground characters during
+scrolling, with worst updates of 245.5-306.9 ms. Raising the source threshold
+does not raise the retained layout estimate guard (256 MiB per view) or syntax
+presentation budget (4 MiB). These data do not isolate which limit or syntax
+publication caused each loss of prepared geometry. Peak process working sets
+were 632-639, 912-916 and 885-911 MiB respectively; private memory after the
+sweep was 613-622, 556-576 and 576-593 MiB.
+
+| Preview source | Limit | p50, 100 KiB to candidate (ms) | Preparation, candidate (s) | Private memory, 100 KiB to candidate (MiB) |
+| --- | ---: | ---: | ---: | ---: |
+| 236 KiB | 256 KiB | 10.5-11.6 to 9.3-10.0 | 5.3 | 242-243 to 384-387 |
+| 472 KiB | 512 KiB | 12.6-13.9 to 9.4-9.9 | 9.0-9.2 | 261-264 to 613-614 |
+| 944 KiB | 1024 KiB | 22.0-22.8 to 13.4-14.1 | 16.6-17.0 | 297-302 to 1061-1063 |
+
+On 2026-11-14 the user selected 256 KiB: useful headroom beyond the original
+103 KiB file, accepting the measured preparation and memory cost. The larger
+options have diminishing scroll benefits and much higher preparation costs.
+This shared limit applies to every format on both platforms and also sets the
+window size for larger documents, subject to the existing cache budgets.
+Experimental environment overrides are removed from production source.
+
 ### Preview and Code views of one buffer
 
 A buffer keeps one source and, at most, one Literal and one Preview

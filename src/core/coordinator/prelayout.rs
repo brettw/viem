@@ -13,7 +13,7 @@ use std::ops::Range;
 /// this many source bytes are pre-rendered completely (layout, table widths,
 /// image dimensions, syntax highlighting) and retained; beyond it, the same
 /// amount of text around the viewport is prepared and distant work discarded.
-pub const FULL_PRELAYOUT_SOURCE_BYTES: usize = 100 * 1024;
+pub const FULL_PRELAYOUT_SOURCE_BYTES: usize = 256 * 1024;
 
 /// Screens in each direction that are filled before the rest of the window.
 const NEAR_PAGES: usize = 3;
@@ -256,6 +256,20 @@ mod tests {
     use super::*;
     use crate::layout::{compute_layout_job, LayoutEngine, MockTextMeasurementProvider, RegionalLayoutCacheLimits};
     use crate::document::Format;
+
+    #[test]
+    fn complete_preparation_uses_source_bytes_at_the_256_kib_boundary() {
+        // Two-byte scalars distinguish the source-byte limit from character count.
+        let source = "é".repeat(128 * 1024).into_bytes();
+        for format in [Format::PlainText, Format::Code, Format::Markdown] {
+            let document = Document::from_bytes_detect_encoding(source.clone(), format).unwrap();
+            assert!(retains_complete_presentation(&document));
+            let mut beyond = source.clone();
+            beyond.push(b'x');
+            let document = Document::from_bytes_detect_encoding(beyond, format).unwrap();
+            assert!(!retains_complete_presentation(&document));
+        }
+    }
 
     fn fixture() -> (Core<MockTextMeasurementProvider>, ViewId) {
         let text = (0..5_000).map(|i| format!("Paragraph {i}: **office** and words that wrap into visual rows.\n\n")).collect::<String>();
@@ -612,7 +626,7 @@ mod tests {
     #[test]
     fn first_large_prose_view_shapes_only_the_exact_initial_screen() {
         let paragraph = "many words in a long paragraph that wraps across the viewport. ".repeat(20);
-        let document = Document::from_bytes_detect_encoding(format!("{paragraph}\n\n").repeat(200).into_bytes(), Format::Markdown).unwrap();
+        let document = Document::from_bytes_detect_encoding(format!("{paragraph}\n\n").repeat(FULL_PRELAYOUT_SOURCE_BYTES / (paragraph.len() + 2) + 1).into_bytes(), Format::Markdown).unwrap();
         assert!(document.source_byte_len() > FULL_PRELAYOUT_SOURCE_BYTES);
         let mut core = Core::new(document);
         let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 400.0);
@@ -777,7 +791,7 @@ mod tests {
         assert!(request.cancellation_token().is_cancelled());
         let mut worker = LayoutEngine::new(MockTextMeasurementProvider::new());
         assert!(matches!(compute_layout_job(&mut worker, &request, LayoutExecutionContext::WorkerPool), Err(LayoutJobError::Cancelled)));
-        let mut core = Core::new(Document::new(format!("{}{}\n{}", "short\n".repeat(24), "long ".repeat(MAX_JOB_BYTES), "short\n".repeat(4096))));
+        let mut core = Core::new(Document::new(format!("{}{}\n{}", "short\n".repeat(24), "long ".repeat(MAX_JOB_BYTES), "short\n".repeat(FULL_PRELAYOUT_SOURCE_BYTES / 6))));
         assert!(!retains_complete_presentation(core.document()));
         let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 160.0);
         fill(&mut core, view, true);

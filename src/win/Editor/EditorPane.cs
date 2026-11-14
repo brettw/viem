@@ -58,7 +58,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private readonly DispatcherTimer blink = new();
     private readonly DispatcherTimer mapping = new() { Interval = TimeSpan.FromSeconds(1) };
     private bool disposed, refreshing, scrollUpdating, inputUpdating, textCaptureQueued, composing, compositionRejected, dragging, wordSelectionDragging, caretVisible = true;
-    private bool refreshPending;
+    private bool refreshPending, preparingSyntax;
     private bool gutterSelectionDragging, pointerOverText, pointerOverGutter, pointerOverCheckbox;
     private readonly InputCursor textArrowCursor = InputSystemCursor.Create(InputSystemCursorShape.Arrow);
     private readonly InputCursor textInsertionCursor = InputSystemCursor.Create(InputSystemCursorShape.IBeam);
@@ -335,7 +335,14 @@ internal sealed partial class EditorPane : Grid, IDisposable
         installingDocument = false;
         Refresh();
     }
-    private void DocumentChanged() { if (View != null) Run(() => { View.Refresh(); }); }
+    private void DocumentChanged()
+    {
+        // WaitForSyntax publishes synchronously while Refresh is preparing the
+        // latest snapshot. That refresh already consumes the new colors; other
+        // panes still receive the document notification normally.
+        if (preparingSyntax && Document.IsPublishingSyntaxChange) return;
+        if (View != null) Run(() => View.Refresh());
+    }
     private void RememberZoom(float scale)
     {
         try { preferences.SetZoomScale(scale); }
@@ -678,6 +685,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         bool installed = false;
         try
         {
+            using var bodyTiming = Diagnostics.InputPerformance.Measure("refresh.body");
             afterLiveEdit |= window.BeforeDiffLayout(this);
             // The command/status surface must update even when document
             // geometry is temporarily unavailable (for example after scrolling).
@@ -690,17 +698,23 @@ internal sealed partial class EditorPane : Grid, IDisposable
             catch (CoreException error) { prompt.ClearPresentation(); PresentationWarning("command line", error); }
             // Materialize the requested viewport before waiting, then export
             // its geometry and colors together after syntax publication.
+            // This refresh publishes the rebuilt snapshot itself. Suppress a
+            // second Changed notification from its same-size layout repair.
             try { _ = View.LayoutInfo(); }
-            catch (CoreException e) when (e.Status == VIEM_STATUS_LAYOUT_UNAVAILABLE) { View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); }
-            try { using (Diagnostics.InputPerformance.Measure("syntax.wait")) View.WaitForSyntax(); }
+            catch (CoreException e) when (e.Status == VIEM_STATUS_LAYOUT_UNAVAILABLE) { View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight, notify: false); }
+            try {
+                preparingSyntax = true;
+                using (Diagnostics.InputPerformance.Measure("syntax.wait")) View.WaitForSyntax();
+            }
             catch (CoreException error) { PresentationWarning("syntax highlighting", error); }
+            finally { preparingSyntax = false; }
             try { using var layoutMeasurement = Diagnostics.InputPerformance.Measure("layout.export"); snapshot = View.Layout(); }
-            catch (CoreException e) when (e.Status == VIEM_STATUS_LAYOUT_UNAVAILABLE) { View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); snapshot = View.Layout(); }
+            catch (CoreException e) when (e.Status == VIEM_STATUS_LAYOUT_UNAVAILABLE) { View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight, notify: false); snapshot = View.Layout(); }
             presentation = View.Presentation; UpdatePointerCursor(); viewport = View.Viewport;
             bool? previousNumbers = lineNumbers?.Enabled;
             try { RefreshLineNumbers(); }
             catch (CoreException error) { lineNumbers = null; lineNumberCanvas.Invalidate(); PresentationWarning("line numbers", error); }
-            try { RefreshImagePreviews(); }
+            try { using var timing = Diagnostics.InputPerformance.Measure("refresh.images"); RefreshImagePreviews(); }
             catch (CoreException error) { PresentationWarning("image previews", error); }
             try { RefreshTableInteraction(); }
             catch (CoreException error) { PresentationWarning("table controls", error); }

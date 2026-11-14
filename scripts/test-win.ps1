@@ -1,6 +1,6 @@
-param([switch]$NoBuild, [string[]]$Suite, [switch]$PointerInput, [switch]$Optimized, [switch]$NativeAot, [string]$ProfileDocument, [ValidateSet('drag', 'resize', 'page', 'scroll', 'roundtrip', 'preview', 'typing')][string]$ProfileScenario = 'drag', [string]$ProfileBase, [switch]$DisablePrelayout, [ValidateRange(1, 1000)][int]$ProfileIntervalMs = 16, [string]$ConfigFile, [string]$Executable, [ValidateRange(1, 1800)][int]$TimeoutSeconds = 600)
+param([switch]$NoBuild, [string[]]$Suite, [switch]$PointerInput, [switch]$Optimized, [switch]$NativeAot, [string]$ProfileDocument, [ValidateSet('drag', 'resize', 'page', 'scroll', 'thumb', 'roundtrip', 'preview', 'typing')][string]$ProfileScenario = 'drag', [string]$ProfileBase, [switch]$DisablePrelayout, [ValidateRange(1, 1000)][int]$ProfileIntervalMs = 16, [ValidateRange(-1, 30000)][int]$ProfileSettleMs = -1, [string]$ConfigFile, [string]$Executable, [ValidateRange(1, 1800)][int]$TimeoutSeconds = 600)
 $ErrorActionPreference = 'Stop'
-if ($ProfileBase -and (!$ProfileDocument -or $ProfileScenario -ne 'typing')) { throw '-ProfileBase requires -ProfileDocument and -ProfileScenario typing.' }
+if ($ProfileBase -and (!$ProfileDocument -or $ProfileScenario -notin @('typing', 'scroll', 'thumb', 'page', 'roundtrip'))) { throw '-ProfileBase requires -ProfileDocument and a typing, scroll, thumb, page, or roundtrip scenario.' }
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $testOutput = Join-Path $projectRoot $(if ($NativeAot) { 'target/windows-native-tests' } elseif ($Optimized) { 'target/windows-profile' } else { 'target/windows-tests' })
 Push-Location $projectRoot
@@ -35,10 +35,12 @@ try {
     $oldPerformanceBase = $env:VIEM_PERF_BASE
     $oldPointerInput = $env:VIEM_TEST_POINTER_INPUT
     $oldPrelayout = $env:VIEM_TEST_DISABLE_PRELAYOUT
+    $oldSettle = $env:VIEM_PERF_SETTLE_MS
     $oldInterval = $env:VIEM_PERF_INTERVAL_MS
     $oldSuites = $env:VIEM_TEST_SUITES
     $env:VIEM_TEST_SUITES = if ($Suite) { $Suite -join ',' } else { $null }
     $env:VIEM_TEST_DISABLE_PRELAYOUT = if ($DisablePrelayout) { '1' } else { $null }
+    $env:VIEM_PERF_SETTLE_MS = "$ProfileSettleMs"
     $env:VIEM_PERF_INTERVAL_MS = "$ProfileIntervalMs"
     $env:VIEM_TEST_POINTER_INPUT = if ($PointerInput) { '1' } else { $null }
     $env:VIEM_PERF_SCENARIO = $ProfileScenario
@@ -82,6 +84,6 @@ try {
         if ($ProfileDocument) { Write-Output "$ProfileScenario CPU benchmark completed. Report: $reportPath" }
         else { Write-Output "$($report.count) Windows integration checks passed in $([Math]::Round($testTimer.Elapsed.TotalSeconds, 1)) seconds. Report: $reportPath" }
     }
-    finally { $env:VIEM_CONFIG_DIR = $oldProfile; $env:VIEM_PERF_DOCUMENT = $oldPerformanceDocument; $env:VIEM_PERF_SCENARIO = $oldPerformanceScenario; $env:VIEM_PERF_BASE = $oldPerformanceBase; $env:VIEM_TEST_POINTER_INPUT = $oldPointerInput; $env:VIEM_TEST_DISABLE_PRELAYOUT = $oldPrelayout; $env:VIEM_PERF_INTERVAL_MS = $oldInterval; $env:VIEM_TEST_SUITES = $oldSuites }
+    finally { $env:VIEM_CONFIG_DIR = $oldProfile; $env:VIEM_PERF_DOCUMENT = $oldPerformanceDocument; $env:VIEM_PERF_SCENARIO = $oldPerformanceScenario; $env:VIEM_PERF_BASE = $oldPerformanceBase; $env:VIEM_TEST_POINTER_INPUT = $oldPointerInput; $env:VIEM_TEST_DISABLE_PRELAYOUT = $oldPrelayout; $env:VIEM_PERF_INTERVAL_MS = $oldInterval; $env:VIEM_PERF_SETTLE_MS = $oldSettle; $env:VIEM_TEST_SUITES = $oldSuites }
 }
 finally { Pop-Location }

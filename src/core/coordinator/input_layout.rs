@@ -686,7 +686,9 @@ mod tests {
 
     #[test]
     fn repeated_host_pages_slide_bounded_coverage_in_both_directions() {
-        let mut core = Core::new(long_document());
+        // This tests the incremental cache, beyond complete-document retention.
+        let text = "line 00000\n".repeat(super::super::prelayout::FULL_PRELAYOUT_SOURCE_BYTES / 11 + 1);
+        let mut core = Core::new(Document::new(text));
         let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 80.0);
         core.views
             .get_mut(&view)

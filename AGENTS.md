@@ -522,7 +522,7 @@ Deliberate presentation differences from GitHub:
   rules ([data policy](data/unicode/15.0.0/README.md)). An unbreakable segment
   overflows, and leading ASCII indentation offers no break. Unwrapped views
   scroll horizontally. `textwidth` affects only explicit reflow.
-- A document of at most `FULL_PRELAYOUT_SOURCE_BYTES` (100 KiB) is pre-rendered
+- A document of at most `FULL_PRELAYOUT_SOURCE_BYTES` is pre-rendered
   in the background and retained, with exact line heights, table widths, image
   sizes and syntax. Larger documents prepare the same amount of text around the
   viewport and evict the lines farthest from it. Speculative work runs on

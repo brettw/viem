@@ -194,8 +194,8 @@ pub struct DiffSession {
     opened: Vec<Range<usize>>,
     /// The runs collapsed at the last install.
     runs: Vec<CollapsibleRun>,
-    /// Until the first install, a caret inside a collapsed run moves beside
-    /// it; afterwards a caret there keeps its run open.
+    /// On first install or explicit collapse, move a Normal-mode caret beside
+    /// its hidden run. Later synchronization keeps the caret's run open.
     relocate_carets: bool,
     installed: [InstalledSide; 2],
 }
@@ -256,6 +256,9 @@ impl DiffSession {
     /// Change whether unchanged runs collapse; the next install applies it.
     /// Either way every opened run closes again.
     pub fn set_collapsed(&mut self, collapsed: bool) {
+        if collapsed && !self.collapsed {
+            self.relocate_carets = true;
+        }
         self.collapsed = collapsed;
         self.opened.clear();
     }
@@ -306,9 +309,9 @@ impl DiffSession {
         }
     }
 
-    /// A caret inside a run about to collapse: before the first install it
-    /// moves beside the run; afterwards (toggling, or an edit that makes
-    /// its lines equal) the run stays open. Returns whether a run opened.
+    /// A caret inside a run about to collapse moves beside it on first install
+    /// or an explicit collapse toggle. Ordinary synchronization (including
+    /// edits) keeps its run open. Returns whether a run opened.
     fn keep_caret_visible<P: TextMeasurementProvider>(&mut self, core: &mut Core<P>, view: ViewId, side: Side,
         runs: &[CollapsibleRun]) -> Result<bool, CoreError> {
         let Some(line) = core.diff_caret_line(view)? else { return Ok(false) };

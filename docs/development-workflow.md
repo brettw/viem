@@ -102,7 +102,7 @@ properties make it fail for unrelated changes, and a name joined by several
 "and"s usually means it should be several tests.
 
 - Size a large-document fixture just beyond the limits the behavior depends
-  on and a few times larger than the bounds it asserts: the 100 KiB
+  on and a few times larger than the bounds it asserts: the 256 KiB
   full-prelayout size, the 64 KiB long-line slice, the 4,096-line
   comment-context slice, the 2,048-line regional layout cache. Work counters,
   materialization flags and absolute bounds do not need a million lines or

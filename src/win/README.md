@@ -417,7 +417,7 @@ behavior.
 
 To profile selection with a local document, run
 `scripts/test-win.ps1 -ProfileDocument AGENTS.md` (add `-NoBuild` to reuse the
-Debug build). The isolated app loads a copy as Markdown and reports p50/p95 CPU
+Debug build). The isolated app loads a copy using normal format/language detection and reports p50/p95 CPU
 times for 100 deterministic drag updates, layout export and Win2D drawing,
 plus shaping and drawing-cache rebuild counts. Drawing uses an offscreen
 surface on the UI thread; these are CPU measurements, not display-present or
@@ -431,6 +431,19 @@ the middle of the document, letting speculation settle between switches; its
 report splits shaping font setup, native capture, cluster extraction and the
 Code syntax wait. Use `-Optimized`: Debug Rust is not representative.
 The default scenario is `drag`.
+
+`-ProfileScenario thumb` sweeps the vertical scrollbar through the entire
+file and back using the same handler as a thumb drag. Add `-ProfileBase <file>`
+for a diff; `scroll`, `page` and `roundtrip` also accept a base. By default,
+these scenarios wait up to 30 seconds for background layout in both diff panes
+(or the single ordinary pane) before timing; `preparationTimedOut` records when
+that wait expires. Layout becoming idle does not guarantee that all syntax
+work has finished. Use
+`-ProfileSettleMs 0` for immediate scrolling after the initial 300 ms warmup,
+or a positive value for a fixed additional delay instead of waiting for layout.
+Reports include process CPU time and private/working-set/managed bytes after
+file/base setup, before the measured input, and after it. Setup time is not a
+physical first-frame measurement; process memory includes allocator slack.
 
 Use `-Optimized -ProfileScenario typing -ProfileDocument <file>` to time
 90 single-character insertions and 10 Enter keys in a Code copy of the file.

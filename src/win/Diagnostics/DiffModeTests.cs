@@ -98,7 +98,127 @@ internal sealed partial class EditorWindow
         button.Focus(FocusState.Programmatic);
         await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
         CheckDiff(button.IsChecked == true && HasDivider(window.diffLeft!) && HasDivider(live)
-            && Shown(live, 0) && !Shown(live, 15), "The toolbar recollapses context while keeping the live caret visible");
+            && !Shown(live, 0) && Shown(live, 7) && !Shown(live, 15), "The toolbar recollapses context and moves the caret beside its hidden region");
+    }
+
+    private static async Task TestDiffSaveNavigation(Preferences preferences)
+    {
+        string directory = Path.Combine(preferences.DirectoryPath, "diff-save-navigation");
+        Directory.CreateDirectory(directory);
+        var profile = new Preferences(Path.Combine(directory, "profile"));
+        async Task Git(params string[] arguments) {
+            var start = new ProcessStartInfo("git") { WorkingDirectory = directory, UseShellExecute = false,
+                CreateNoWindow = true, RedirectStandardError = true };
+            foreach (var argument in arguments) start.ArgumentList.Add(argument);
+            using var process = Process.Start(start)!;
+            string error = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+            if (process.ExitCode != 0) throw new InvalidOperationException(error);
+        }
+        await Git("init", "-q", "-b", "main");
+        string a = Path.Combine(directory, "a.md"), b = Path.Combine(directory, "b.txt");
+        await File.WriteAllTextAsync(a, "# Original\n");
+        await File.WriteAllTextAsync(b, "Original\n");
+        await Git("add", "a.md", "b.txt");
+        await Git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "base");
+        await File.WriteAllTextAsync(a, "# Changed\n");
+        await File.WriteAllTextAsync(b, "Changed\n");
+        await using var editor = await TestEditor.Open(profile, "", VIEM_FORMAT_PLAIN_TEXT);
+        var window = editor.Window;
+        await window.DiffFolder(directory);
+        async Task Decide(Task navigation, string buttonName) {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            ContentDialog? dialog = null;
+            try {
+                while (dialog == null) {
+                    dialog = VisualTreeHelper.GetOpenPopupsForXamlRoot(window.root.XamlRoot)
+                        .Where(p => p.Child != null).SelectMany(p => FormattingToolbarTests.Descendants<ContentDialog>(p.Child)).FirstOrDefault();
+                    if (dialog == null) await Task.Delay(20, timeout.Token);
+                }
+                Button? button = null;
+                while (button?.IsLoaded != true) {
+                    button = FormattingToolbarTests.Descendants<Button>(dialog).FirstOrDefault(item => item.Name == buttonName);
+                    if (button?.IsLoaded != true) await Task.Delay(20, timeout.Token);
+                }
+                if (dialog.Content is ScrollViewer scroll) {
+                    VisualStateManager.GoToState(scroll, "NoIndicator", false);
+                    window.root.UpdateLayout();
+                    double height = scroll.ActualHeight;
+                    VisualStateManager.GoToState(scroll, "MouseIndicatorFull", false);
+                    window.root.UpdateLayout();
+                    CheckDiff(Math.Abs(scroll.ActualHeight - height) < .1,
+                        $"message height stays fixed across scrollbar hover states (before={height}, after={scroll.ActualHeight}, horizontal={scroll.HorizontalScrollBarVisibility}, vertical={scroll.VerticalScrollBarVisibility})");
+                    if (Equals(dialog.Title, "Long message")) {
+                        CheckDiff(scroll.ScrollableHeight > 0 && scroll.ComputedVerticalScrollBarVisibility == Visibility.Visible,
+                            "long confirmation messages retain a visible vertical scrollbar");
+                        scroll.ChangeView(null, scroll.ScrollableHeight, null, disableAnimation: true);
+                        while (scroll.VerticalOffset == 0) await Task.Delay(20, timeout.Token);
+                        CheckDiff(scroll.VerticalOffset > 0, "long confirmation messages can scroll to their remaining text");
+                    } else CheckDiff(scroll.ComputedVerticalScrollBarVisibility == Visibility.Collapsed,
+                        "short confirmation messages have no scrollbar that can change their height");
+                }
+                new ButtonAutomationPeer(button).Invoke();
+                await navigation.WaitAsync(timeout.Token);
+            } finally { dialog?.Hide(); }
+        }
+        foreach (var (target, insert) in new[] { (a, false), (a, true), (b, false), (b, true) }) {
+            if (!SamePath(target, window.ActivePane!.Document.FilePath)) await window.MoveDiffFile(1);
+            var pane = window.ActivePane!;
+            var document = pane.Document;
+            var ordinary = window.NewWindow(document);
+            await ordinary.ActivePane!.Ready;
+            window.Activate();
+            try {
+                string path = document.FilePath!;
+                string disk = await File.ReadAllTextAsync(path);
+                pane.View!.Command("ggi"); pane.View.Text("edit ");
+                if (!insert) pane.View.Key(VIEM_KEY_ESCAPE);
+                string expected = System.Text.Encoding.UTF8.GetString(document.Source(document.State.document_revision));
+                await Decide(window.MoveDiffFile(1), "CloseButton");
+                CheckDiff(pane.Document == document && document.IsDirty && await File.ReadAllTextAsync(path) == disk,
+                    $"Cancel keeps the edited {(insert ? "Insert" : "Normal")}-mode file and leaves disk unchanged");
+                await Decide(window.MoveDiffFile(1), "PrimaryButton");
+                CheckDiff(await File.ReadAllTextAsync(path) == expected && pane.Document != document
+                    && SamePath(pane.Document.FilePath!, SamePath(path, a) ? b : a),
+                    $"Save writes the exact {(insert ? "Insert" : "Normal")}-mode source and advances to the next diff file"
+                    + $" (path={pane.Document.FilePath}, dirty={pane.Document.IsDirty}, error={pane.LastError})");
+            } finally { ordinary.closing = true; ordinary.Close(); }
+        }
+        await Decide(window.Dialog("Long message", string.Join("\n", Enumerable.Repeat("A long confirmation message.", 200))), "PrimaryButton");
+    }
+
+    private static async Task TestCollapseExpandedDiff(Preferences preferences)
+    {
+        var profile = new Preferences(Path.Combine(preferences.DirectoryPath, "collapse-expanded-diff"));
+        profile.Set("diff", "collapseContext", false);
+        var lines = Enumerable.Range(0, 600).Select(n => $"line {n}").ToArray();
+        string basePath = Path.Combine(profile.DirectoryPath, "base.txt");
+        await File.WriteAllTextAsync(basePath, string.Join("\n", lines));
+        lines[500] = "changed";
+        string source = string.Join("\n", lines);
+        await using var editor = await TestEditor.Open(profile, source, VIEM_FORMAT_CODE);
+        var window = editor.Window;
+        await window.EnableDiff();
+        await window.ChooseDiffBase(new(VIEM_DIFF_BASE_FILE, basePath));
+        var live = editor.Pane;
+        var left = window.diffLeft!;
+        await BackgroundLayoutTests.Idle(live.View!);
+        await BackgroundLayoutTests.Idle(left.View!);
+        double expanded = live.VerticalScrollControl.Maximum;
+        CheckDiff(window.diffToolbar!.Collapse.IsChecked == false && live.View!.Presentation.cursor_utf8_offset == 0,
+            "the comparison starts expanded with the caret in its long leading context");
+        // Exercise the shell action used by both toolbar and menu without
+        // requiring global pointer ownership on the test desktop.
+        window.SetDiffCollapsed(true);
+        foreach (var pane in new[] { left, live }) {
+            var layout = pane.View!.Layout();
+            CheckDiff(layout.Rows.Any(row => row.hard_line_index == 497) && !layout.Rows.Any(row => row.hard_line_index == 0)
+                && pane.View.Presentation.cursor_utf8_offset > 0 && pane.VerticalScrollControl.Maximum < expanded,
+                $"explicit collapse immediately hides leading context and updates the {(pane == left ? "base" : "live")} caret and scrollbar");
+        }
+        CheckDiff(window.diffToolbar.Collapse.IsChecked == true && editor.Source == source
+            && new Preferences(profile.DirectoryPath).Get("diff", "collapseContext", false),
+            "collapse updates the toolbar and saved choice without editing the source or switching files");
     }
 
     private static async Task TestAlignedDiffScroll(Preferences preferences)
