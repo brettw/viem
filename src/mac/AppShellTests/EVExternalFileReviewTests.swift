@@ -119,7 +119,7 @@ final class EVExternalFileReviewTests: XCTestCase {
     }
 
     try Data("first background version".utf8).write(to: url, options: .atomic)
-    try review(document).get()
+    _ = try review(document).get()
     XCTAssertNotNil(document.externalFileChange)
     XCTAssertEqual(prompts, 0)
     try Data("latest background version".utf8).write(to: url, options: .atomic)
@@ -127,7 +127,7 @@ final class EVExternalFileReviewTests: XCTestCase {
     NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: NSApplication.shared)
     wait(for: [activated], timeout: 5)
 
-    try review(document).get()
+    _ = try review(document).get()
     XCTAssertEqual(prompts, 1)
     XCTAssertEqual(backend.data, Data("unsaved text".utf8))
     XCTAssertTrue(backend.persistenceState.isDirty)
@@ -185,8 +185,8 @@ final class EVExternalFileReviewTests: XCTestCase {
       decide(.keepBuffer)
     }
     try Data("outside one".utf8).write(to: url)
-    try review(document).get()
-    try review(document).get()
+    _ = try review(document).get()
+    _ = try review(document).get()
     XCTAssertEqual(prompts, 1)
     XCTAssertEqual(backend.data, Data("unsaved text".utf8))
     XCTAssertTrue(backend.persistenceState.isDirty)
@@ -196,7 +196,7 @@ final class EVExternalFileReviewTests: XCTestCase {
     XCTAssertThrowsError(try document.authorizeExternalWrite(to: url))
     XCTAssertEqual(overwrites, 1)
     try Data("outside two".utf8).write(to: url)
-    try review(document).get()
+    _ = try review(document).get()
     XCTAssertEqual(prompts, 2)
   }
 
@@ -223,7 +223,7 @@ final class EVExternalFileReviewTests: XCTestCase {
       XCTAssertFalse(backend.persistenceState.isDirty)
       XCTAssertFalse(document.isDocumentEdited)
       XCTAssertEqual(document.fileBaseline, try EVFileFingerprint.read(url))
-      try review(document).get()
+      _ = try review(document).get()
       XCTAssertEqual(prompts, 1)
     }
   }
@@ -235,12 +235,12 @@ final class EVExternalFileReviewTests: XCTestCase {
       prompts += 1; decide(.keepBuffer)
     }
     try Data("external".utf8).write(to: url)
-    try review(document).get()
+    _ = try review(document).get()
     try Data("original".utf8).write(to: url)
-    try review(document).get()
+    _ = try review(document).get()
     XCTAssertEqual(prompts, 1)
     try Data("external".utf8).write(to: url)
-    try review(document).get()
+    _ = try review(document).get()
     XCTAssertEqual(prompts, 2)
   }
 
@@ -250,7 +250,7 @@ final class EVExternalFileReviewTests: XCTestCase {
       backend.sourceFormat = format
       document.externalFileReviewDecisionHandler = { _, _, decide in decide(.loadFile) }
       try Data("# new source".utf8).write(to: url)
-      try review(document).get()
+      _ = try review(document).get()
       XCTAssertEqual(backend.sourceFormat, format)
       XCTAssertEqual(backend.data, Data("# new source".utf8))
     }
@@ -263,7 +263,7 @@ final class EVExternalFileReviewTests: XCTestCase {
     document.fileURL = alias
     document.externalFileReviewDecisionHandler = { _, _, decide in decide(.loadFile) }
     try Data("reloaded target".utf8).write(to: url, options: .atomic)
-    try review(document).get()
+    _ = try review(document).get()
     XCTAssertEqual(document.externalFileMonitorURL, alias)
     XCTAssertEqual(backend.data, Data("reloaded target".utf8))
 
@@ -293,10 +293,10 @@ final class EVExternalFileReviewTests: XCTestCase {
     document.checkForExternalChangesAndReview { _ in }
     wait(for: [shown], timeout: 5)
     try Data("original".utf8).write(to: url)
-    try review(document).get()
+    _ = try review(document).get()
     pending?(.keepBuffer)
     try Data("external".utf8).write(to: url)
-    try review(document).get()
+    _ = try review(document).get()
     XCTAssertEqual(prompts, 2)
   }
 
@@ -315,7 +315,7 @@ final class EVExternalFileReviewTests: XCTestCase {
       else { decide(.keepBuffer); reviewedNewVersion.fulfill() }
     }
     try Data("reviewed version".utf8).write(to: url)
-    try review(document).get()
+    _ = try review(document).get()
     wait(for: [reviewedNewVersion], timeout: 5)
     XCTAssertEqual(backend.data, Data("reviewed version".utf8))
     XCTAssertEqual(try Data(contentsOf: url), Data("unreviewed later version".utf8))
@@ -331,12 +331,12 @@ final class EVExternalFileReviewTests: XCTestCase {
       decide(.keepBuffer)
     }
     try FileManager.default.removeItem(at: url)
-    try review(document).get()
-    try review(document).get()
+    _ = try review(document).get()
+    _ = try review(document).get()
     XCTAssertEqual(choices, [.deleted])
     XCTAssertEqual(backend.data, Data("original".utf8))
     try Data("recreated".utf8).write(to: url)
-    try review(document).get()
+    _ = try review(document).get()
     XCTAssertEqual(choices.count, 2)
     XCTAssertEqual(backend.data, Data("original".utf8))
   }
@@ -367,7 +367,7 @@ final class EVExternalFileReviewTests: XCTestCase {
       XCTAssertNil(error); saved.fulfill()
     }
     wait(for: [saved], timeout: 5)
-    try review(document).get()
+    _ = try review(document).get()
     wait(for: [unwanted], timeout: 0.35)
     XCTAssertEqual(try Data(contentsOf: url), Data("saved locally".utf8))
   }
@@ -385,7 +385,7 @@ final class EVExternalFileReviewTests: XCTestCase {
       XCTAssertNil(error); saved.fulfill()
     }
     wait(for: [saved], timeout: 5)
-    try review(document).get()
+    _ = try review(document).get()
     wait(for: [unwanted], timeout: 0.35)
     XCTAssertEqual(try Data(contentsOf: url), Data("written copy".utf8))
     XCTAssertEqual(document.fileBaseline, try EVFileFingerprint.read(url))
@@ -410,7 +410,7 @@ final class EVExternalFileReviewTests: XCTestCase {
     try Data("external".utf8).write(to: url)
     document.checkForExternalChangesAndReview { _ in }
     wait(for: [first], timeout: 5)
-    try review(document).get()
+    _ = try review(document).get()
     XCTAssertEqual(prompts, 1)
     backend.edit("new edit while prompt open")
     pending?(.loadFile)
@@ -431,7 +431,7 @@ final class EVExternalFileReviewTests: XCTestCase {
       } else { decide(.keepBuffer); reviewedNewVersion.fulfill() }
     }
     try Data("first external version".utf8).write(to: url)
-    try review(document).get()
+    _ = try review(document).get()
     wait(for: [reviewedNewVersion], timeout: 5)
     XCTAssertEqual(backend.data, Data("original".utf8))
   }
@@ -465,7 +465,7 @@ final class EVExternalFileReviewTests: XCTestCase {
     XCTAssertThrowsError(try review(document).get())
     XCTAssertEqual(backend.data, Data("original".utf8))
     backend.failReads = false
-    try review(document).get()
+    _ = try review(document).get()
     XCTAssertEqual(backend.data, Data("external".utf8))
   }
 }

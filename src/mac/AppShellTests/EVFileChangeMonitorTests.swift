@@ -235,7 +235,7 @@ final class EVFileChangeMonitorTests: XCTestCase {
     let changed = expectation(description: "released monitor never calls back")
     changed.isInverted = true
     var monitor: EVFileChangeMonitor? = EVFileChangeMonitor(url: url) { changed.fulfill() }
-    weak var released = monitor
+    weak let released = monitor
     try Data("queued before release".utf8).write(to: url, options: .atomic)
     monitor = nil
     XCTAssertNil(released)

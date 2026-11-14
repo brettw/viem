@@ -17,9 +17,9 @@ final class EVDiffModeTests: XCTestCase {
         return EVConfigurationStore(directory: directory, legacyDefaults: nil)
     }
 
-    private func backend(_ source: String, type: String = EVDocument.codeType, filename: String = "/tmp/viem-diff.rs") throws -> EVCoreDocumentBackend {
+    private func backend(_ source: String, type: String? = nil, filename: String = "/tmp/viem-diff.rs") throws -> EVCoreDocumentBackend {
         let backend = EVCoreDocumentBackend(configuration: try configuration())
-        try backend.read(source: Data(source.utf8), typeName: type, origin: .file(path: filename, automaticCode: true))
+        try backend.read(source: Data(source.utf8), typeName: type ?? EVDocument.codeType, origin: .file(path: filename, automaticCode: true))
         return backend
     }
 

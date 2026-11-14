@@ -391,8 +391,6 @@ public enum EVWindowRequest: Equatable, Sendable {
   case setWidth(columns: Int?)
 }
 
-/// One view onto an editor document. Its NSView is a projection, never storage.
-@MainActor
 /// What one view shows of its buffer (`VIEM_VIEW_DISPLAY_*`). Views of one
 /// Markdown buffer may differ: one in Preview beside another of its source.
 public enum EVViewDisplay: UInt32, Sendable {
@@ -406,6 +404,8 @@ public enum EVViewDisplay: UInt32, Sendable {
   case diff = 3
 }
 
+/// One view onto an editor document. Its NSView is a projection, never storage.
+@MainActor
 public protocol EVEditorSurface: AnyObject {
   var viewController: NSViewController { get }
   var statusBarState: EVStatusBarState { get }
