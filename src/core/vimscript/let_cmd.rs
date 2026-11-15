@@ -193,7 +193,7 @@ fn combine(old: Value, op: &str, value: Value) -> EvalResult<Value> {
         "/=" => super::expr::arithmetic(&old, &value, b'/')?,
         "%=" => super::expr::arithmetic(&old, &value, b'%')?,
         ".=" | "..=" => {
-            if matches!(old, Value::Float(_)) || matches!(value, Value::Float(_)) && false {
+            if matches!(old, Value::Float(_)) || matches!(value, Value::Float(_)) {
                 return Err(Fail::Error(VimError::new(734, "Wrong variable type for .=")));
             }
             let mut bytes = old.to_bytes()?;

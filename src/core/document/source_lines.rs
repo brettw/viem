@@ -385,6 +385,24 @@ impl Document {
         self.execute_compat_request(request)?;
         Ok(self.revision() != before)
     }
+
+    /// Replace physical source `range` with `text` exactly as spelled. Unlike
+    /// `replace_physical_source`, an LF is not a line break to translate:
+    /// callers spell their own line endings, so a literal LF stays content in
+    /// a Mac-format file and a DOS ending is not doubled.
+    pub fn replace_physical_source_literal(&mut self, range: Range<usize>, text: &str) -> Result<bool, DocumentError> {
+        let bytes = self.encoding().encode_fragment(text)?;
+        if self.source_bytes_in(range.clone())? == bytes {
+            return Ok(false);
+        }
+        let request = ModelRequest::ApplyPhysicalSourcePatches {
+            document: self.id(),
+            revision: self.revision(),
+            patches: vec![SourcePatch::primary(range, bytes)],
+        };
+        self.execute_compat_request(request)?;
+        Ok(true)
+    }
 }
 
 impl Document {

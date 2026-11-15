@@ -193,8 +193,8 @@ impl<P: TextMeasurementProvider> CoreScriptHost<'_, P> {
     }
 
     /// Line values for `setline()` and `append()`, as source text.
-    fn lines_argument(value: Option<&Value>) -> EvalResult<Vec<String>> {
-        let line = |value: &Value| value.to_text().map(|text| script_line_source(&text));
+    fn lines_argument(value: Option<&Value>, format: crate::document::FileFormat) -> EvalResult<Vec<String>> {
+        let line = |value: &Value| value.to_text().map(|text| script_line_source(&text, format));
         Ok(match value {
             Some(Value::List(list)) => list.snapshot().iter().map(line).collect::<Result<_, _>>()?,
             Some(value) => vec![line(value)?],
@@ -433,7 +433,7 @@ impl<P: TextMeasurementProvider> ScriptHost for CoreScriptHost<'_, P> {
                     return Err(Fail::Error(VimError::new(565, "Not allowed to change text or change window")));
                 }
                 let line = self.line_argument(args.first())?;
-                let lines = Self::lines_argument(args.get(1))?;
+                let lines = Self::lines_argument(args.get(1), self.core.document.file_format())?;
                 let count = self.core.document.physical_source_line_number_count() as i64;
                 if name == "setline" {
                     if line < 1 || line > count + 1 {

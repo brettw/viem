@@ -119,3 +119,8 @@ echo Try('let g:M[1] = 2') g:M
 let B = 0z01
 let B[1] = 2
 echo B
+
+" Legacy concatenation reads a following number as an integer.
+echo 'a' . 2.5 'a' .. 2.5
+let s = 'p'
+echo Try('let g:s = "p" | let g:s .= 0.5') s

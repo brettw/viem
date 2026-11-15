@@ -48,14 +48,8 @@ Some error numbers differ only because the oracle is 9.1 and the target is
 
 - **Value forms:**
   - `let @a = ['x', 'y']` should be E730.
-  - `setreg()` rejects the `getreginfo()` dictionary form, and `getreginfo()`
-    is missing.
   - `setreg('!', 'x')` succeeds instead of E354.
   - `setreg('a', 'x', 'q')` reports E475; Vim returns 0.
-- **Block width:** Vim stores an explicit width (`'b5'` gives `^V5`) and
-  measures in display cells (`日本` is 4). Viem reports the widest row in
-  characters. [Registers and marks](docs/vim-registers-and-marks.md) records
-  ignoring the width as deliberate; the cell count is still a difference.
 - **Marks:**
   - `setpos()` on `'a`, `'A`, `'<` and `'>` does nothing and returns -1.
   - `:mark b` is parsed as `:marks`, `2mark d` is rejected, and `:k` is

@@ -3707,7 +3707,7 @@ impl CommandInterpreter {
             contents: text.split('\n').map(str::to_owned).collect(),
             register: requested.map(|name| name.to_string()).unwrap_or_default(),
             kind: match value.kind { RegisterKind::Linewise => "V".into(), RegisterKind::Characterwise => "v".into(),
-                RegisterKind::Blockwise => format!("\u{16}{}", text.split('\n').map(|row| row.chars().count()).max().unwrap_or(0)), },
+                RegisterKind::Blockwise => format!("\u{16}{}", value.block_width()), },
             inclusive: true,
             visual: matches!(self.mode, Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock),
         });

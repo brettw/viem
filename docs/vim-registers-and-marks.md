@@ -38,12 +38,24 @@ String is linewise only when it ends in a line feed; `setreg()`'s `c`/`v`,
 Vim, an appended register takes the appended value's type, and only a String
 appended to a characterwise register continues its last line; this differs from
 appending with an uppercase register name in Normal mode. Writing any register
-other than `"` leaves the unnamed register unchanged. Every line feed in a String separates lines, so it is a semantic hard break, as a
-yank's line ends are. In a List each item is one line, and a line feed inside an
+other than `"` leaves the unnamed register unchanged. Every line feed in a
+String separates lines, so it is a semantic hard break, as a yank's line ends
+are. In a List each item is one line, and a line feed inside an
 item is that line's literal content; `getreg(r, 1, 1)` returns the same items. A
-block row cannot contain a literal line feed. A block register has no stored
-width: `getregtype()` reports its widest row in characters, and a width given to
-`setreg()` is accepted and ignored.
+block row cannot contain a literal line feed. A width given to `setreg()`
+(`b5`) is kept and reported by `getregtype()`, so saving and restoring a block
+register round-trips; otherwise the width is the widest row in display cells,
+counting each ASCII character, a tab included, as one cell, as Vim does. As in
+Vim, appending to a block register takes the width of the appended rows. The
+width does not pad rows when a block is put: puts place rows by screen
+position.
+
+`getreginfo()` returns a register's lines, type and whether the unnamed
+register points to it, and `setreg()` accepts that Dictionary to restore it.
+Viem's unnamed register holds a copy, so it points to the register a yank,
+deletion or script write last copied it from: `0` for an unnamed yank, `1` or
+`-` for a deletion, or the named register. `isunnamed` and the unnamed
+register's `points_to` copy that register's contents into `"`.
 
 ## Register scope
 

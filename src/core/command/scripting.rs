@@ -253,7 +253,7 @@ impl CommandInterpreter {
     }
 
     pub(crate) fn set_script_register(&mut self, name: char, value: &Value, append: bool) -> Result<(), VimError> {
-        self.set_script_register_with_type(name, value, append, None)
+        self.set_script_register_with_type(name, value, append, None, None)
     }
 
     /// `:let @r` and `setreg()`. `kind` is `setreg()`'s explicit type; without
@@ -265,6 +265,7 @@ impl CommandInterpreter {
         value: &Value,
         append: bool,
         kind: Option<RegisterKind>,
+        width: Option<usize>,
     ) -> Result<(), VimError> {
         if name == '/' {
             self.last_search = Some((SearchDirection::Forward, value.to_text()?));
@@ -282,13 +283,43 @@ impl CommandInterpreter {
             // Vim empties the register rather than storing an empty line.
             self.clear_script_register(name)
         } else if append {
-            let combined = script_append_value(self.registers.get(name), value, kind)?;
+            let combined = script_append_value(self.registers.get(name), value, kind, width)?;
             self.append_script_register(name, combined)
         } else {
-            let value = script_register_value(value, kind)?;
+            let value = script_register_value(value, kind)?.with_block_width(width);
             self.write_script_register(name, value)
         };
         result.map_err(|error| VimError::plain(format!("{error:?}")))
+    }
+
+    /// `setreg()` with the Dictionary `getreginfo()` returns. Without
+    /// `regcontents` the contents stay; `isunnamed` or the unnamed register's
+    /// `points_to` make `"` refer to a register.
+    fn set_script_register_info(&mut self, name: char, info: &vimscript::Dict) -> EvalResult<()> {
+        if let Some(contents) = info.get(b"regcontents") {
+            let options = match info.get(b"regtype") {
+                Some(kind) => {
+                    let kind = kind.to_text()?;
+                    if !(kind.is_empty() || matches!(kind.as_str(), "v" | "V" | "c" | "l" | "b") || kind.starts_with('\u{16}') && kind[1..].bytes().all(|b| b.is_ascii_digit())) {
+                        return Err(VimError::new(475, "Invalid value for argument value").into());
+                    }
+                    kind
+                }
+                None => String::new(),
+            };
+            let (append, kind, width) = setreg_options(&options).map_err(Fail::Error)?;
+            self.set_script_register_with_type(name, &contents, append, kind, width).map_err(Fail::Error)?;
+        }
+        let target = name.to_ascii_lowercase();
+        if name == '"' {
+            if let Some(source) = info.get(b"points_to") {
+                let source = source.to_text()?.chars().next().unwrap_or('"').to_ascii_lowercase();
+                self.registers.point_unnamed(source);
+            }
+        } else if info.get(b"isunnamed").map(|value| value.to_bool()).transpose()?.unwrap_or(false) {
+            self.registers.point_unnamed(target);
+        }
+        Ok(())
     }
 
     pub(crate) fn script_ignorecase(&self) -> bool {
@@ -338,7 +369,7 @@ impl CommandInterpreter {
         if line as usize > count {
             return None;
         }
-        document.physical_line(line as usize - 1).ok().map(|line| script_line_value(line.content_text()))
+        document.physical_line(line as usize - 1).ok().map(|line| script_line_value(line.content_text(), document.file_format()))
     }
 
     /// Resolve a `line()`-style position: ".", "$", "'x", "v", or a number.
@@ -537,7 +568,8 @@ impl CommandInterpreter {
                 if register == '=' && args.get(1).is_some_and(|value| value.to_bool().unwrap_or(false)) {
                     let expression = self.last_expression.clone();
                     return Ok(if as_list {
-                        Value::list(expression.into_iter().map(Value::from).collect())
+                        // Vim's expression register always holds one line.
+                        Value::list(vec![Value::from(expression.unwrap_or_default())])
                     } else {
                         Value::from(expression.unwrap_or_default())
                     });
@@ -548,6 +580,7 @@ impl CommandInterpreter {
                     // reads it from a List item.
                     return Ok(match self.read_register_value_for_put(document, register) {
                         Ok(Some(value)) => Value::list(register_lines(&value).into_iter().map(Value::from).collect()),
+                        Ok(None) if register == '=' => Value::list(vec![Value::str("")]),
                         Ok(None) => Value::list(Vec::new()),
                         Err(error) => return Err(VimError::plain(format!("{error:?}")).into()),
                     });
@@ -572,18 +605,50 @@ impl CommandInterpreter {
                 Ok(Value::from(match self.read_register_value_for_put(document, register) {
                     Ok(Some(value)) => match value.kind {
                         RegisterKind::Linewise => "V".to_owned(),
-                        RegisterKind::Blockwise => format!("\x16{}",
-                            value.text.split('\n').map(|row| row.chars().count()).max().unwrap_or(0)),
+                        RegisterKind::Blockwise => format!("\x16{}", value.block_width()),
                         RegisterKind::Characterwise => "v".to_owned(),
                     },
                     _ => String::new(),
                 }))
             })(),
+            "getreginfo" => (|| {
+                let register = args.first().map(|value| value.to_text()).transpose()?.and_then(|text| text.chars().next()).unwrap_or('"');
+                let register = register.to_ascii_lowercase();
+                let present = match register {
+                    '=' | '_' => true,
+                    '/' => self.last_search.is_some(),
+                    ':' => self.last_command_line.is_some(),
+                    _ => matches!(self.read_register_value_for_put(document, register), Ok(Some(_))),
+                };
+                if !present {
+                    return Ok(Value::Dict(vimscript::Dict::new()));
+                }
+                let name = Value::from(register.to_string());
+                let contents = self.script_function(document, buffer_name, "getreg", &[name.clone(), 1.into(), 1.into()])
+                    .unwrap_or_else(|| Ok(Value::list(Vec::new())))?;
+                let kind = self.script_function(document, buffer_name, "getregtype", &[name])
+                    .unwrap_or_else(|| Ok(Value::str("")))?;
+                let source = self.registers.unnamed_source();
+                let mut pairs = vec![("regcontents".into(), contents), ("regtype".into(), kind)];
+                // The unnamed register says which register it points to; the
+                // others say whether it points to them.
+                if register == '"' {
+                    if let Some(source) = source {
+                        pairs.push(("points_to".into(), Value::from(source.to_string())));
+                    }
+                } else {
+                    pairs.push(("isunnamed".into(), Value::Bool(source == Some(register))));
+                }
+                Ok(Value::Dict(vimscript::Dict::from_pairs(pairs)))
+            })(),
             "setreg" => (|| {
                 let register = args.first().map(|value| value.to_text()).transpose()?.and_then(|text| text.chars().next()).unwrap_or('"');
+                if let Some(Value::Dict(info)) = args.get(1) {
+                    return self.set_script_register_info(register, info).map(|()| Value::Number(0));
+                }
                 let value = args.get(1).cloned().unwrap_or_default();
                 let options = args.get(2).map(|value| value.to_text()).transpose()?.unwrap_or_default();
-                let (append, kind) = setreg_options(&options).map_err(Fail::Error)?;
+                let (append, kind, width) = setreg_options(&options).map_err(Fail::Error)?;
                 if let (Value::List(list), '/' | '=') = (&value, register) {
                     // These hold one line: a one-item List sets it and an
                     // empty List clears it.
@@ -600,7 +665,7 @@ impl CommandInterpreter {
                     }
                     return Ok(Value::Number(0));
                 }
-                self.set_script_register_with_type(register, &value, append, kind).map_err(Fail::Error)?;
+                self.set_script_register_with_type(register, &value, append, kind, width).map_err(Fail::Error)?;
                 Ok(Value::Number(0))
             })(),
             "hlexists" | "hlID" | "synID" | "synIDtrans" | "foldlevel" | "pumvisible" | "complete_check" | "getcmdwintype"
@@ -818,25 +883,27 @@ fn append_source_lines(document: &mut Document, after: usize, lines: &[String], 
     }
     let body = lines.join(ending);
     if after == 0 {
-        return document.replace_physical_source(0..0, format!("{body}{ending}")).map(|_| ());
+        return document.replace_physical_source_literal(0..0, &format!("{body}{ending}")).map(|_| ());
     }
     let count = document.physical_source_line_number_count();
     let physical = document.physical_line(after.min(count).max(1) - 1)?;
     if physical.source_range.end > physical.content_range.end {
         let at = physical.source_range.end;
-        document.replace_physical_source(at..at, format!("{body}{ending}")).map(|_| ())
+        document.replace_physical_source_literal(at..at, &format!("{body}{ending}")).map(|_| ())
     } else {
         let at = physical.content_range.end;
-        document.replace_physical_source(at..at, format!("{ending}{body}")).map(|_| ())
+        document.replace_physical_source_literal(at..at, &format!("{ending}{body}")).map(|_| ())
     }
 }
 
 /// `setreg()` options: `a` appends and `c`/`v`, `l`/`V` or `b`/CTRL-V (with
 /// an optional width, which block registers derive from their rows) choose the
 /// type. `u` is accepted and, as in Vim, leaves the unnamed register alone.
-fn setreg_options(options: &str) -> Result<(bool, Option<RegisterKind>), VimError> {
+/// A block width is kept for `getregtype()`.
+fn setreg_options(options: &str) -> Result<(bool, Option<RegisterKind>, Option<usize>), VimError> {
     let mut append = false;
     let mut kind = None;
+    let mut width = None;
     let mut characters = options.chars().peekable();
     while let Some(option) = characters.next() {
         match option {
@@ -846,12 +913,16 @@ fn setreg_options(options: &str) -> Result<(bool, Option<RegisterKind>), VimErro
             'l' | 'V' => kind = Some(RegisterKind::Linewise),
             'b' | '\u{16}' => {
                 kind = Some(RegisterKind::Blockwise);
-                while characters.next_if(char::is_ascii_digit).is_some() {}
+                let mut digits = String::new();
+                while let Some(digit) = characters.next_if(char::is_ascii_digit) {
+                    digits.push(digit);
+                }
+                width = digits.parse().ok().filter(|width| *width > 0);
             }
             other => return Err(VimError::plain(format!("E475: Invalid argument: {other}"))),
         }
     }
-    Ok((append, kind))
+    Ok((append, kind, width))
 }
 
 /// Vim separates register lines with line feeds. In a String every line feed
@@ -912,7 +983,7 @@ fn register_from_lines(lines: &[String], kind: RegisterKind) -> Result<RegisterV
 /// `setreg()` and `:let @R` appending, like Vim's `str_to_reg`: the result
 /// takes the appended value's type, and only a String appended to a
 /// characterwise register continues its last line.
-fn script_append_value(existing: Option<&RegisterValue>, value: &Value, kind: Option<RegisterKind>) -> Result<RegisterValue, VimError> {
+fn script_append_value(existing: Option<&RegisterValue>, value: &Value, kind: Option<RegisterKind>, width: Option<usize>) -> Result<RegisterValue, VimError> {
     let kind = script_register_value(value, kind)?.kind;
     let appended: Vec<String> = match value {
         Value::List(list) => list.snapshot().iter().map(|item| item.to_text()).collect::<Result<_, _>>()?,
@@ -925,6 +996,8 @@ fn script_append_value(existing: Option<&RegisterValue>, value: &Value, kind: Op
             lines
         }
     };
+    // As in Vim, an appended block's width comes from the appended rows.
+    let width = width.or_else(|| appended.iter().map(|line| registers::block_cells(line)).max());
     let mut lines = existing.map(register_lines).unwrap_or_default();
     let mut appended = appended.into_iter();
     if existing.is_some_and(|existing| existing.kind == RegisterKind::Characterwise) && !matches!(value, Value::List(_)) {
@@ -933,7 +1006,7 @@ fn script_append_value(existing: Option<&RegisterValue>, value: &Value, kind: Op
         }
     }
     lines.extend(appended);
-    register_from_lines(&lines, kind)
+    Ok(register_from_lines(&lines, kind)?.with_block_width(width))
 }
 
 /// A register's lines for `getreg(r, 1, 1)`: split at semantic breaks, or at
@@ -1082,7 +1155,7 @@ pub(crate) const SCRIPT_FUNCTIONS: &[&str] = &[
     "line", "col", "virtcol", "charcol", "getline", "getpos", "getcurpos", "getcharpos", "indent", "nextnonblank",
     "prevnonblank", "mode", "visualmode", "bufnr", "winnr", "tabpagenr", "winbufnr", "bufwinnr", "tabpagewinnr",
     "win_getid", "bufwinid", "bufname", "bufexists", "buflisted", "bufloaded", "changenr", "wordcount", "line2byte",
-    "byte2line", "getreg", "getregtype", "setreg", "hlexists", "hlID", "synID", "synIDtrans", "foldlevel",
+    "byte2line", "getreg", "getregtype", "getreginfo", "setreg", "hlexists", "hlID", "synID", "synIDtrans", "foldlevel",
     "pumvisible", "complete_check", "getcmdwintype", "reg_recording", "reg_executing", "getchangelist",
     "foldclosed", "foldclosedend", "synIDattr", "getcmdline", "getcmdtype", "state", "getcmdpos", "histget",
     "histnr", "histadd", "histdel", "maparg", "mapcheck", "hasmapto", "winheight", "winwidth", "winline", "wincol",
@@ -1227,7 +1300,7 @@ impl CommandInterpreter {
                     let line = first - 1 + index;
                     if line < count {
                         let physical = document.physical_line(line)?;
-                        document.replace_physical_source(physical.content_range, text.clone())?;
+                        document.replace_physical_source_literal(physical.content_range, text)?;
                     } else {
                         append_source_lines(document, line, std::slice::from_ref(text), ending)?;
                     }
@@ -1370,16 +1443,20 @@ impl LineColumn {
     }
 }
 
-/// A physical line as Vim script's line functions present it: Vim stores NUL
-/// as LF in a line value, so a literal U+0000 reads as LF.
-pub(crate) fn script_line_value(content: &str) -> String {
+/// A physical line as Vim script's line functions present it. Vim stores NUL
+/// as LF in a line value, so a literal U+0000 reads as LF. In a Mac-format
+/// file, where CR ends lines, a literal LF reads as CR.
+pub(crate) fn script_line_value(content: &str, format: FileFormat) -> String {
+    let content = if format == FileFormat::Mac { content.replace('\n', "\r") } else { content.to_owned() };
     content.replace('\0', "\n")
 }
 
 /// The source text for a line value from `setline()` or `append()`: an LF
-/// inside one line value is Vim's spelling of NUL, never a line break.
-pub(crate) fn script_line_source(value: &str) -> String {
-    value.replace('\n', "\0")
+/// inside one line value is Vim's spelling of NUL, never a line break, and in
+/// a Mac-format file a CR is a literal LF.
+pub(crate) fn script_line_source(value: &str, format: FileFormat) -> String {
+    let value = value.replace('\n', "\0");
+    if format == FileFormat::Mac { value.replace('\r', "\n") } else { value }
 }
 
 /// Show a failed command line's error text in the frontend's output area:

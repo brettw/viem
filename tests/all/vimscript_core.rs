@@ -427,3 +427,40 @@ fn vim9_functions_compile_ex_commands_by_their_own_grammar() {
     assert_eq!(core.document().text(), "[new](z)\n");
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn line_values_swap_carriage_returns_and_line_feeds_in_mac_files() {
+    let document =
+        Document::from_bytes_with_file_format(b"a\nb\rnext\r".to_vec(), Encoding::Utf8, Format::PlainText, FileFormat::Mac).unwrap();
+    let mut core: Editor = Core::new(document);
+    let view = core.add_view(MockTextMeasurementProvider::new(), 700., 1200.);
+    // A literal LF inside a line reads as CR, because CR ends lines here.
+    let outcome = ex(&mut core, view, "echo line('$') strlen(getline(1)) char2nr(getline(1)[1])");
+    assert_eq!(messages(&outcome), vec!["2 3 13".to_string()]);
+    ex(&mut core, view, "call setline(1, getline(1))");
+    assert_eq!(core.document().source_bytes(), b"a\nb\rnext\r");
+    // A CR in a value is stored as a literal LF and keeps one line.
+    let outcome = ex(&mut core, view, "call setline(2, \"x\\r\") | echo line('$') strlen(getline(2)) char2nr(getline(2)[1])");
+    assert_eq!(messages(&outcome), vec!["2 2 13".to_string()]);
+    assert_eq!(core.document().source_bytes(), b"a\nb\rx\n\r");
+    // LF in a value is still NUL.
+    ex(&mut core, view, "call setline(1, \"c\\nd\")");
+    assert_eq!(core.document().source_bytes(), b"c\0d\rx\n\r");
+}
+
+#[test]
+fn appended_script_lines_use_one_dos_line_ending() {
+    let document =
+        Document::from_bytes_with_file_format(b"a\r\nb\r\n".to_vec(), Encoding::Utf8, Format::PlainText, FileFormat::Dos).unwrap();
+    let mut core: Editor = Core::new(document);
+    let view = core.add_view(MockTextMeasurementProvider::new(), 700., 1200.);
+    ex(&mut core, view, "call append(1, ['x', 'y'])");
+    assert_eq!(core.document().source_bytes(), b"a\r\nx\r\ny\r\nb\r\n");
+    ex(&mut core, view, "call setline(5, 'z') | call append(0, 'top')");
+    assert_eq!(core.document().source_bytes(), b"top\r\na\r\nx\r\ny\r\nb\r\nz\r\n");
+    // Each command line is one undo step.
+    keys(&mut core, view, "u");
+    assert_eq!(core.document().source_bytes(), b"a\r\nx\r\ny\r\nb\r\n");
+    keys(&mut core, view, "u");
+    assert_eq!(core.document().source_bytes(), b"a\r\nb\r\n");
+}

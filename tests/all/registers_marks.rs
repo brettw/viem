@@ -457,6 +457,59 @@ fn search_and_expression_registers_keep_the_register_api() {
 }
 
 #[test]
+fn block_register_widths_match_vim_and_round_trip() {
+    let (mut core, view) = editor("one");
+    for (setup, width) in [
+        ("call setreg('a', ['x', 'yy'], 'b5')", "5"),
+        ("call setreg('a', ['x', 'yy'], 'b')", "2"),
+        ("call setreg('a', ['x', 'yy'], 'b1')", "1"),
+        // Wide characters take two cells; ASCII, a tab included, one.
+        ("call setreg('a', ['\u{65e5}\u{672c}'], 'b')", "4"),
+        ("call setreg('a', [\"a\\tb\"], 'b')", "3"),
+        ("call setreg('a', [\"e\\u0301\"], 'b')", "1"),
+        // An append takes the width of the appended rows.
+        ("call setreg('a', ['o1', 'o22'], 'b') | call setreg('a', ['n1', 'n2'], 'ab')", "2"),
+        ("call setreg('a', 'x', 'b5') | call setreg('a', 'y', 'ab')", "1"),
+    ] {
+        ex(&mut core, view, setup);
+        assert_eq!(messages(&ex(&mut core, view, "echo getregtype('a')")), [format!("\u{16}{width}")], "{setup}");
+    }
+    ex(&mut core, view, "call setreg('a', ['x', 'yy'], 'b5') | call setreg('b', getreg('a', 1, 1), getregtype('a'))");
+    assert_eq!(messages(&ex(&mut core, view, "echo getregtype('b') getreg('b', 1, 1)")), ["\u{16}5 ['x', 'yy']"]);
+}
+
+#[test]
+fn getreginfo_and_setreg_dictionaries_round_trip_registers() {
+    let (mut core, view) = editor("one two");
+    let echo = |core: &mut Editor, line: &str| messages(&ex(core, view, line));
+    assert_eq!(echo(&mut core, "echo exists('*getreginfo') getreginfo('z')"), ["1 {}"]);
+    ex(&mut core, view, "call setreg('a', ['x', 'yy'], 'b5')");
+    assert_eq!(echo(&mut core, "echo string(getreginfo('a'))"), ["{'isunnamed': v:false, 'regcontents': ['x', 'yy'], 'regtype': '\u{16}5'}"]);
+    // Saving and restoring keeps the contents, type and width exactly.
+    ex(&mut core, view, "let g:saved = getreginfo('a') | call setreg('a', 'junk') | call setreg('a', g:saved)");
+    assert_eq!(echo(&mut core, "echo getreginfo('a') == g:saved"), ["1"]);
+    // The unnamed register points to the register a change last wrote.
+    ex(&mut core, view, "call setreg('\"', 'unnamed')");
+    assert_eq!(echo(&mut core, "echo getreginfo('\"').points_to getreginfo('0').isunnamed"), ["0 v:true"]);
+    keys(&mut core, view, "\"byiw");
+    assert_eq!(echo(&mut core, "echo getreginfo().points_to getreginfo('b').isunnamed getreginfo('0').isunnamed"), ["b v:true v:false"]);
+    keys(&mut core, view, "x");
+    assert_eq!(echo(&mut core, "echo getreginfo().points_to"), ["-"]);
+    // Without regcontents only the unnamed pointer can change.
+    ex(&mut core, view, "call setreg('c', {'regcontents': ['p', 'q'], 'regtype': 'V'}) | call setreg('c', {'regtype': 'v'})");
+    assert_eq!(echo(&mut core, "echo getreg('c', 1, 1) getregtype('c')"), ["['p', 'q'] V"]);
+    ex(&mut core, view, "call setreg('c', {'isunnamed': v:true})");
+    assert_eq!(echo(&mut core, "echo getreg('\"', 1, 1) getreginfo().points_to"), ["['p', 'q'] c"]);
+    ex(&mut core, view, "call setreg('\"', {'points_to': 'b'})");
+    assert_eq!(echo(&mut core, "echo getreg('\"') getreginfo().points_to"), ["one b"]);
+    ex(&mut core, view, "call setreg('e', {})");
+    assert_eq!(echo(&mut core, "echo getreginfo('e')"), ["{}"]);
+    let outcome = ex(&mut core, view, "call setreg('x', {'regcontents': ['a'], 'regtype': 'q'})");
+    assert!(matches!(outcome.command.as_ref().map(|command| &command.status), Some(CommandStatus::Error(text)) if text.contains("E475")), "{outcome:?}");
+    assert_eq!(echo(&mut core, "echo getreginfo('x') string(getreginfo('='))"), ["{} {'isunnamed': v:false, 'regcontents': [''], 'regtype': 'v'}"]);
+}
+
+#[test]
 fn script_linewise_register_puts_whole_lines() {
     for (format, source, keys_text, expected, expected_source) in [
         (Format::Markdown, "p\n\nz", "\"ap", "p\nqq\nz", "p\n\nqq\n\nz"),

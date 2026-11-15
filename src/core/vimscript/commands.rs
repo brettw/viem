@@ -1274,10 +1274,16 @@ fn command_column(rt: &Runtime, _header: &Header) -> usize {
     rt.current_frame().map_or(0, |frame| frame.col)
 }
 
-fn parse_for_targets(src: &[u8], mut at: usize) -> Result<(Vec<VStr>, Option<VStr>, usize), VimError> {
+/// A `:for` loop's targets: names, an optional `;` rest name, where the
+/// expression starts and, for Vim9, each name's `: type` annotation as a
+/// source range (the rest name's last).
+type ForTargets = (Vec<VStr>, Option<VStr>, usize, Vec<Option<std::ops::Range<usize>>>);
+
+fn parse_for_targets(src: &[u8], mut at: usize, vim9: bool) -> Result<ForTargets, VimError> {
     at = skip_white(src, at);
     let mut targets = Vec::new();
     let mut rest = None;
+    let mut annotations = Vec::new();
     let read_name = |at: &mut usize| -> Option<VStr> {
         let start = *at;
         if src.len() > *at + 1 && src[*at + 1] == b':' && matches!(src[*at], b'g' | b's' | b'l' | b'b' | b'w' | b't') {
@@ -1288,6 +1294,18 @@ fn parse_for_targets(src: &[u8], mut at: usize) -> Result<(Vec<VStr>, Option<VSt
         }
         (*at > start).then(|| VStr::from(&src[start..*at]))
     };
+    let mut read_annotation = |at: &mut usize| -> Result<(), VimError> {
+        if !vim9 || src.get(*at) != Some(&b':') {
+            annotations.push(None);
+            return Ok(());
+        }
+        let start = skip_white(src, *at + 1);
+        let mut end = start;
+        super::types::parse(src, &mut end)?;
+        annotations.push(Some(start..end));
+        *at = end;
+        Ok(())
+    };
     if src.get(at) == Some(&b'[') {
         at += 1;
         loop {
@@ -1295,6 +1313,7 @@ fn parse_for_targets(src: &[u8], mut at: usize) -> Result<(Vec<VStr>, Option<VSt
             if src.get(at) == Some(&b';') {
                 at = skip_white(src, at + 1);
                 rest = Some(read_name(&mut at).ok_or_else(|| VimError::new(475, "Invalid argument"))?);
+                read_annotation(&mut at)?;
                 at = skip_white(src, at);
             }
             if src.get(at) == Some(&b']') {
@@ -1303,6 +1322,7 @@ fn parse_for_targets(src: &[u8], mut at: usize) -> Result<(Vec<VStr>, Option<VSt
             }
             let name = read_name(&mut at).ok_or_else(|| VimError::new(475, "Invalid argument"))?;
             targets.push(name);
+            read_annotation(&mut at)?;
             at = skip_white(src, at);
             if src.get(at) == Some(&b',') {
                 at += 1;
@@ -1310,12 +1330,13 @@ fn parse_for_targets(src: &[u8], mut at: usize) -> Result<(Vec<VStr>, Option<VSt
         }
     } else {
         targets.push(read_name(&mut at).ok_or_else(|| VimError::new(475, format!("Invalid argument: {}", String::from_utf8_lossy(&src[at..]))))?);
+        read_annotation(&mut at)?;
     }
     at = skip_white(src, at);
     if !(src[at.min(src.len())..].starts_with(b"in") && src.get(at + 2).is_none_or(|b| is_white(*b))) {
         return Err(VimError::new(690, "Missing \"in\" after :for"));
     }
-    Ok((targets, rest, at + 2))
+    Ok((targets, rest, at + 2, annotations))
 }
 
 fn cmd_for(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], header: &Header, executing: bool) -> CommandOutcome {
@@ -1323,8 +1344,8 @@ fn cmd_for(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], header: &Hea
     let resuming = rt.current_frame().and_then(|frame| frame.cstack.last()).is_some_and(|cond| cond.looping && cond.start == start && cond.kind == CondKind::For);
     if resuming {
         // Skip the expression; advance the iterator.
-        let next = match parse_for_targets(src, header.arg) {
-            Ok((_, _, at)) => {
+        let next = match parse_for_targets(src, header.arg, rt.vim9()) {
+            Ok((_, _, at, _)) => {
                 let mut eval = Eval::new(rt, host, src, at, false);
                 let _ = eval.eval1();
                 let end = eval.pos;
@@ -1336,7 +1357,7 @@ fn cmd_for(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], header: &Hea
         return outcome(next, result);
     }
     let active = executing && parent_active(rt);
-    let (targets, rest, expr_at) = match parse_for_targets(src, header.arg) {
+    let (targets, rest, expr_at, annotations) = match parse_for_targets(src, header.arg, rt.vim9()) {
         Ok(parsed) => parsed,
         Err(err) => {
             let mut cond = Cond::new(CondKind::For, false, active);
@@ -1345,6 +1366,21 @@ fn cmd_for(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], header: &Hea
             return if active { error(Next::NextLine, err) } else { outcome(Next::NextLine, Ok(())) };
         }
     };
+    let mut types = Vec::with_capacity(annotations.len());
+    if active {
+        for annotation in &annotations {
+            types.push(match annotation {
+                Some(range) => {
+                    let mut end = range.start;
+                    match super::types::parse_active(src, &mut end, rt, host) {
+                        Ok(ty) => Some(ty),
+                        Err(fail) => return outcome(Next::NextLine, Err(fail)),
+                    }
+                }
+                None => None,
+            });
+        }
+    }
     if active && rt.vim9() {
         for target in targets.iter().chain(rest.iter()) {
             if target.as_bytes().get(1) != Some(&b':') && rt.lookup_variable(host, target.as_bytes(), false).is_ok() {return error(Next::NextLine, VimError::new(1254, "Cannot use declared variable in for loop"));}
@@ -1376,7 +1412,7 @@ fn cmd_for(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], header: &Hea
                     ForItems::List(list) if !compiled => Some(list.data().items.watch(0)),
                     _ => None,
                 };
-                cond.for_state = Some(ForState { items, index: 0, watcher, targets, rest });
+                cond.for_state = Some(ForState { items, index: 0, watcher, targets, rest, types });
             }
         }
         (Err(fail), _) if active => failure = Some(fail),
@@ -1413,7 +1449,7 @@ fn split_chars(bytes: &[u8]) -> Vec<VStr> {
 
 /// Assign the next item to the loop variables, or deactivate the loop.
 fn advance_for(rt: &mut Runtime, host: &mut dyn ScriptHost) -> EvalResult<()> {
-    let (value, targets, rest) = {
+    let (value, targets, rest, types) = {
         let frame = rt.current_frame_mut().unwrap();
         let cond = frame.cstack.last_mut().unwrap();
         if frame.vim9 {cond.locals = Dict::new();}
@@ -1438,7 +1474,7 @@ fn advance_for(rt: &mut Runtime, host: &mut dyn ScriptHost) -> EvalResult<()> {
         match value {
             Some(value) => {
                 cond.active = true;
-                (value, state.targets.clone(), state.rest.clone())
+                (value, state.targets.clone(), state.rest.clone(), state.types.clone())
             }
             None => {
                 cond.active = false;
@@ -1450,7 +1486,15 @@ fn advance_for(rt: &mut Runtime, host: &mut dyn ScriptHost) -> EvalResult<()> {
         let locals = rt.declaration_scope();
         for name in targets.iter().chain(rest.iter()).filter(|n|n.as_bytes().get(1) != Some(&b':')) {locals.insert(name.clone(), Value::Number(0));}
     }
+    // Check a value against its target's Vim9 annotation.
+    let typed = |index: usize, value: Value| -> EvalResult<Value> {
+        match types.get(index) {
+            Some(Some(ty)) => Ok(ty.check(value)?),
+            _ => Ok(value),
+        }
+    };
     if targets.len() == 1 && rest.is_none() {
+        let value = typed(0, value)?;
         rt.set_variable(host, targets[0].as_bytes(), value, false)?;
         if rt.vim9() && targets[0].as_bytes().get(1) != Some(&b':') {rt.declaration_scope().data().items.get_mut(targets[0].as_bytes()).unwrap().lock = crate::vimscript::value::Lock::Fixed;}
         return Ok(());
@@ -1466,11 +1510,13 @@ fn advance_for(rt: &mut Runtime, host: &mut dyn ScriptHost) -> EvalResult<()> {
     if items.len() > targets.len() && rest.is_none() {
         return Err(Fail::Error(VimError::new(687, "Less targets than List items")));
     }
-    for (target, item) in targets.iter().zip(&items) {
-        rt.set_variable(host, target.as_bytes(), item.clone(), false)?;
+    for (index, (target, item)) in targets.iter().zip(&items).enumerate() {
+        let item = typed(index, item.clone())?;
+        rt.set_variable(host, target.as_bytes(), item, false)?;
     }
     if let Some(rest) = &rest {
-        rt.set_variable(host, rest.as_bytes(), Value::list(items[targets.len()..].to_vec()), false)?;
+        let remaining = typed(targets.len(), Value::list(items[targets.len()..].to_vec()))?;
+        rt.set_variable(host, rest.as_bytes(), remaining, false)?;
     }
     if rt.vim9() {
         let scope = rt.declaration_scope();

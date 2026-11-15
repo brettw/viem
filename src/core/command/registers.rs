@@ -28,6 +28,9 @@ pub struct RegisterValue {
     /// Source/style image captured before a yank or deletion. Text-only
     /// register transformations clear it rather than keep stale provenance.
     pub(crate) clipboard_fragment: Option<crate::document::ClipboardFragment>,
+    /// A blockwise register's width given to `setreg()`; without one, the
+    /// width is its widest row.
+    block_width: Option<usize>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -215,7 +218,23 @@ impl RegisterValue {
             kind,
             hard_break_offsets,
             clipboard_fragment: None,
+            block_width: None,
         })
+    }
+
+    /// A blockwise register's width in display cells, as `getregtype()`
+    /// reports it: the width given to `setreg()`, or the widest row. Like
+    /// Vim, each ASCII character, a tab included, is one cell.
+    pub fn block_width(&self) -> usize {
+        self.block_width.unwrap_or_else(|| self.text.split('\n').map(block_cells).max().unwrap_or(0))
+    }
+
+    /// Give a blockwise register an explicit width, as `setreg()`'s `b{width}`.
+    pub(crate) fn with_block_width(mut self, width: Option<usize>) -> Self {
+        if self.kind == RegisterKind::Blockwise {
+            self.block_width = width;
+        }
+        self
     }
 
     pub fn hard_break_offsets(&self) -> &[usize] {
@@ -342,6 +361,7 @@ static DEFAULT_REGISTERS: LazyLock<Registers> = LazyLock::new(|| {
         bank: Arc::new(RegisterBank {
             values,
             last_insert: None,
+            unnamed_source: None,
         }),
         revision: 0,
     }
@@ -355,6 +375,9 @@ struct RegisterBank {
     /// Vim's last-insert register. Kept separate from writable slots so a
     /// register-targeted yank/delete can never overwrite it accidentally.
     last_insert: Option<Arc<RegisterValue>>,
+    /// The register `"` was last copied from, which Vim's unnamed register
+    /// points to (`getreginfo()`'s `points_to`).
+    unnamed_source: Option<char>,
 }
 
 /// Vim's application-wide register bank. Every buffer holds a copy, and the
@@ -404,6 +427,9 @@ impl Registers {
         }
         if !same_slot(base.bank.last_insert.as_ref(), ours.bank.last_insert.as_ref()) {
             bank.last_insert.clone_from(&ours.bank.last_insert);
+        }
+        if !same_slot(base.bank.values.get(&'"'), ours.bank.values.get(&'"')) {
+            bank.unnamed_source = ours.bank.unnamed_source;
         }
         merged
     }
@@ -516,10 +542,14 @@ impl Registers {
             return RegisterWriteEffect::default();
         }
         let (unnamed, effect) = self.write_explicit(requested, &value);
-        if requested.is_none() || requested == Some('"') {
-            self.store('0', StoredRegister::text(value));
-        }
-        self.store('"', StoredRegister::text(unnamed));
+        let source = match requested {
+            None | Some('"') => {
+                self.store('0', StoredRegister::text(value));
+                '0'
+            }
+            Some(name) => name.to_ascii_lowercase(),
+        };
+        self.store_unnamed(unnamed, source);
         effect
     }
 
@@ -553,8 +583,31 @@ impl Registers {
         if writes_small {
             self.store('-', StoredRegister::text(value.clone()));
         }
-        self.store('"', StoredRegister::text(unnamed));
+        let source = match requested {
+            Some(name) if name != '"' => name.to_ascii_lowercase(),
+            _ if writes_small => '-',
+            _ => '1',
+        };
+        self.store_unnamed(unnamed, source);
         effect
+    }
+
+    fn store_unnamed(&mut self, value: RegisterValue, source: char) {
+        self.store('"', StoredRegister::text(value));
+        self.bank_mut().unnamed_source = Some(source);
+    }
+
+    /// The register the unnamed register was last copied from.
+    pub(crate) fn unnamed_source(&self) -> Option<char> {
+        self.bank.values.contains_key(&'"').then_some(self.bank.unnamed_source).flatten()
+    }
+
+    /// Make the unnamed register refer to `name`, as `setreg()`'s
+    /// `isunnamed` and `points_to` do: `"` takes a copy of its contents.
+    pub(crate) fn point_unnamed(&mut self, name: char) {
+        let Some(stored) = self.bank.values.get(&name).cloned() else { return };
+        self.bank_mut().values.insert('"', stored);
+        self.bank_mut().unnamed_source = Some(name);
     }
 
     pub(crate) fn macro_events(&self, name: char) -> Option<Vec<InputEvent>> {
@@ -631,7 +684,7 @@ impl Registers {
             '_' => RegisterWriteEffect::default(),
             '"' => {
                 self.store('0', StoredRegister::text(value.clone()));
-                self.store('"', StoredRegister::text(value));
+                self.store_unnamed(value, '0');
                 RegisterWriteEffect::default()
             }
             _ => self.write_explicit(Some(name), &value).1,
@@ -905,6 +958,11 @@ pub(crate) fn is_valid_register(name: char) -> bool {
     matches!(name, '"' | '-' | '_' | '+' | '*' | '.' | '%' | '/' | ':' | '#' | '~' | '=')
         || name.is_ascii_digit()
         || name.is_ascii_alphabetic()
+}
+
+/// Display cells of a block row as Vim counts a register's width.
+pub(crate) fn block_cells(row: &str) -> usize {
+    row.chars().map(|character| if character.is_ascii() { 1 } else { unicode_width::UnicodeWidthChar::width(character).unwrap_or(1) }).sum()
 }
 
 fn is_writable(name: char) -> bool {

@@ -357,7 +357,9 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
                 return Ok(left);
             }
             self.skip_white();
-            let concat = op == "." || op == "..";
+            // Legacy script reads a number after a concatenation as an
+            // integer, so `'a' . 2.5` is "a25"; Vim9 reads a Float.
+            let concat = (op == "." || op == "..") && !self.rt.vim9();
             let right = self.eval7(concat)?;
             if !self.evaluate {
                 continue;
@@ -366,7 +368,7 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             left = match op {
                 "." | ".." => {
                     let bytes_for = |value: &Value| -> Result<Vec<u8>, VimError> {
-                        if self.rt.vim9() && matches!(value, Value::Bool(_) | Value::None | Value::Null) {Ok(value.display_bytes(true, false))} else {value.to_bytes()}
+                        if self.rt.vim9() && matches!(value, Value::Bool(_) | Value::None | Value::Null | Value::Float(_)) {Ok(value.display_bytes(true, false))} else {value.to_bytes()}
                     };
                     let mut bytes = bytes_for(&left)?;
                     bytes.extend_from_slice(&bytes_for(&right)?);

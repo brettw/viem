@@ -862,6 +862,22 @@ fn check_inner(
                 if let Some(pattern) = name.strip_prefix('[').and_then(|n| n.strip_suffix(']')) {
                     bind_pattern(rt, host, &mut context, pattern.as_bytes(), &item, true)?;
                 } else {
+                    // `for name: type in ...` declares the item's type.
+                    // Unlike a scope prefix (`g:name`), an annotation's colon is
+                    // followed by white space.
+                    let (name, item) = match name.split_once(": ") {
+                        Some((name, annotation)) => {
+                            let annotation = annotation.trim().as_bytes();
+                            let mut end = 0;
+                            let declared = super::types::parse_active(annotation, &mut end, rt, host)?;
+                            if end != annotation.len() {
+                                return Err(VimError::trailing(&annotation[end..]).into());
+                            }
+                            declared.require_in(&item, rt)?;
+                            (name.trim(), declared)
+                        }
+                        None => (name, item),
+                    };
                     super::vim9::validate_binding(
                         name.strip_prefix("g:").unwrap_or(name).as_bytes(),
                     )?;

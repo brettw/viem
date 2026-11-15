@@ -221,6 +221,8 @@ pub(crate) struct ForState {
     pub watcher: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     pub targets: Vec<VStr>,
     pub rest: Option<VStr>,
+    /// Vim9 `name: type` annotations, one per target and then the rest name.
+    pub types: Vec<Option<super::types::Type>>,
 }
 
 /// An action postponed until a `:finally` block finishes.
