@@ -751,9 +751,12 @@ Comment and list handling is in [code formatting](docs/code-formatting.md).
   prose input path, including paste, register puts, IME and accessibility, as
   part of the same undo unit. They never touch Code, code spans or blocks,
   prompts, uncommitted IME text or quotes that syntax requires.
-- Native **SELECTION** (`autoselect`, on by default) is separate from Vim Visual
-  and Select: native selections are half-open and Vim's are inclusive. See
-  [native selection](docs/native-selection.md).
+- Native **SELECTION** is separate from Vim Visual and Select: native selections
+  are half-open and Vim's are inclusive. `autoselect` keeps mouse selection
+  native only when started in Insert. Independent `shiftselect` starts selection
+  with shifted navigation, native from Insert and Visual from Normal; when off,
+  Vim's shifted motions and explicit `keymodel` apply. Both default on; explicit
+  mappings take precedence. See [native selection](docs/native-selection.md).
 - Gutter selection uses `V`'s line selection and the view's line meaning,
   including its command selection policy. The caret stays at the end of the
   last selected line; reversing a drag retains the complete initial line.

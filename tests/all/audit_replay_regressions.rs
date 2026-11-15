@@ -348,6 +348,7 @@ fn native_selection_replacements_preserve_nested_list_owners() {
         ("1. one\n1. one\n1. one\n\n   para in third", false),
     ] {
         let (mut core, view) = editor(source, Format::Markdown, FileFormat::Unix);
+        key(&mut core, view, Key::Char('i'));
         if word {
             core.handle_with_layout(
                 view,

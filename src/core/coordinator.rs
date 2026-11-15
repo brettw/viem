@@ -1164,6 +1164,11 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.install_buffer_commands_everywhere();
     }
 
+    pub fn set_shiftselect(&mut self, enabled: bool) {
+        self.buffer_commands.selection_options.shiftselect = enabled;
+        self.install_buffer_commands_everywhere();
+    }
+
     /// Apply the configured initiation policy to an existing exact selection.
     pub fn set_selection_origin(&mut self, view_id: ViewId, origin: crate::command::SelectionOrigin, return_mode: Mode) -> Result<(), CoreError> {
         self.focus_view(view_id);
@@ -13525,16 +13530,17 @@ mod tests {
         core.handle(view, CoreEvent::BeginPointerGesture { document_revision: revision,
             text_offset: 2, affinity: BoundaryAffinity::Downstream }).unwrap();
         let end = 2 + "👩‍💻".len();
-        for (offset, expected) in [(end + 2, 2..end + 2), (1, 1..end), (2, 2..end), (end + 1, 2..end + 1)] {
+        for (offset, expected) in [(end + 2, 2..end + 3), (1, 1..end), (2, 2..end), (end + 1, 2..end + 2)] {
             core.handle(view, CoreEvent::PlaceCursor { document_revision: revision,
                 text_offset: offset, affinity: BoundaryAffinity::Downstream, extend_selection: true }).unwrap();
             let commands = core.command_state(view).unwrap();
-            assert!(commands.is_native_selection());
-            let anchor = commands.visual_anchor().unwrap();
-            assert_eq!(anchor.min(commands.cursor())..anchor.max(commands.cursor()), expected);
+            assert_eq!(commands.mode(), Mode::VisualCharacter);
+            assert!(!commands.is_text_selection());
+            assert_eq!(core.list_selection_identity(view).unwrap().range(), expected);
         }
+        core.handle(view, key('c')).unwrap();
         core.handle(view, text("X")).unwrap();
-        assert_eq!(core.document().text(), "abXde");
+        assert_eq!(core.document().text(), "abXe");
         core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
         core.handle(view, key('u')).unwrap();
         assert_eq!(core.document().text(), source);
@@ -13555,8 +13561,11 @@ mod tests {
         core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(),
             text_offset: 3, affinity: BoundaryAffinity::Downstream, extend_selection: true }).unwrap();
         let commands = core.command_state(view).unwrap();
-        assert_eq!(commands.visual_anchor(), Some(5));
+        assert_eq!(commands.mode(), Mode::VisualCharacter);
+        assert!(!commands.is_text_selection());
+        assert_eq!(commands.visual_anchor(), Some(4));
         assert_eq!(commands.cursor(), 3);
+        assert_eq!(core.list_selection_identity(view).unwrap().range(), 3..5);
     }
 
     #[test]

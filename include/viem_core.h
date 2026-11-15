@@ -478,6 +478,7 @@ ViemStatus viem_external_file_review_finish(
 #define VIEM_EX_OPTION_KEYMODEL 21u
 #define VIEM_EX_OPTION_SELECTMODE 22u
 #define VIEM_EX_OPTION_AUTOSELECT 23u
+#define VIEM_EX_OPTION_SHIFTSELECT 24u
 #define VIEM_EX_OPTION_HLSEARCH 19u
 #define VIEM_EX_OPTION_INCSEARCH 20u
 
@@ -2315,8 +2316,8 @@ ViemStatus viem_core_view_select_all(
     uint64_t document_id, uint64_t document_revision,
     ViemCoreOutcome *out_outcome);
 
-/* Selection optionKind is VIEM_EX_OPTION_KEYMODEL/SELECTMODE/AUTOSELECT.
- * AUTOSELECT uses the UTF-8 boolean spelling "1" or "0".
+/* Selection optionKind is VIEM_EX_OPTION_KEYMODEL/SELECTMODE/AUTOSELECT/SHIFTSELECT.
+ * AUTOSELECT and SHIFTSELECT use the UTF-8 boolean spelling "1" or "0".
  * Copy reports required UTF8 bytes, with no terminator. Setter updates all
  * views without dispatching input or disturbing their mode/pending command. */
 ViemStatus viem_core_copy_selection_option(ViemCoreHandle core, uint32_t option_kind,

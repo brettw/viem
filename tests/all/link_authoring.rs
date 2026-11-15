@@ -803,6 +803,7 @@ fn native_link_publication_resumes_native_and_select_typing_in_a_separate_undo_u
                 core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('g')))).unwrap();
                 assert!(core.command_state(view).unwrap().is_select_mode());
             } else {
+                core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
                 core.handle(
                     view,
                     CoreEvent::SelectAll {

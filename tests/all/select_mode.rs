@@ -43,6 +43,7 @@ fn ex(c: &mut CommandInterpreter, d: &mut Document, s: &str) {
 fn shift_selection_replaces_exactly_one_grapheme_and_undoes_as_one_edit() {
     let mut d = doc("abc xyz");
     let mut c = CommandInterpreter::new();
+    key(&mut c, &mut d, Key::Char('i'));
     key(&mut c, &mut d, shifted(NavigationKey::Right));
     assert!(c.is_text_selection());
     assert!(!c.caret_target(&d).is_cell());
@@ -57,7 +58,7 @@ fn shift_selection_replaces_exactly_one_grapheme_and_undoes_as_one_edit() {
 fn options_choose_visual_or_select_independently_for_keys_and_commands() {
     let mut d = doc("abcdef");
     let mut c = CommandInterpreter::new();
-    ex(&mut c, &mut d, "set noautoselect selectmode= keymodel=startsel,stopsel");
+    ex(&mut c, &mut d, "set noautoselect noshiftselect selectmode= keymodel=startsel,stopsel");
     key(&mut c, &mut d, shifted(NavigationKey::Right));
     assert!(!c.is_text_selection());
     assert_eq!(c.mode(), Mode::VisualCharacter);
@@ -81,6 +82,7 @@ fn options_choose_visual_or_select_independently_for_keys_and_commands() {
 fn select_register_blackhole_and_stopsel() {
     let mut d = doc("abcdef");
     let mut c = CommandInterpreter::new();
+    key(&mut c, &mut d, Key::Char('i'));
     key(&mut c, &mut d, shifted(NavigationKey::Right));
     key(&mut c, &mut d, Key::Ctrl('r'));
     key(&mut c, &mut d, Key::Char('_'));
@@ -88,15 +90,17 @@ fn select_register_blackhole_and_stopsel() {
     assert_eq!(d.text(), "Zbcdef");
     assert!(c.register('"').is_none_or(|v| v.text.is_empty()));
     key(&mut c, &mut d, Key::Escape);
+    key(&mut c, &mut d, Key::Char('i'));
     key(&mut c, &mut d, shifted(NavigationKey::Right));
     key(&mut c, &mut d, Key::Right);
     assert!(!c.is_text_selection());
-    assert_eq!(c.mode(), Mode::Normal);
+    assert_eq!(c.mode(), Mode::Insert);
 }
 #[test]
 fn select_replacement_dot_preserves_selection_size_and_count() {
     let mut d = doc("abcdef");
     let mut c = CommandInterpreter::new();
+    key(&mut c, &mut d, Key::Char('i'));
     key(&mut c, &mut d, shifted(NavigationKey::Right));
     text(&mut c, &mut d, "Z");
     key(&mut c, &mut d, Key::Escape);
@@ -144,6 +148,7 @@ fn core_layout_shift_selection_and_block_replacement() {
     let mut core = Core::new(doc("abcd\nefgh"));
     let v = core.add_view(MockTextMeasurementProvider::new(), 400., 200.);
     for event in [
+        InputEvent::key('i'),
         InputEvent::Key(shifted(NavigationKey::Right)),
         InputEvent::Text("Q".into()),
         InputEvent::Key(Key::Escape),
@@ -183,6 +188,7 @@ fn select_composition_cancel_restores_selection_and_commit_replaces_atomically()
     use viem_core::{Core, CoreEvent};
     let mut core = Core::new(doc("abc xyz"));
     let v = core.add_view(MockTextMeasurementProvider::new(), 400., 200.);
+    core.handle(v, CoreEvent::Input(InputEvent::key('i'))).unwrap();
     core.handle(
         v,
         CoreEvent::Input(InputEvent::Key(shifted(NavigationKey::Right))),
@@ -227,6 +233,7 @@ fn select_composition_cancel_restores_selection_and_commit_replaces_atomically()
 fn native_stopsel_collapses_bounds_and_empty_selection_types_without_deletion() {
     let mut d = doc("abcd");
     let mut c = CommandInterpreter::new();
+    key(&mut c, &mut d, Key::Char('i'));
     key(&mut c, &mut d, shifted(NavigationKey::Right));
     key(&mut c, &mut d, shifted(NavigationKey::Right));
     key(&mut c, &mut d, Key::Left);
@@ -335,6 +342,7 @@ fn select_backspace_and_delete_enter_insert_and_group_continued_typing() {
     for deletion in [Key::Backspace, Key::Delete] {
         let mut d = doc("abcd");
         let mut c = CommandInterpreter::new();
+        key(&mut c, &mut d, Key::Char('i'));
         key(&mut c, &mut d, shifted(NavigationKey::Right));
         key(&mut c, &mut d, deletion);
         assert_eq!(c.mode(), Mode::Insert);
@@ -363,6 +371,7 @@ fn visual_mapping_in_select_runs_as_visual_and_first_replacement_uses_insert_map
         },
     );
     assert_eq!(d.text(), "Abcd");
+    key(&mut c, &mut d, Key::Char('i'));
     key(&mut c, &mut d, shifted(NavigationKey::Right));
     key(&mut c, &mut d, Key::Char('x'));
     assert_eq!(d.text(), "XYZbcd");
@@ -379,6 +388,7 @@ fn select_line_replacement_is_characterwise_and_native_selection_gv_preserves_ex
     assert_eq!(d.text(), "Xdef");
     key(&mut c, &mut d, Key::Escape);
     key(&mut c, &mut d, Key::Char('u'));
+    key(&mut c, &mut d, Key::Char('i'));
     key(&mut c, &mut d, shifted(NavigationKey::Right));
     key(&mut c, &mut d, Key::Escape);
     keys(&mut c, &mut d, "gv");
@@ -397,6 +407,7 @@ fn selected_clean_character_style_survives_replacement_and_replacement_undo() {
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap(),
         );
         let v = core.add_view(MockTextMeasurementProvider::new(), 400., 200.);
+    core.handle(v, CoreEvent::Input(InputEvent::key('i'))).unwrap();
         core.handle(
             v,
             CoreEvent::Input(InputEvent::Key(shifted(NavigationKey::Right))),
@@ -456,6 +467,7 @@ fn select_all_delete_clears_content_and_retains_paragraph_style_for_replacement(
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap(),
         );
         let v = core.add_view(MockTextMeasurementProvider::new(), 400., 200.);
+    core.handle(v, CoreEvent::Input(InputEvent::key('i'))).unwrap();
         core.handle(
             v,
             CoreEvent::SelectAll {
@@ -499,8 +511,11 @@ fn counted_shift_motion_and_unshifted_modified_navigation_dispatch_normally() {
     assert_eq!(c.cursor(), 0);
     key(&mut c, &mut d, Key::Char('3'));
     key(&mut c, &mut d, shifted(NavigationKey::Right));
+    assert_eq!(c.mode(), Mode::VisualCharacter);
+    assert!(!c.is_text_selection());
+    key(&mut c, &mut d, Key::Char('c'));
     text(&mut c, &mut d, "X");
-    assert_eq!(d.text(), "X two three");
+    assert_eq!(d.text(), "Xtwo three");
 }
 #[test]
 fn option_lists_query_modify_reset_and_invalid_compound_assignment_is_atomic() {
@@ -537,6 +552,7 @@ fn native_mouse_and_word_origin_use_exact_boundaries_and_collapse_without_extra_
     use viem_core::{Core, CoreEvent};
     let mut core = Core::new(doc("word tail"));
     let v = core.add_view(MockTextMeasurementProvider::new(), 400., 200.);
+    core.handle(v, CoreEvent::Input(InputEvent::key('i'))).unwrap();
     core.handle(
         v,
         CoreEvent::PlaceCursor {
@@ -552,11 +568,12 @@ fn native_mouse_and_word_origin_use_exact_boundaries_and_collapse_without_extra_
     core.handle(v, CoreEvent::Input(InputEvent::Key(Key::Left)))
         .unwrap();
     assert_eq!(core.command_state(v).unwrap().cursor(), 0);
+    core.handle(v, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
     for k in ['v', 'i', 'w'] {
         core.handle(v, CoreEvent::Input(InputEvent::key(k)))
             .unwrap();
     }
-    core.set_selection_origin(v, SelectionOrigin::Mouse, Mode::Normal)
+    core.set_selection_origin(v, SelectionOrigin::Mouse, Mode::Insert)
         .unwrap();
     assert_eq!(core.list_selection_identity(v).unwrap().range(), 0..4);
     core.handle(v, CoreEvent::Input(InputEvent::Key(Key::Right)))
@@ -572,6 +589,7 @@ fn collapsed_native_selection_accepts_clean_pending_style_then_typing() {
         Document::from_bytes(b"**word**".to_vec(), Encoding::Utf8, Format::Markdown).unwrap(),
     );
     let v = core.add_view(MockTextMeasurementProvider::new(), 400., 200.);
+    core.handle(v, CoreEvent::Input(InputEvent::key('i'))).unwrap();
     for k in [NavigationKey::Right, NavigationKey::Left] {
         core.handle(v, CoreEvent::Input(InputEvent::Key(shifted(k))))
             .unwrap();
@@ -690,7 +708,8 @@ fn oversized_shift_motion_stops_at_the_document_boundary() {
     let mut commands = CommandInterpreter::new();
     keys(&mut commands, &mut document, "999999999999");
     key(&mut commands, &mut document, shifted(NavigationKey::Right));
-    assert_eq!(commands.cursor(), 3);
+    assert_eq!(commands.cursor(), 2);
+    key(&mut commands, &mut document, Key::Char('c'));
     text(&mut commands, &mut document, "X");
     assert_eq!(document.text(), "X");
 }
@@ -703,6 +722,7 @@ fn select_register_operand_accepts_native_text_and_batched_replacement() {
         let mut core = Core::new(doc("abc"));
         let view = core.add_view(MockTextMeasurementProvider::new(), 400., 200.);
         let mut events = vec![
+            InputEvent::key('i'),
             InputEvent::Key(shifted(NavigationKey::Right)),
             InputEvent::Key(Key::Ctrl('r')),
             InputEvent::Text(String::new()),
@@ -756,6 +776,7 @@ fn select_register_text_operand_is_not_remapped_and_invalid_operands_do_not_repl
     let mut document = doc("abc");
     let mut commands = CommandInterpreter::new();
     ex(&mut commands, &mut document, "snoremap _ X");
+    key(&mut commands, &mut document, Key::Char('i'));
     key(&mut commands, &mut document, shifted(NavigationKey::Right));
     key(&mut commands, &mut document, Key::Ctrl('r'));
     text(&mut commands, &mut document, "_Q");
@@ -766,6 +787,7 @@ fn select_register_text_operand_is_not_remapped_and_invalid_operands_do_not_repl
 
     let mut document = doc("abc");
     let mut commands = CommandInterpreter::new();
+    key(&mut commands, &mut document, Key::Char('i'));
     key(&mut commands, &mut document, shifted(NavigationKey::Right));
     key(&mut commands, &mut document, Key::Ctrl('r'));
     let output = commands

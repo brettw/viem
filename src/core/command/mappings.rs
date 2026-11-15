@@ -771,7 +771,9 @@ impl CommandInterpreter {
         {
             return None;
         }
-        if self.is_native_selection() { return None; }
+        // Insert selection retains Insert navigation mappings. Replacement
+        // typing is remapped after the selection has been removed.
+        if self.is_native_selection() { return Some(INSERT); }
         Some(match self.mode {
             Mode::Normal if matches!(self.pending, Pending::Operator(_)) => OPERATOR,
             Mode::Normal => NORMAL,
@@ -783,6 +785,12 @@ impl CommandInterpreter {
 
     pub(crate) fn mapping_applies(&self, event: &InputEvent) -> bool {
         if matches!(event, InputEvent::Key(Key::PasteClipboard | Key::PasteClipboardMatchingStyle)) { return false; }
+        if self.is_native_selection() && self.mapping_pending.is_empty()
+            && !matches!(event, InputEvent::Key(Key::ModifiedNavigation { .. }))
+            && !matches!(event, InputEvent::Key(key) if NavigationKey::from_key(*key).is_some())
+        {
+            return false;
+        }
         let Some(mode) = self.mapping_mode() else {
             return false;
         };

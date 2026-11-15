@@ -8,34 +8,45 @@ internal static class GlobalSelectionOptions
 {
     private static readonly Dictionary<string, Dictionary<uint, string>> profiles = new(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<CoreDocument, string> documents = [];
-    private static readonly uint[] names = [VIEM_EX_OPTION_KEYMODEL, VIEM_EX_OPTION_SELECTMODE, VIEM_EX_OPTION_AUTOSELECT];
-    // The Settings default last distributed per profile. Unrelated preference
-    // changes leave :set autoselect overrides in place.
-    private static readonly Dictionary<string, string> configured = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly uint[] names = [VIEM_EX_OPTION_KEYMODEL, VIEM_EX_OPTION_SELECTMODE, VIEM_EX_OPTION_AUTOSELECT, VIEM_EX_OPTION_SHIFTSELECT];
+    // Settings defaults last distributed per profile. Unrelated preference
+    // changes leave live :set overrides in place independently for each option.
+    private static readonly Dictionary<string, Dictionary<uint, string>> configured = new(StringComparer.OrdinalIgnoreCase);
 
     private static string Profile(string directory) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
+    private static IEnumerable<KeyValuePair<uint, string>> Defaults(bool autoselect, bool shiftselect) =>
+        new Dictionary<uint, string> {
+            [VIEM_EX_OPTION_AUTOSELECT] = autoselect ? "1" : "0",
+            [VIEM_EX_OPTION_SHIFTSELECT] = shiftselect ? "1" : "0"
+        };
 
-    /// <summary>Applies the Settings default before startup.viem can override it.</summary>
-    internal static void Seed(CoreDocument document, string directory, bool autoselect)
+    /// <summary>Applies Settings defaults before startup.viem can override them.</summary>
+    internal static void Seed(CoreDocument document, string directory, bool autoselect, bool shiftselect)
     {
         string profile = Profile(directory);
-        if (!configured.TryGetValue(profile, out string? value)) configured[profile] = value = autoselect ? "1" : "0";
-        document.SetSelectionOption(VIEM_EX_OPTION_AUTOSELECT, value);
+        if (!configured.TryGetValue(profile, out var values))
+            configured[profile] = values = Defaults(autoselect, shiftselect).ToDictionary(pair => pair.Key, pair => pair.Value);
+        foreach (var (name, value) in values) document.SetSelectionOption(name, value);
     }
 
-    /// <summary>A changed Settings default replaces the live value in every
+    /// <summary>A changed Settings default replaces that live option in every
     /// document of its profile, including one chosen with :set or startup.viem.</summary>
-    internal static void Configure(string directory, bool autoselect)
+    internal static void Configure(string directory, bool autoselect, bool shiftselect)
     {
-        string profile = Profile(directory), value = autoselect ? "1" : "0";
-        // Profiles without a seeded document read the preference when one opens.
-        if (!configured.TryGetValue(profile, out string? previous) || previous == value) return;
-        configured[profile] = value;
-        if (!profiles.TryGetValue(profile, out var values) || values[VIEM_EX_OPTION_AUTOSELECT] == value) return;
-        values[VIEM_EX_OPTION_AUTOSELECT] = value;
+        string profile = Profile(directory);
+        // Profiles without a seeded document read the preferences when one opens.
+        if (!configured.TryGetValue(profile, out var previous)) return;
+        var changed = Defaults(autoselect, shiftselect).Where(option => previous[option.Key] != option.Value).ToArray();
+        if (changed.Length == 0) return;
+        foreach (var (name, value) in changed) previous[name] = value;
+        if (!profiles.TryGetValue(profile, out var values)) return;
+        changed = changed.Where(option => values[option.Key] != option.Value).ToArray();
+        if (changed.Length == 0) return;
+        foreach (var (name, value) in changed) values[name] = value;
         var targets = documents.Where(entry => entry.Value.Equals(profile, StringComparison.OrdinalIgnoreCase))
             .Select(entry => entry.Key).Where(document => document.Handle != 0).ToArray();
-        foreach (var document in targets) document.SetSelectionOption(VIEM_EX_OPTION_AUTOSELECT, value);
+        foreach (var document in targets)
+            foreach (var (name, value) in changed) document.SetSelectionOption(name, value);
         foreach (var document in targets) document.NotifyChanged();
     }
 

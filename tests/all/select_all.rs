@@ -18,6 +18,8 @@ fn special(core: &mut TestCore, view: ViewId, value: Key) {
     ));
 }
 fn select(core: &mut TestCore, view: ViewId) {
+    let commands = core.command_state(view).unwrap();
+    let native = commands.mode() == Mode::Insert || commands.is_native_selection();
     let event = CoreEvent::SelectAll {
         document: core.document().id(),
         revision: core.document().revision(),
@@ -26,7 +28,7 @@ fn select(core: &mut TestCore, view: ViewId) {
     assert_eq!(out.command.unwrap().status, CommandStatus::Complete);
     let commands = core.command_state(view).unwrap();
     assert_eq!(commands.mode(), Mode::VisualCharacter);
-    assert!(commands.is_text_selection());
+    assert_eq!(commands.is_native_selection(), native);
     assert_eq!(
         core.list_selection_identity(view).unwrap().range(),
         0..core.document().text().len()
@@ -57,7 +59,6 @@ fn select_all_reaches_final_wrapped_paragraph_in_every_format_and_line_policy() 
             let before = core.document().source_bytes();
             select(&mut core, view);
             assert_eq!(core.document().source_bytes(), before);
-            special(&mut core, view, Key::Ctrl('o'));
             for value in ['"', '+'] {
                 key(&mut core, view, value);
             }
@@ -115,6 +116,7 @@ fn whole_selection_delete_clears_quote_list_and_character_context_with_exact_his
         for mode in [LineMode::Visual, LineMode::PhysicalSource] {
             let (mut core, view) = opened(source, format);
             core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();
+            key(&mut core, view, 'i');
             select(&mut core, view);
             special(&mut core, view, Key::Delete);
             assert_eq!(core.document().text(), "", "{format:?} {mode:?}");
@@ -231,7 +233,7 @@ fn ordinary_last_character_deletion_and_partial_selection_keep_quote_context() {
 #[test]
 fn native_select_all_records_one_replayable_intention_and_honors_counted_insert() {
     let (mut core, view) = opened("original", Format::PlainText);
-    for value in "qa".chars() {
+    for value in "qai".chars() {
         key(&mut core, view, value);
     }
     select(&mut core, view);
@@ -239,7 +241,7 @@ fn native_select_all_records_one_replayable_intention_and_honors_counted_insert(
     special(&mut core, view, Key::Escape);
     key(&mut core, view, 'q');
     let recorded = core.command_state(view).unwrap().register('a').unwrap();
-    assert_eq!(recorded.text, "<SelectAll><Del><Esc>");
+    assert_eq!(recorded.text, "i<SelectAll><Del><Esc>");
     key(&mut core, view, 'i');
     core.handle(
         view,

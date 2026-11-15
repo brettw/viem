@@ -1,6 +1,6 @@
 use std::ops::Range;
 use viem_core::command::composition::{CompositionEvent, CompositionTarget, CompositionUpdate};
-use viem_core::command::{InputEvent, Key};
+use viem_core::command::{InputEvent, Key, Mode};
 use viem_core::document::{BoundaryAffinity, Document, Encoding, Format};
 use viem_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
 use viem_core::{Core, CoreEvent, ViewId};
@@ -23,6 +23,7 @@ fn replacing_all_inline_styled_text_retains_its_style() {
         "[**bold**](https://example.test/)",
     ] {
         let (mut core, view) = fixture(source);
+        key(&mut core, view, Key::Char('i'));
         key(&mut core, view, Key::SelectAll);
         text(&mut core, view, "X");
         text(&mut core, view, "Y");
@@ -68,7 +69,7 @@ fn vim_change_and_dot_resolve_the_style_at_each_new_replacement() {
 fn inherited_context_survives_delete_until_typing_but_not_cursor_motion() {
     for motion in [false, true] {
         let (mut core, view) = fixture("**bold** regular");
-        select(&mut core, view, 0..5, false);
+        native_select(&mut core, view, 0..5, false);
         key(&mut core, view, Key::Backspace);
         if motion {
             key(&mut core, view, Key::Right);
@@ -92,7 +93,7 @@ fn utf16_replacement_keeps_non_ascii_link_attributes_and_undo_bytes() {
         .flat_map(u16::to_le_bytes)
         .collect::<Vec<_>>();
     let (mut core, view) = fixture_format(bytes.clone(), Encoding::Utf16Le, Format::Markdown);
-    select(&mut core, view, 5..12, true);
+    native_select(&mut core, view, 5..12, true);
     text(&mut core, view, "猫");
     text(&mut core, view, "é");
     assert_eq!(
@@ -119,7 +120,7 @@ fn utf16_markdown_link_replacement_keeps_formatted_caret_and_destination() {
             })
             .collect::<Vec<_>>();
         let (mut core, view) = fixture_format(bytes.clone(), encoding, Format::Markdown);
-        select(&mut core, view, 5..12, false);
+        native_select(&mut core, view, 5..12, false);
         text(&mut core, view, "猫");
         text(&mut core, view, "é");
         assert_eq!(core.document().text(), "pré 猫éil");
@@ -154,7 +155,7 @@ fn markdown_replace_use_first_character_bold() {
         ] {
             let (mut core, view) =
                 fixture_format(source.as_bytes().to_vec(), Encoding::Utf8, format);
-            select(&mut core, view, range.clone(), true);
+            native_select(&mut core, view, range.clone(), true);
             text(&mut core, view, "X");
             text(&mut core, view, "Y");
             for at in range.start..range.start + 2 {
@@ -194,7 +195,7 @@ fn every_small_styled_selection_replaces_and_undoes_without_losing_caret_boundar
             for &end in &boundaries[index + 1..] {
                 let (mut core, view) = fixture(source);
                 key(&mut core, view, Key::Char('i'));
-                select(&mut core, view, start..end, true);
+                native_select(&mut core, view, start..end, true);
                 text(&mut core, view, "X");
                 text(&mut core, view, "Y");
                 assert_eq!(
@@ -220,6 +221,7 @@ fn full_document_replacement_keeps_first_character_effective_traits() {
     let expected =
         DocumentLayoutStyles::semantic_character_at(core.document().projection(), 0, false)
             .unwrap();
+    key(&mut core, view, Key::Char('i'));
     key(&mut core, view, Key::SelectAll);
     text(&mut core, view, "X");
     text(&mut core, view, "Y");
@@ -235,7 +237,7 @@ fn ime_replacement_and_cancel_follow_the_same_first_character_rule() {
     for (range, bold) in [(2..12, false), (6..12, true)] {
         for delete_first in [false, true] {
             let (mut core, view) = fixture(source);
-            select(&mut core, view, range.clone(), false);
+            native_select(&mut core, view, range.clone(), false);
             if delete_first {
                 key(&mut core, view, Key::Backspace);
             }
@@ -304,7 +306,7 @@ fn markdown_replacement_retains_code_and_link_identity() {
     ] {
         let (mut core, view) =
             fixture_format(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown);
-        select(&mut core, view, 6..12, false);
+        native_select(&mut core, view, 6..12, false);
         text(&mut core, view, "X");
         text(&mut core, view, "Y");
         for at in 6..8 {
@@ -341,7 +343,7 @@ fn markdown_link_replacement_uses_the_normalized_first_character() {
     ] {
         let (mut core, view) =
             fixture_format(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown);
-        select(&mut core, view, range.clone(), false);
+        native_select(&mut core, view, range.clone(), false);
         text(&mut core, view, "X");
         text(&mut core, view, "Y");
         for at in range.start..range.start + 2 {
@@ -358,7 +360,11 @@ fn markdown_link_replacement_uses_the_normalized_first_character() {
     }
 }
 
-fn select(core: &mut Editor, view: ViewId, range: Range<usize>, reverse: bool) {
+fn native_select(core: &mut Editor, view: ViewId, range: Range<usize>, reverse: bool) {
+    if core.command_state(view).unwrap().mode() == Mode::Normal {
+        key(core, view, Key::Char('i'));
+    }
+    assert_eq!(core.command_state(view).unwrap().mode(), Mode::Insert);
     let (anchor, active) = if reverse {
         (range.end, range.start)
     } else {
@@ -405,7 +411,7 @@ fn native_replacement_inherits_first_character_in_both_selection_directions() {
         for reverse in [false, true] {
             let (mut core, view) = fixture(source);
             let original = core.document().text().to_owned();
-            select(&mut core, view, range.clone(), reverse);
+            native_select(&mut core, view, range.clone(), reverse);
             text(&mut core, view, "X");
             text(&mut core, view, "Y");
             assert_eq!(
@@ -457,7 +463,7 @@ fn replacement_preserves_only_the_first_characters_link_identity() {
     ] {
         for reverse in [false, true] {
             let (mut core, view) = fixture(source);
-            select(&mut core, view, range.clone(), reverse);
+            native_select(&mut core, view, range.clone(), reverse);
             text(&mut core, view, "X");
             text(&mut core, view, "Y");
             for at in range.start..range.start + 2 {

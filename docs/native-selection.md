@@ -1,10 +1,22 @@
 # Native selection and remaining gaps
 
-Viem defaults to `autoselect`, with Vim's `keymodel` and `selectmode` empty.
-Mouse selection gestures and Shift+navigation enter **SELECTION**: typing replaces the selected
-text, Delete/Backspace enter Insert, and plain Left/Right collapse to the
-corresponding edge. A selection started with `v`, `V`, or Ctrl-V keeps Vim Visual
-behavior when extended with Shift+navigation or a pointer gesture.
+Settings > Editing > Selection has two independent options, both on by default:
+
+- **Allow selection in insert mode** (`autoselect`) keeps mouse selection started
+  in Insert in **SELECTION**. Typing replaces the selected text, Delete/Backspace
+  continue in Insert, and plain Left/Right collapse to the corresponding edge.
+  It does not change selection started in Normal or Replace.
+- **Use shift-arrow keys to start selection** (`shiftselect`) starts selection
+  with shifted navigation. From Insert it uses **SELECTION**, independently of
+  `autoselect`; from Normal it uses Vim Visual (or Select with `selectmode=key`).
+  With this option off, shifted arrows use Vim's default motions unless
+  `keymodel=startsel` explicitly enables selection.
+
+Explicit mappings, including those defined in `startup.viem`, take precedence
+before these defaults. Insert navigation mappings also apply while an
+Insert-origin native selection is active. A selection started with `v`, `V`, or
+Ctrl-V keeps Vim Visual behavior when extended with shifted navigation or a
+pointer gesture.
 Gutter selection is a line-selection command: it follows `V`, including the
 view's Visual or Physical Source line meaning and `selectmode=cmd`, rather than
 the mouse's native-selection policy. Its caret occupies the final grapheme of
@@ -13,21 +25,21 @@ retains the entire initial line and keeps the caret on the bottommost line.
 Tables retain complete-row selection and their row controls, with the same Vim
 selection policy and the caret at the end of the last selected row's final cell.
 
-Use `set noautoselect` to let Vim options govern entry. For example,
-`set noautoselect keymodel=startsel,stopsel selectmode=mouse,key` enables Vim
+Use `set noautoselect noshiftselect` to let Vim options govern entry. For example,
+`set noautoselect noshiftselect keymodel=startsel,stopsel selectmode=mouse,key` enables Vim
 Select for mouse and shifted navigation; adding `cmd` also changes
 `v`/`V`/Ctrl-V entry. `gh`, `gH`, and `gCtrl-H` explicitly enter Vim Select
-regardless of `autoselect`.
+regardless of either setting.
 
 These options apply across existing and future documents in the running profile.
 Changing them does not reclassify active selections or interrupt pending commands.
 Put `set` commands in `startup.viem` to retain them across launches.
 
-Settings > Editing > Selection stores the `autoselect` default as
-`editing.autoselect` in `config.json`. Each new document receives it before
-`startup.viem` runs, so startup commands and `:set autoselect` still override it
-until the app exits. Changing the setting replaces the live value in every open
-document of the profile; other settings writes leave a `:set` value in place.
+Settings stores these defaults as `editing.autoselect` and `editing.shiftselect`
+in `config.json`. Each new document receives them before `startup.viem` runs,
+so startup commands and `:set` still override them until the app exits. Changing
+one checkbox replaces only that option's live value in every open document of
+the profile; unrelated settings writes leave `:set` values in place.
 
 Menu word, sentence, paragraph, line and visual-row selection, and Find/Replace/
 Next/Previous Search use shared semantic actions and availability queries.
@@ -54,12 +66,12 @@ the view's line meaning; visual-row selection always uses displayed rows.
   but two with Vim `startsel`.
 - Native Left/Right collapse without another movement. Vim `stopsel` stops
   selection and performs the motion. Without `startsel`, shifted horizontal
-  arrows follow Vim word motions when `autoselect` is off.
+  arrows follow Vim word motions when `shiftselect` is off.
 - Native deletion enters Insert; Vim Select deletion returns to Normal. Ending
   a native selection otherwise resumes its originating Normal, Insert, or
   Replace mode. Escape retains its modal meaning.
-- Native Selection bypasses Visual/Select mappings; insertion mappings still
-  apply to replacement typing. Ctrl-G switches to Visual; Ctrl-O temporarily
+- Native Selection bypasses Visual/Select mappings; Insert mappings apply to
+  replacement typing and navigation in Insert-origin selections. Ctrl-G switches to Visual; Ctrl-O temporarily
   runs a Visual command.
 - Native Copy preserves the selection, direction, active endpoint, caret, and
   mode. Vim `y` and explicit clipboard-register yanks retain their usual

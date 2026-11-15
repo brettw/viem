@@ -985,6 +985,7 @@ fn every_cell_selected_deletion_and_typing_replace_the_whole_table() {
         for corners in 0..4 {
             for (input, replacement) in [(InputEvent::Key(Key::Delete), ""), (InputEvent::text("new"), "new")] {
                 let (mut core, view) = editor(source);
+                core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
                 select_every_cell(&mut core, view, corners);
                 let label = format!("{input:?} corners={corners}");
                 core.handle_with_layout(view, CoreEvent::Input(input.clone()))
@@ -1044,6 +1045,7 @@ fn selection_reaching_into_a_table_from_outside_selects_the_whole_table() {
         "> before\n>\n> | A | B |\n> | - | - |\n> | x | y |\n>\n> after",
     ] {
         let (mut core, view) = editor(source);
+        core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
         let table = core.document().projection().tables()[0].range.clone();
         let text = core.document().text().to_owned();
         let (before, after) = (text.find("fore").unwrap(), text.find("ter").unwrap());
@@ -1073,6 +1075,7 @@ fn selection_reaching_into_a_table_from_outside_selects_the_whole_table() {
     let source = "before\n\n| A | B |\n| - | - |\n| x | y |\n\nafter";
     for (input, expected) in [(InputEvent::Key(Key::Delete), "be\n\nafter"), (InputEvent::text("z"), "bez\n\nafter")] {
         let (mut core, view) = editor(source);
+        core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
         let text = core.document().text().to_owned();
         place(&mut core, view, text.find("fore").unwrap(), false);
         place(&mut core, view, text.find('B').unwrap(), true);
@@ -1084,6 +1087,7 @@ fn selection_reaching_into_a_table_from_outside_selects_the_whole_table() {
     // Reaching from one table into another selects both completely.
     let source = "| A | B |\n| - | - |\n| x | y |\n\nbetween\n\n| C | D |\n| - | - |\n| z | w |";
     let (mut core, view) = editor(source);
+    core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
     let tables = core.document().projection().tables().iter().map(|table| table.range.clone()).collect::<Vec<_>>();
     place(&mut core, view, tables[0].start + 2, false);
     place(&mut core, view, tables[1].start + 2, true);

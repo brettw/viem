@@ -17,12 +17,14 @@ internal static class TripleClickSelectionTests
         uint lineMode = view.CurrentLineMode;
         const string line = "first words continue across several wrapped rows of text ";
         string source = string.Concat(Enumerable.Repeat(line, 24)) + "\nlast";
-        view.Key(VIEM_KEY_ESCAPE); view.Ex("set autoselect keymodel= selectmode=");
+        view.Key(VIEM_KEY_ESCAPE); view.Ex("set autoselect shiftselect keymodel= selectmode=");
         view.Command("i"); view.Text(source); view.Key(VIEM_KEY_ESCAPE);
         view.Wrap(true); view.Command("gg");
         try {
             window.Activate(); pane.FocusEditor();
+            bool firstGesture = true;
             foreach (var (policy, command, returnMode) in new[] {
+                (VIEM_LINE_MODE_VISUAL, "i", VIEM_MODE_INSERT), (VIEM_LINE_MODE_PHYSICAL_SOURCE, "i", VIEM_MODE_INSERT),
                 (VIEM_LINE_MODE_VISUAL, "", VIEM_MODE_NORMAL), (VIEM_LINE_MODE_PHYSICAL_SOURCE, "R", VIEM_MODE_REPLACE) }) {
                 view.Key(VIEM_KEY_ESCAPE); view.Command("gg"); view.LineMode(policy); view.Command(command);
                 var rows = view.Layout().Rows;
@@ -31,19 +33,26 @@ internal static class TripleClickSelectionTests
                 var cluster = view.Layout().Clusters.First(c => c.text_start == first.text_start);
                 var point = new Point((cluster.x + cluster.advance * .1 - view.Viewport.left) / pane.Canvas.ActualWidth,
                     (first.baseline - view.Viewport.top - 3) / pane.Canvas.ActualHeight);
-                if (policy != VIEM_LINE_MODE_VISUAL) await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
+                if (!firstGesture) await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
+                firstGesture = false;
                 await InputRoutingTests.Drag(window, pane.Canvas, new[] { point }, _ => { }, clickCount: 3);
                 var selected = view.LogicalSelection();
                 ulong expectedEnd = policy == VIEM_LINE_MODE_VISUAL ? first.text_end : (ulong)(source.Length - 4);
                 Check(selected.text_start == 0 && selected.text_end == expectedEnd
-                    && view.Presentation.mode == VIEM_MODE_SELECTION_LINE,
-                    $"native triple-click from {returnMode} selects the active {policy} line domain");
-                await InputRoutingTests.Key(VirtualKey.Right);
-                Check(view.Presentation.mode == returnMode && !view.HasSelection,
-                    $"collapsing triple-click selection restores originating mode {returnMode}");
+                    && view.Presentation.mode == (returnMode == VIEM_MODE_INSERT ? VIEM_MODE_SELECTION_LINE : VIEM_MODE_VISUAL_LINE),
+                    $"triple-click from {returnMode} selects the active {policy} line domain with the matching selection policy");
+                if (returnMode == VIEM_MODE_INSERT) {
+                    await InputRoutingTests.Key(VirtualKey.Right);
+                    Check(view.Presentation.mode == VIEM_MODE_INSERT && !view.HasSelection,
+                        "collapsing an Insert triple-click selection restores Insert mode");
+                } else {
+                    await InputRoutingTests.Key(VirtualKey.Right);
+                    Check(view.Presentation.mode == VIEM_MODE_VISUAL_LINE,
+                        "Normal and Replace triple-click selections retain Vim Visual navigation");
+                }
                 Check(pane.Document.FormattedText() == source, "triple-click and selection collapse preserve exact text");
             }
-            view.Key(VIEM_KEY_ESCAPE); view.Command("gg"); view.LineMode(VIEM_LINE_MODE_PHYSICAL_SOURCE);
+            view.Key(VIEM_KEY_ESCAPE); view.Command("ggi"); view.LineMode(VIEM_LINE_MODE_PHYSICAL_SOURCE);
             var firstRow = view.Layout().Rows[0];
             var firstCluster = view.Layout().Clusters.First(c => c.text_start == 0);
             var fraction = new Point((firstCluster.x + firstCluster.advance * .1 - view.Viewport.left) / pane.Canvas.ActualWidth,

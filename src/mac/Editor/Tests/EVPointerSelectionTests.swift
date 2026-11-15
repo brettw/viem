@@ -88,13 +88,14 @@ final class EVPointerSelectionTests: XCTestCase {
         for offset in offsets {
           let target = try point(surface, at: offset)
           surface.editorView.mouseDragged(with: try pointerEvent(surface, type: .leftMouseDragged, at: target))
-          XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_SELECTION_CHARACTER))
+          XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
           let selected = try XCTUnwrap(surface.session).listSelection()
           XCTAssertEqual(selected.text_start, min(2, offset))
-          XCTAssertEqual(selected.text_end, max(end, offset))
+          XCTAssertEqual(selected.text_end, max(end, offset + 1))
         }
         surface.editorView.mouseUp(with: try pointerEvent(surface, type: .leftMouseUp, at: local))
         XCTAssertEqual(surface.editorView.accessibilitySelectedText(), "👩‍💻")
+        surface.performInput { _ = try XCTUnwrap(surface.session).sendText("c") }
         surface.editorView.insertText("X", replacementRange: NSRange(location: NSNotFound, length: 0))
         XCTAssertEqual(try backend.formattedText(), "abXcde")
         surface.perform(menuCommand: .undo, sender: nil)
@@ -115,6 +116,30 @@ final class EVPointerSelectionTests: XCTestCase {
     surface.editorView.mouseDragged(with: try pointerEvent(surface, type: .leftMouseDragged, at: end))
     surface.editorView.mouseUp(with: try pointerEvent(surface, type: .leftMouseUp, at: end))
     XCTAssertEqual(surface.editorView.accessibilitySelectedText(), "DE")
+  }
+
+  func testMouseSelectionStaysInInsertOnlyWhenEnabledIndependentlyOfShiftArrows() throws {
+    for allowInsert in [false, true] {
+      for shiftselect in [false, true] {
+        for command in ["", "i", "R"] {
+          let configuration = EVConfigurationStore(directory: FileManager.default.temporaryDirectory
+            .appendingPathComponent("viem-pointer-options-\(UUID().uuidString)"))
+          defer { try? FileManager.default.removeItem(at: configuration.directory) }
+          try configuration.setAutoselect(allowInsert)
+          try configuration.setShiftselect(shiftselect)
+          let (_, surface, window) = try makeSurface("one two", width: 600, configuration: configuration)
+          defer { window.close() }
+          let session = try XCTUnwrap(surface.session)
+          if !command.isEmpty { surface.performInput { _ = try session.sendText(command) } }
+          let start = try click(surface, at: 0, count: 1)
+          let end = try point(surface, at: 2)
+          surface.editorView.mouseDragged(with: try pointerEvent(surface, type: .leftMouseDragged, at: end))
+          surface.editorView.mouseUp(with: try pointerEvent(surface, type: .leftMouseUp, at: start))
+          XCTAssertEqual(surface.viewPresentation.mode,
+            UInt32(command == "i" && allowInsert ? VIEM_MODE_SELECTION_CHARACTER : VIEM_MODE_VISUAL_CHARACTER))
+        }
+      }
+    }
   }
 
   private func cellPoint(_ surface: EVEditorSurfaceController, at offset: UInt64, fraction: CGFloat) throws -> NSPoint {
@@ -157,6 +182,7 @@ final class EVPointerSelectionTests: XCTestCase {
       let local = try point(surface, at: 10)
       surface.editorView.mouseUp(with: try pointerEvent(surface, type: .leftMouseUp, at: local))
       XCTAssertEqual(surface.editorView.selectedRange(), (source as NSString).range(of: "naïve"))
+      if command != "i" { surface.performInput { _ = try session.sendText("c") } }
       surface.editorView.insertText("X", replacementRange: NSRange(location: NSNotFound, length: 0))
       XCTAssertEqual(try backend.formattedText(), "first X e\u{301}lan final")
       surface.perform(menuCommand: .undo, sender: nil)
@@ -186,7 +212,7 @@ final class EVPointerSelectionTests: XCTestCase {
     surface.goToLine(1)
     try click(surface, at: 1, count: 1)
     view.mouseDragged(with: try pointerEvent(surface, type: .leftMouseDragged, at: point(surface, at: 3)))
-    XCTAssertEqual(view.selectedRange(), NSRange(location: 1, length: 2))
+    XCTAssertEqual(view.selectedRange(), NSRange(location: 1, length: 3))
     view.mouseUp(with: try pointerEvent(surface, type: .leftMouseUp, at: point(surface, at: 3)))
   }
 
@@ -226,12 +252,20 @@ final class EVPointerSelectionTests: XCTestCase {
       // The first glyph's leading edge hit-tests to the word's start. Leaving
       // Insert after that hit would incorrectly move viw onto the prior space.
       try click(surface, at: 7, count: 2)
-      XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_SELECTION_CHARACTER))
+      XCTAssertEqual(surface.viewPresentation.mode, UInt32(command == "i" ? VIEM_MODE_SELECTION_CHARACTER : VIEM_MODE_VISUAL_CHARACTER))
       XCTAssertEqual(surface.editorView.selectedRange(), (source as NSString).range(of: "chosen"))
       XCTAssertEqual(try backend.formattedText(), source)
-      surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_RIGHT)) }
-      XCTAssertEqual(surface.viewPresentation.mode, mode)
+      if command == "i" {
+        surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_RIGHT)) }
+        XCTAssertEqual(surface.viewPresentation.mode, mode)
+      } else {
+        surface.performInput {
+          _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
+          _ = try session.sendText("R")
+        }
+      }
       try click(surface, at: 7, count: 2)
+      if command != "i" { surface.performInput { _ = try session.sendText("c") } }
       surface.editorView.insertText("X", replacementRange: NSRange(location: NSNotFound, length: 0))
       XCTAssertEqual(try backend.formattedText(), "before X after")
       surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
@@ -240,16 +274,18 @@ final class EVPointerSelectionTests: XCTestCase {
     }
   }
 
-  private func makeSurface(_ source: String, width: CGFloat, format: String? = nil) throws -> (
+  private func makeSurface(_ source: String, width: CGFloat, format: String? = nil, configuration: EVConfigurationStore? = nil) throws -> (
     EVCoreDocumentBackend, EVEditorSurfaceController, NSWindow
   ) {
-    let backend = EVCoreDocumentBackend()
+    let backend = EVCoreDocumentBackend(configuration: configuration ?? EVConfigurationStore(directory: FileManager.default.temporaryDirectory
+      .appendingPathComponent("viem-pointer-\(UUID().uuidString)")))
     try backend.readUntitled(source: Data(source.utf8), typeName: format ?? EVDocument.plainTextType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     let window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: width, height: 400), styleMask: [.titled],
       backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
     window.contentViewController = surface
     surface.view.frame = NSRect(x: 0, y: 0, width: width, height: 400)
     surface.viewDidLayout()

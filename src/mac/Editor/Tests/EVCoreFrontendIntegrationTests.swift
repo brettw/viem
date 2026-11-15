@@ -61,7 +61,7 @@ final class EVCoreFrontendIntegrationTests: XCTestCase {
         _ = try session.placeCursor(last, extendSelection: true)
         surface.refreshPresentation()
 
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_SELECTION_CHARACTER))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
         XCTAssertNotEqual(
             surface.viewPresentation.flags & UInt32(VIEM_VIEW_PRESENTATION_HAS_VISUAL_ANCHOR),
             0

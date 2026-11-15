@@ -99,7 +99,7 @@ fn menu_actions_respect_pending_input_and_find_uses_shared_prompt() {
     assert_eq!(core.document().text(), "one two one");
 }
 #[test]
-fn each_selection_intention_has_a_native_selection() {
+fn each_selection_intention_from_insert_has_a_native_selection() {
     for kind in [
         NativeActionKind::SelectWord,
         NativeActionKind::SelectSentence,
@@ -109,6 +109,7 @@ fn each_selection_intention_has_a_native_selection() {
         NativeActionKind::SelectBlock,
     ] {
         let (mut core, view) = fixture("First sentence. Second sentence.\n\nNext paragraph.");
+        text(&mut core, view, "i");
         assert_eq!(
             send(&mut core, view, action(kind)),
             CommandStatus::Complete,
@@ -457,12 +458,33 @@ fn modified_keypad_enter_preserves_paragraph_and_literal_semantics() {
     }
 }
 #[test]
-fn repeating_native_selection_resumes_normal_from_visual_modes() {
+fn repeating_menu_selection_from_visual_keeps_visual_mode() {
     let (mut core, view) = fixture("one two\nlast");
     text(&mut core, view, "v");
     send(&mut core, view, action(NativeActionKind::SelectWord));
     send(&mut core, view, action(NativeActionKind::SelectLine));
     send(&mut core, view, Key::Right);
-    assert_eq!(core.command_state(view).unwrap().mode(), Mode::Normal);
+    assert_eq!(core.command_state(view).unwrap().mode(), Mode::VisualLine);
+    assert!(!core.command_state(view).unwrap().is_text_selection());
     assert_eq!(core.document().text(), "one two\nlast");
+}
+
+#[test]
+fn application_config_selection_options_default_and_validate_independently() {
+    use viem_core::application_config::normalize;
+    let defaults = normalize(br#"{"version":1}"#).unwrap();
+    assert_eq!(defaults["editing"]["autoselect"], true);
+    assert_eq!(defaults["editing"]["shiftselect"], true);
+    for autoselect in [false, true] {
+        for shiftselect in [false, true] {
+            let json = format!(r#"{{"version":1,"editing":{{"autoselect":{autoselect},"shiftselect":{shiftselect}}}}}"#);
+            let config = normalize(json.as_bytes()).unwrap();
+            assert_eq!(config["editing"]["autoselect"], autoselect);
+            assert_eq!(config["editing"]["shiftselect"], shiftselect);
+        }
+    }
+    for option in ["autoselect", "shiftselect"] {
+        let json = format!(r#"{{"version":1,"editing":{{"{option}":"false"}}}}"#);
+        assert!(normalize(json.as_bytes()).is_err());
+    }
 }

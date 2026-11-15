@@ -35,10 +35,86 @@ final class EVNativeSelectionTests: XCTestCase {
             charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code))
     }
 
+    func testShiftArrowSelectionIsIndependentOfInsertSelectionPreference() throws {
+        for allowInsert in [false, true] {
+            for startSelection in [false, true] {
+                for insertMode in [false, true] {
+                    let config = configuration()
+                    try config.setAutoselect(allowInsert)
+                    try config.setShiftselect(startSelection)
+                    let (_, surface, session, window) = try fixture("one two", configuration: config)
+                    defer { window.close() }
+                    if insertMode { surface.performInput { _ = try session.sendText("i") } }
+                    surface.editorView.keyDown(with: try arrow())
+                    if startSelection {
+                        XCTAssertEqual(surface.viewPresentation.mode, UInt32(insertMode ? VIEM_MODE_SELECTION_CHARACTER : VIEM_MODE_VISUAL_CHARACTER))
+                        XCTAssertEqual(surface.editorView.selectedRange(), NSRange(location: 0, length: insertMode ? 1 : 2))
+                    } else {
+                        XCTAssertEqual(surface.viewPresentation.mode, UInt32(insertMode ? VIEM_MODE_INSERT : VIEM_MODE_NORMAL))
+                        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 4)
+                        XCTAssertTrue(surface.selectedUTF8Ranges().isEmpty)
+                    }
+                }
+            }
+        }
+    }
+
+    func testStartupShiftArrowMappingsOverrideBothSettingsAndNativeSelection() throws {
+        let config = configuration()
+        try FileManager.default.createDirectory(at: config.directory, withIntermediateDirectories: true)
+        try Data("nnoremap <S-Right> l\ninoremap <S-Right> <Left>\n".utf8)
+            .write(to: config.directory.appendingPathComponent("startup.viem"))
+        defer { try? FileManager.default.removeItem(at: config.directory) }
+        let (_, surface, session, window) = try fixture("one two", configuration: config)
+        defer { window.close() }
+        surface.editorView.keyDown(with: try arrow())
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 1)
+        surface.performInput { _ = try session.sendText("i") }
+        surface.editorView.keyDown(with: try arrow())
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 0)
+        surface.editorView.keyDown(with: try arrow(125))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_SELECTION_CHARACTER))
+        surface.editorView.keyDown(with: try arrow())
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 0)
+    }
+
+    func testChangingSelectionDefaultsPreservesOtherLiveOverrides() throws {
+        let config = configuration()
+        try FileManager.default.createDirectory(at: config.directory, withIntermediateDirectories: true)
+        try Data("set noautoselect noshiftselect\n".utf8)
+            .write(to: config.directory.appendingPathComponent("startup.viem"))
+        defer { try? FileManager.default.removeItem(at: config.directory) }
+        let (first, surface, session, window) = try fixture(configuration: config)
+        let (second, _, _, secondWindow) = try fixture(configuration: config)
+        defer { window.close(); secondWindow.close() }
+        try config.setSmartHome(false)
+        for backend in [first, second] {
+            XCTAssertEqual(try EVSelectionPreferences.read(UInt32(VIEM_EX_OPTION_AUTOSELECT), from: backend), "0")
+            XCTAssertEqual(try EVSelectionPreferences.read(UInt32(VIEM_EX_OPTION_SHIFTSELECT), from: backend), "0")
+        }
+        try config.setShiftselect(false)
+        try config.setShiftselect(true)
+        for backend in [first, second] {
+            XCTAssertEqual(try EVSelectionPreferences.read(UInt32(VIEM_EX_OPTION_AUTOSELECT), from: backend), "0")
+            XCTAssertEqual(try EVSelectionPreferences.read(UInt32(VIEM_EX_OPTION_SHIFTSELECT), from: backend), "1")
+        }
+        surface.performInput { _ = try session.executeCommandLine("set noshiftselect") }
+        try config.setAutoselect(false)
+        try config.setAutoselect(true)
+        for backend in [first, second] {
+            XCTAssertEqual(try EVSelectionPreferences.read(UInt32(VIEM_EX_OPTION_AUTOSELECT), from: backend), "1")
+            XCTAssertEqual(try EVSelectionPreferences.read(UInt32(VIEM_EX_OPTION_SHIFTSELECT), from: backend), "0")
+        }
+    }
+
     func testShiftArrowsReplaceWholeGraphemeAndUndoOnce() throws {
         let source = "👩‍💻e\u{301} end"
         let (backend, surface, session, window) = try fixture(source)
         defer { window.close() }
+        surface.performInput { _ = try session.sendText("i") }
         surface.editorView.keyDown(with: try arrow())
         XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_SELECTION_CHARACTER))
         XCTAssertEqual(surface.editorView.selectedRange(), NSRange(location: 0, length: 5))
@@ -52,8 +128,9 @@ final class EVNativeSelectionTests: XCTestCase {
     }
 
     func testSelectorsAndCommandShiftArrowExtendToInsertionBoundaries() throws {
-        let (_, surface, _, window) = try fixture()
+        let (_, surface, session, window) = try fixture()
         defer { window.close() }
+        surface.performInput { _ = try session.sendText("i") }
         surface.editorView.doCommand(by: #selector(NSResponder.moveRightAndModifySelection(_:)))
         XCTAssertEqual(surface.editorView.selectedRange(), NSRange(location: 0, length: 1))
         surface.editorView.keyDown(with: try arrow(124, [.command, .shift]))
@@ -64,8 +141,9 @@ final class EVNativeSelectionTests: XCTestCase {
 
     func testUnshiftedArrowsCollapseSelectionLikeAppKit() throws {
         for key: UInt16 in [123, 124] {
-            let (_, surface, _, window) = try fixture()
+            let (_, surface, session, window) = try fixture()
             defer { window.close() }
+            surface.performInput { _ = try session.sendText("i") }
             surface.editorView.keyDown(with: try arrow())
             surface.editorView.keyDown(with: try arrow())
             surface.editorView.keyDown(with: try arrow(key, []))
@@ -98,6 +176,17 @@ final class EVNativeSelectionTests: XCTestCase {
         XCTAssertEqual(try backend.formattedText(), source)
     }
 
+    func testAccessibilityRangesRemainExactWhenReselectingFromInsertSelection() throws {
+        let (_, surface, session, window) = try fixture("one 👩‍💻 end")
+        defer { window.close() }
+        surface.performInput { _ = try session.sendText("i") }
+        for range in [NSRange(location: 0, length: 3), NSRange(location: 4, length: 5), NSRange(location: 10, length: 3)] {
+            surface.editorView.setAccessibilitySelectedTextRange(range)
+            XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_SELECTION_CHARACTER))
+            XCTAssertEqual(surface.editorView.accessibilitySelectedTextRange(), range)
+        }
+    }
+
     func testAccessibilityRangesKeepExactEndsInSelectAndVisualModes() throws {
         for selectmode in ["mouse,key", ""] {
             let (_, surface, session, window) = try fixture("one 👩‍💻 end")
@@ -116,6 +205,7 @@ final class EVNativeSelectionTests: XCTestCase {
     func testSelectCompositionIsOverlayUntilCommitAndCancelKeepsSelection() throws {
         let (backend, surface, session, window) = try fixture("one two")
         defer { window.close() }
+        surface.performInput { _ = try session.sendText("i") }
         surface.perform(menuCommand: .selectWord, sender: nil)
         XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_SELECTION_CHARACTER))
         surface.editorView.setMarkedText("かな", selectedRange: NSRange(location: 2, length: 0), replacementRange: noRange)
@@ -133,8 +223,9 @@ final class EVNativeSelectionTests: XCTestCase {
     }
 
     func testNativeCopyRetainsSelectionThenTypingReplacesIt() throws {
-        let (backend, surface, _, window) = try fixture()
+        let (backend, surface, session, window) = try fixture()
         defer { window.close() }
+        surface.performInput { _ = try session.sendText("i") }
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }
         surface.pasteboard = EVAppKitPasteboardAccess(pasteboard)
@@ -173,7 +264,7 @@ final class EVNativeSelectionTests: XCTestCase {
     func testAlternateOptionsAndCommandSelectionsAreIndependent() throws {
         let (_, surface, session, window) = try fixture()
         defer { window.close() }
-        surface.performInput { _ = try session.executeCommandLine("set noautoselect selectmode= keymodel=startsel") }
+        surface.performInput { _ = try session.executeCommandLine("set noautoselect noshiftselect selectmode= keymodel=startsel") }
         surface.editorView.keyDown(with: try arrow())
         XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
         surface.editorView.keyDown(with: try arrow(124, []))
@@ -197,21 +288,24 @@ final class EVNativeSelectionTests: XCTestCase {
         let (secondBackend, second, secondSession, secondWindow) = try fixture(configuration: config)
         defer { firstWindow.close(); secondWindow.close() }
         second.performInput { _ = try secondSession.sendText("i") }
-        first.performInput { _ = try firstSession.executeCommandLine("set noautoselect km= slm=cmd") }
+        first.performInput { _ = try firstSession.executeCommandLine("set noautoselect noshiftselect km= slm=cmd") }
         XCTAssertEqual(try EVSelectionPreferences.read(UInt32(VIEM_EX_OPTION_KEYMODEL), from: secondBackend), "")
         XCTAssertEqual(try EVSelectionPreferences.read(UInt32(VIEM_EX_OPTION_SELECTMODE), from: secondBackend), "cmd")
         XCTAssertEqual(second.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
         XCTAssertEqual(try EVSelectionPreferences.read(UInt32(VIEM_EX_OPTION_AUTOSELECT), from: secondBackend), "0")
+        XCTAssertEqual(try EVSelectionPreferences.read(UInt32(VIEM_EX_OPTION_SHIFTSELECT), from: secondBackend), "0")
         let (thirdBackend, _, _, thirdWindow) = try fixture(configuration: config)
         defer { thirdWindow.close() }
         XCTAssertEqual(try EVSelectionPreferences.read(UInt32(VIEM_EX_OPTION_KEYMODEL), from: thirdBackend), "")
         XCTAssertEqual(try EVSelectionPreferences.read(UInt32(VIEM_EX_OPTION_SELECTMODE), from: thirdBackend), "cmd")
         XCTAssertEqual(try EVSelectionPreferences.read(UInt32(VIEM_EX_OPTION_AUTOSELECT), from: thirdBackend), "0")
+        XCTAssertEqual(try EVSelectionPreferences.read(UInt32(VIEM_EX_OPTION_SHIFTSELECT), from: thirdBackend), "0")
     }
 
     func testStatusDistinguishesNativeSelectionFromVimVisualAndSelect() throws {
         let (_, surface, session, window) = try fixture()
         defer { window.close() }
+        surface.performInput { _ = try session.sendText("i") }
         surface.editorView.keyDown(with: try arrow())
         XCTAssertEqual(surface.statusBarState.mode, "SELECTION")
         surface.performInput {
@@ -233,7 +327,7 @@ final class EVNativeSelectionTests: XCTestCase {
         let (backend, surface, session, window) = try fixture("abcd")
         defer { window.close() }
         surface.performInput {
-            _ = try session.executeCommandLine("set noautoselect keymodel=startsel,stopsel selectmode=key")
+            _ = try session.executeCommandLine("set noautoselect noshiftselect keymodel=startsel,stopsel selectmode=key")
         }
         surface.editorView.keyDown(with: try arrow())
         XCTAssertEqual(surface.statusBarState.mode, "SELECT")
@@ -243,17 +337,26 @@ final class EVNativeSelectionTests: XCTestCase {
         XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
     }
 
-    func testNativeMenuSelectionPreservesInsertionBoundaryAndResumeMode() throws {
-        for (command, mode) in [("i", UInt32(VIEM_MODE_INSERT)), ("R", UInt32(VIEM_MODE_REPLACE))] {
+    func testMenuSelectionFromNormalAndReplaceUsesVisualMode() throws {
+        for command in ["", "R"] {
             let (_, surface, session, window) = try fixture("one two")
             defer { window.close() }
-            surface.performInput { _ = try session.sendTestKeys("w" + command) }
+            if !command.isEmpty { surface.performInput { _ = try session.sendText(command) } }
             surface.perform(menuCommand: .selectWord, sender: nil)
-            XCTAssertEqual(surface.editorView.accessibilitySelectedText(), "two")
-            XCTAssertEqual(surface.statusBarState.mode, "SELECTION")
-            surface.editorView.keyDown(with: try arrow(124, []))
-            XCTAssertEqual(surface.viewPresentation.mode, mode)
-            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 7)
+            XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
+            XCTAssertEqual(surface.editorView.accessibilitySelectedText(), "one")
         }
+    }
+
+    func testNativeMenuSelectionPreservesInsertionBoundaryAndResumeMode() throws {
+        let (_, surface, session, window) = try fixture("one two")
+        defer { window.close() }
+        surface.performInput { _ = try session.sendTestKeys("wi") }
+        surface.perform(menuCommand: .selectWord, sender: nil)
+        XCTAssertEqual(surface.editorView.accessibilitySelectedText(), "two")
+        XCTAssertEqual(surface.statusBarState.mode, "SELECTION")
+        surface.editorView.keyDown(with: try arrow(124, []))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 7)
     }
 }

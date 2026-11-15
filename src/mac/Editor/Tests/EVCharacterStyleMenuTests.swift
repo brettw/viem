@@ -35,7 +35,9 @@ import XCTest
         XCTAssertTrue(view.editorView.validateMenuItem(item))
         view.editorView.performEditorStyleMenuAction(item)
         XCTAssertNil(view.commandOutput)
-        XCTAssertEqual(view.currentStyleMenuCatalogue()?.entries.first { $0.role == .character && $0.stableID == id }?.presentation.state, .on)
+        let selected = try view.session?.selectedNamedStyles()
+        XCTAssertEqual(view.currentStyleMenuCatalogue()?.entries.first { $0.role == .character && $0.stableID == id }?.presentation.state, .on,
+            "mode=\(view.viewPresentation.mode), ranges=\(view.selectedUTF8Ranges()), character=\(String(describing: selected?.character)), mixed=\(String(describing: selected?.characterMixed))")
     }
 
     private func selectedStyle(_ range: NSRange, view: EVEditorSurfaceController, session: EVCoreViewSession) throws -> EVStyleID? {

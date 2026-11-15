@@ -1791,6 +1791,13 @@ fn probe_selection(seed: &Seed, sink: &Sink, max_pairs: usize) {
                 let Ok(mut h) = H::open(seed, probe_width(), H_) else { return };
                 let (a, z) = if reverse { (end, start) } else { (start, end) };
                 h.case = format!("selection|{a}|{z}|{}", op_label(op));
+                // These replacement/deletion oracles require native half-open
+                // selection, independently of Normal-mode mouse defaults.
+                let entry = h.act(&Act::Key { key: "i".into() });
+                if !entry.is_ok() {
+                    sink.add(finding(&h, "enter_insert", &error_signature(&entry), format!("select {a}..{z}"), entry.describe()));
+                    continue;
+                }
                 let r1 = h.act(&Act::Pointer { offset: a });
                 let r2 = h.act(&Act::Place { offset: z, downstream: true, extend: true });
                 if !r1.is_ok() || !r2.is_ok() {
@@ -2136,6 +2143,12 @@ fn probe_copy_paste(seed: &Seed, sink: &Sink, max: usize) {
             sink.probes.fetch_add(1, Ordering::Relaxed);
             let Ok(mut h) = H::open(seed, probe_width(), H_) else { return };
             h.case = format!("copypaste|{start}|{end}|{target}");
+            // Copy the same native half-open extent in every compared core.
+            let entry = h.act(&Act::Key { key: "i".into() });
+            if !entry.is_ok() {
+                sink.add(finding(&h, "enter_insert", &error_signature(&entry), format!("copy {start}..{end}"), entry.describe()));
+                continue;
+            }
             let _ = h.act(&Act::Pointer { offset: start });
             let _ = h.act(&Act::Place { offset: end, downstream: true, extend: true });
             let r = h.act(&Act::Key { key: "Copy".into() });

@@ -411,6 +411,7 @@ fn enter_replacing_an_empty_paragraph_retains_whitespace_separator_boundaries() 
         let expected_text = document.text().to_owned();
         let mut commands = CommandInterpreter::new();
         assert!(commands.set_cursor_from_pointer(&document, 2, BoundaryAffinity::Downstream, false));
+        commands.handle(&mut document, InputEvent::key('i')).unwrap();
         assert!(commands.set_cursor_from_pointer(&document, 3, BoundaryAffinity::Downstream, true));
         let output = commands.handle(&mut document, InputEvent::Key(Key::Enter)).unwrap();
         assert_eq!(output.status, CommandStatus::Complete);

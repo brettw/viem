@@ -10,6 +10,7 @@ pub enum SelectionOrigin {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SelectionOptions {
     pub autoselect: bool,
+    pub shiftselect: bool,
     pub keymodel: String,
     pub selectmode: String,
 }
@@ -17,6 +18,7 @@ impl Default for SelectionOptions {
     fn default() -> Self {
         Self {
             autoselect: true,
+            shiftselect: true,
             keymodel: String::new(),
             selectmode: String::new(),
         }
@@ -137,6 +139,7 @@ impl CommandInterpreter {
     }
 
     pub(super) fn plain_pointer_mode(&self) -> Mode {
+        if self.is_native_selection() { return self.selection_return_mode; }
         match self.mode { Mode::Insert | Mode::Replace => self.mode, _ => Mode::Normal }
     }
 
@@ -289,7 +292,10 @@ impl CommandInterpreter {
     }
     pub fn set_selection_origin(&mut self, origin: SelectionOrigin) {
         self.selection_behavior =
-            if origin != SelectionOrigin::Command && self.selection_options.autoselect {
+            if origin != SelectionOrigin::Command
+                && self.selection_return_mode == Mode::Insert
+                && self.selection_options.autoselect
+            {
                 SelectionBehavior::Native
             } else if self.selection_options.contains(origin) {
                 SelectionBehavior::Select
@@ -303,10 +309,8 @@ impl CommandInterpreter {
         origin: SelectionOrigin,
         return_mode: Mode,
     ) {
+        self.selection_return_mode = return_mode;
         self.set_selection_origin(origin);
-        if self.is_native_selection() {
-            self.selection_return_mode = return_mode;
-        }
         if origin != SelectionOrigin::Command
             && self.is_native_selection()
             && self.mode == Mode::VisualCharacter
@@ -433,7 +437,7 @@ impl CommandInterpreter {
             // Without startsel, Vim's shifted horizontal arrows are word
             // motions. Native Selection keeps platform selection navigation.
             let key = if shifted
-                && !self.selection_options.autoselect
+                && !self.selection_options.shiftselect
                 && !self.is_native_selection()
                 && !self.selection_options.keymodel("startsel")
             {
@@ -470,7 +474,7 @@ impl CommandInterpreter {
             let mut output = CommandOutput::complete();
             if shifted
                 && !selecting
-                && (self.selection_options.autoselect
+                && (self.selection_options.shiftselect
                     || self.selection_options.keymodel("startsel"))
             {
                 let origin = self.cursor;
@@ -486,6 +490,9 @@ impl CommandInterpreter {
                 self.mode = Mode::VisualCharacter;
                 self.visual_anchor = Some(origin);
                 self.set_selection_origin(SelectionOrigin::Key);
+                if self.selection_return_mode == Mode::Insert && self.selection_options.shiftselect {
+                    self.selection_behavior = SelectionBehavior::Native;
+                }
                 self.selection_exclusive = self.is_native_selection();
                 output.mode_changed = true;
             } else if !shifted

@@ -28,7 +28,8 @@ consistency, full-suite, or native checks.
 ## Comment authoring
 
 Applying the Comment character style wraps a selection in a visible `<!-- … -->`
-span. At a caret it immediately inserts `<!--  -->` and enters Insert mode
+span. Wrapping keeps the original body selected in its existing direction, in
+Visual and native selection. At a caret it immediately inserts `<!--  -->` and enters Insert mode
 between the two spaces. This insertion is undoable before any body text is typed.
 The body is literal, and continued Insert or Replace input stays
 before the closing delimiter. Creating a comment preserves surrounding paragraph,

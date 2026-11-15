@@ -44,7 +44,8 @@ fn delete_keys_remove_native_unicode_selection_and_round_trip_source() {
         for delete in [Key::Backspace, Key::Delete] {
             for reverse in [false, true] {
                 let (mut core, view) = editor(source, format, 300.);
-                assert_eq!(core.command_state(view).unwrap().mode(), Mode::Normal);
+                key(&mut core, view, Key::Char('i'));
+                assert_eq!(core.command_state(view).unwrap().mode(), Mode::Insert);
                 let endpoints = if reverse { [18, 5] } else { [5, 18] };
                 for (index, text_offset) in endpoints.into_iter().enumerate() {
                     core.handle(

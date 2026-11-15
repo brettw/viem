@@ -141,7 +141,7 @@ fn bold_needs_a_settable_target_and_clearing_needs_a_clearable_one() {
     for (word, state) in [("one", SemanticStyleState::On), ("two", SemanticStyleState::Off)] {
         let start = text.find(word).unwrap();
         place(&mut core, view, start, false);
-        place(&mut core, view, start + word.len(), true);
+        place(&mut core, view, start + word.len() - 1, true);
         let actions = actions(&core, view);
         assert_eq!((actions.state(Bold), actions.is_enabled(Bold)), (state, true), "{word}");
     }

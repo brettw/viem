@@ -157,7 +157,7 @@ internal sealed partial class EditorWindow : Window
         AppWindow.TitleBar.ButtonForegroundColor = preferences.Midnight ? Microsoft.UI.Colors.White : Microsoft.UI.Colors.Black;
         titleBar.Background = Menu.Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(31, 31, 31) : Theme.Rgb(243, 243, 243));
         SynchronizeFormattingToolbar();
-        GlobalSelectionOptions.Configure(preferences.DirectoryPath, preferences.Autoselect);
+        GlobalSelectionOptions.Configure(preferences.DirectoryPath, preferences.Autoselect, preferences.Shiftselect);
         updatingPreferences = false;
         RefreshRecentMenu();
     }
@@ -186,7 +186,7 @@ internal sealed partial class EditorWindow : Window
             string[] diagnostics = [];
             doc.ConfigureForEditing("theme styles", () => diagnostics = preferences.AttachThemeDocument(doc));
             if (diagnostics.Length > 0) styleDefaultsWarnings[doc] = string.Join(Environment.NewLine, diagnostics);
-            doc.ConfigureForEditing("selection settings", () => GlobalSelectionOptions.Seed(doc, preferences.DirectoryPath, preferences.Autoselect));
+            doc.ConfigureForEditing("selection settings", () => GlobalSelectionOptions.Seed(doc, preferences.DirectoryPath, preferences.Autoselect, preferences.Shiftselect));
             if (preferences.StartupCommands.Length > 0) doc.ConfigureForEditing("startup.viem", () => doc.InitializeStartup(preferences.StartupCommands));
             doc.ConfigureForEditing("selection settings", () => GlobalSelectionOptions.Attach(doc, preferences.DirectoryPath));
             if (path != null) {

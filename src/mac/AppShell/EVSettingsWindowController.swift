@@ -32,6 +32,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   private weak var caretHoverCheckbox: NSButton?
   private weak var smartQuotesCheckbox: NSButton?
   private weak var autoselectCheckbox: NSButton?
+  private weak var shiftselectCheckbox: NSButton?
   private weak var smartHomeCheckbox: NSButton?
   private let textWidthField = NSTextField(string: "")
   private var indentationCheckboxes: [String: NSButton] = [:]
@@ -303,14 +304,21 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
       let widthGroup = section("Reflow", views: [widthRow, widthExplanation])
       stack.addArrangedSubview(widthGroup)
       widthGroup.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
-      let autoselect = NSButton(checkboxWithTitle: "Use native selection for mouse and Shift-arrow keys", target: self, action: #selector(changeAutoselect(_:)))
+      let autoselect = NSButton(checkboxWithTitle: "Allow selection in insert mode", target: self, action: #selector(changeAutoselect(_:)))
       autoselect.state = editingPreferences.autoselect ? .on : .off
-      autoselect.setAccessibilityLabel("Use native selection for mouse and Shift-arrow keys")
+      autoselect.setAccessibilityLabel("Allow selection in insert mode")
       autoselectCheckbox = autoselect
-      let autoselectExplanation = NSTextField(wrappingLabelWithString: "Typing replaces the selection, and Delete enters Insert mode. When off, these selections use Vim Visual mode. :set autoselect overrides this until Viem quits.")
+      let autoselectExplanation = NSTextField(wrappingLabelWithString: "Mouse selection in Insert mode keeps insertion behavior: typing replaces the selection. Selections in Normal mode use Vim Visual mode.")
       autoselectExplanation.textColor = .secondaryLabelColor
       autoselectExplanation.font = .systemFont(ofSize: 12)
-      let selectionGroup = section("Selection", views: [autoselect, autoselectExplanation])
+      let shiftselect = NSButton(checkboxWithTitle: "Use shift-arrow keys to start selection", target: self, action: #selector(changeShiftselect(_:)))
+      shiftselect.state = editingPreferences.shiftselect ? .on : .off
+      shiftselect.setAccessibilityLabel("Use shift-arrow keys to start selection")
+      shiftselectCheckbox = shiftselect
+      let shiftselectExplanation = NSTextField(wrappingLabelWithString: "Shift-arrow keys select in Insert mode and enter Visual mode from Normal. When off, they follow Vim behavior. Explicit key mappings take precedence.")
+      shiftselectExplanation.textColor = .secondaryLabelColor
+      shiftselectExplanation.font = .systemFont(ofSize: 12)
+      let selectionGroup = section("Selection", views: [autoselect, autoselectExplanation, shiftselect, shiftselectExplanation])
       stack.addArrangedSubview(selectionGroup)
       selectionGroup.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
       let smartHome = NSButton(checkboxWithTitle: "Smart Home", target: self, action: #selector(changeSmartHome(_:)))
@@ -484,6 +492,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     caretHoverCheckbox?.state = editingPreferences.caretHoverEffect ? .on : .off
     smartQuotesCheckbox?.state = editingPreferences.smartQuotes ? .on : .off
     autoselectCheckbox?.state = editingPreferences.autoselect ? .on : .off
+    shiftselectCheckbox?.state = editingPreferences.shiftselect ? .on : .off
     smartHomeCheckbox?.state = editingPreferences.smartHome ? .on : .off
     textWidthField.stringValue = String(editingPreferences.textWidth)
     let options = editingPreferences.indentation
@@ -732,6 +741,11 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     editingPreferences.setSmartHome(sender.state == .on)
     refreshEditingPreferences()
   }
+  @objc private func changeShiftselect(_ sender: NSButton) {
+    editingPreferences.setShiftselect(sender.state == .on)
+    refreshEditingPreferences()
+  }
+
   @objc private func changeAutoselect(_ sender: NSButton) {
     editingPreferences.setAutoselect(sender.state == .on)
     refreshEditingPreferences()

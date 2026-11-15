@@ -499,6 +499,30 @@ final class EVImageTests: XCTestCase {
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
     }
 
+    func testAccessibilitySelectionAfterImageUsesItsOriginatingModeAndExactRange() throws {
+        for insert in [false, true] {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-image-ax-selection-\(UUID().uuidString)")
+            let configuration = EVConfigurationStore(directory: directory)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let (backend, surface, window) = try editor("A![alt](https://example.invalid/a.png)BC",
+                type: EVDocument.markdownType, configuration: configuration)
+            defer { surface.imagePopover.close(); window.close() }
+            let session = try XCTUnwrap(surface.session)
+            if insert { surface.performInput { _ = try session.sendText("i") } }
+            let state = try backend.documentState()
+            surface.performInput {
+                _ = try session.selectImage(at: 1, documentID: state.document_id, revision: state.document_revision)
+            }
+            XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_SELECTION_CHARACTER))
+            let range = NSRange(location: 2, length: 1)
+            surface.editorView.setAccessibilitySelectedTextRange(range)
+            XCTAssertEqual(surface.editorView.accessibilitySelectedTextRange(), range)
+            XCTAssertEqual(surface.editorView.accessibilitySelectedText(), "B")
+            XCTAssertEqual(surface.viewPresentation.mode,
+                UInt32(insert ? VIEM_MODE_SELECTION_CHARACTER : VIEM_MODE_VISUAL_CHARACTER))
+        }
+    }
+
     func testInsertionArrowNavigationSelectsImageAndCanLeaveItsSelection() throws {
         let (_, surface, window) = try editor("A![alt](https://example.invalid/a.png)B", type: EVDocument.markdownType)
         defer { surface.imagePopover.close(); window.close() }

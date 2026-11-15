@@ -186,13 +186,30 @@ impl Document {
             let clear = scratch.prepare_character_style_choice(range.clone(), "".into())?;
             record(&mut scratch, clear, &mut sources, &mut formatted)?;
         }
-        let wrapped = scratch.prepare_comment_wrapper(range)?;
+        let wrapped = scratch.prepare_comment_wrapper(range.clone())?;
         record(&mut scratch, wrapped, &mut sources, &mut formatted)?;
-        self.prepare_text_edits_with_patch_policy(
+        let mut prepared = self.prepare_text_edits_with_patch_policy(
             formatted.formatted_edits(),
             Some(sources.source_patches()),
             true,
-        )
+        )?;
+        // Comment creation can replace paragraph structure, so its verified
+        // edit covers the complete wrapper. The unchanged visible body still
+        // retains its identity for selections and other inward-facing anchors.
+        if let PreparedPublication::State(candidate) = &prepared.publication {
+            let start = range.start.checked_add(5).ok_or(PositionError::ArithmeticOverflow)?;
+            let end = start.checked_add(range.len()).ok_or(PositionError::ArithmeticOverflow)?;
+            let body = self.projection().text_tree().slice(range.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
+            let relocated = candidate.projection.text_tree().slice(start..end)
+                .map_err(DocumentError::FormattedTextStorage)?;
+            if body != relocated {
+                return Err(DocumentError::VerificationFailed.into());
+            }
+            prepared.text_position_map = prepared.text_position_map.clone()
+                .with_relocated_content(vec![(range, start)])?;
+        }
+        Ok(prepared)
     }
 
     fn prepare_comment_wrapper(

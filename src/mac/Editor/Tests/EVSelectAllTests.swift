@@ -43,7 +43,7 @@ import XCTest
                 view.perform(menuCommand: .selectAll, sender: nil)
                 XCTAssertEqual(view.selectedUTF8Ranges(), [0..<text.utf8.count], "\(type) \(mode)")
                 XCTAssertEqual(view.editorView.accessibilitySelectedText(), text)
-                XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_SELECTION_CHARACTER))
+                XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
                 view.perform(menuCommand: .copy, sender: nil)
                 let expectedCopy = text
                 XCTAssertEqual(pasteboard.text, expectedCopy, "\(type) \(mode)")
@@ -75,6 +75,7 @@ import XCTest
             for mode: EVLineMode in [.visual, .physicalSource] {
                 let (backend, view, session, _) = try surface(source, type: type)
                 try session.setLineMode(mode)
+                view.performInput { _ = try session.sendText("i") }
                 view.perform(menuCommand: .selectAll, sender: nil)
                 view.perform(menuCommand: .delete, sender: nil)
                 XCTAssertEqual(try backend.formattedText(), "")

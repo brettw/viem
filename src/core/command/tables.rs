@@ -97,7 +97,7 @@ impl CommandInterpreter {
             let (first, last) = (cell(0, 0)?, cell(table.rows.len() - 1, table.columns.len() - 1)?);
             (anchor, active) = if active.range.start < anchor.range.start { (last, first) } else { (first, last) };
         }
-        let return_mode = if self.table_cells.is_some() {
+        let return_mode = if self.table_cells.is_some() || self.is_native_selection() {
             self.selection_return_mode
         } else {
             self.mode
@@ -118,13 +118,13 @@ impl CommandInterpreter {
         self.cursor = if backward { active.range.start } else { active.range.end };
         self.position_revision = Some(document.revision());
         self.mode = Mode::VisualCharacter;
-        self.set_selection_origin(SelectionOrigin::Mouse);
-        self.selection_exclusive = true;
         self.selection_return_mode = if matches!(return_mode, Mode::Insert | Mode::Replace) {
             return_mode
         } else {
             Mode::Normal
         };
+        self.set_selection_origin(SelectionOrigin::Mouse);
+        self.selection_exclusive = true;
         self.visual_position = None;
         self.visual_block = None;
         self.desired_x = None;

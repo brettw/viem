@@ -79,7 +79,7 @@ fn command_line_selection_retires_prior_native_return_mode() {
             key(&mut core, view, Key::Enter);
             key(&mut core, view, Key::Char(insert));
             key(&mut core, view, Key::ModifiedNavigation { key: NavigationKey::Right, modifiers: 1 });
-            assert!(core.command_state(view).unwrap().is_native_selection());
+            assert_eq!(core.command_state(view).unwrap().is_native_selection(), insert == 'i');
             let cancelled = core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
             assert_eq!(cancelled.command.unwrap().status, CommandStatus::Cancelled);
             key(&mut core, view, Key::Char('V'));

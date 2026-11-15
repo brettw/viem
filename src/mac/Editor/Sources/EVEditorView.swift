@@ -1233,11 +1233,12 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         if surface.selectedUTF8Ranges() == [range] { return true }
 
         do {
-            let start = try session.caretGeometry(
+            let startGeometry = try session.caretGeometry(
                 offset: UInt64(range.lowerBound),
                 affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM),
                 in: context.snapshot.info
-            ).point
+            )
+            let start = startGeometry.point
             let end: ViemLayoutCaretPoint?
             if range.isEmpty {
                 end = nil
@@ -1247,7 +1248,13 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                 // the final grapheme instead.
                 let autoselect = try EVSelectionPreferences.read(UInt32(VIEM_EX_OPTION_AUTOSELECT), from: surface.backend)
                 let activeOffset: Int
-                let nativeSelection = autoselect == "1"
+                // Atomic image selections can resume Normal. Ask core which
+                // mode plain placement resumes before choosing the endpoint.
+                let pointer = try session.pointerCaret(CGPoint(
+                    x: CGFloat(startGeometry.rect.x),
+                    y: CGFloat(startGeometry.rect.y + startGeometry.rect.height / 2)
+                ), in: context.snapshot.info)
+                let nativeSelection = autoselect == "1" && pointer.mode == UInt32(VIEM_MODE_INSERT)
                 if nativeSelection {
                     activeOffset = range.upperBound
                 } else {

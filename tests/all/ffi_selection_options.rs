@@ -18,65 +18,67 @@ fn selection_option_abi_validates_utf8_values_and_output_regions() {
         ViemStatus::Ok
     );
     let mut required = 999;
-    assert_eq!(
-        unsafe {
-            viem_core_copy_selection_option(
-                core,
-                VIEM_EX_OPTION_AUTOSELECT,
-                ptr::null_mut(),
-                0,
-                &mut required,
-            )
-        },
-        ViemStatus::BufferTooSmall
-    );
-    assert_eq!(required, 1);
     let mut buffer = vec![0; 16];
-    assert_eq!(
-        unsafe {
-            viem_core_copy_selection_option(
-                core,
-                VIEM_EX_OPTION_AUTOSELECT,
-                buffer.as_mut_ptr(),
-                buffer.len() as u64,
-                &mut required,
-            )
-        },
-        ViemStatus::Ok
-    );
-    assert_eq!(&buffer[..required as usize], b"1");
-    for invalid in [b"false".as_slice(), b"", b"2", &[0xff]] {
-        assert_ne!(
+    for option in [VIEM_EX_OPTION_AUTOSELECT, VIEM_EX_OPTION_SHIFTSELECT] {
+        assert_eq!(
             unsafe {
-                viem_core_set_selection_option(
+                viem_core_copy_selection_option(
                     core,
-                    VIEM_EX_OPTION_AUTOSELECT,
-                    invalid.as_ptr(),
-                    invalid.len() as u64,
+                    option,
+                    ptr::null_mut(),
+                    0,
+                    &mut required,
+                )
+            },
+            ViemStatus::BufferTooSmall
+        );
+        assert_eq!(required, 1);
+        assert_eq!(
+            unsafe {
+                viem_core_copy_selection_option(
+                    core,
+                    option,
+                    buffer.as_mut_ptr(),
+                    buffer.len() as u64,
+                    &mut required,
                 )
             },
             ViemStatus::Ok
         );
+        assert_eq!(&buffer[..required as usize], b"1");
+        for invalid in [b"false".as_slice(), b"", b"2", &[0xff]] {
+            assert_ne!(
+                unsafe {
+                    viem_core_set_selection_option(
+                        core,
+                        option,
+                        invalid.as_ptr(),
+                        invalid.len() as u64,
+                    )
+                },
+                ViemStatus::Ok
+            );
+        }
+        assert_eq!(
+            unsafe {
+                viem_core_set_selection_option(core, option, b"0".as_ptr(), 1)
+            },
+            ViemStatus::Ok
+        );
+        assert_eq!(
+            unsafe {
+                viem_core_copy_selection_option(
+                    core,
+                    option,
+                    buffer.as_mut_ptr(),
+                    buffer.len() as u64,
+                    &mut required,
+                )
+            },
+            ViemStatus::Ok
+        );
+        assert_eq!(&buffer[..required as usize], b"0");
     }
-    assert_eq!(
-        unsafe {
-            viem_core_set_selection_option(core, VIEM_EX_OPTION_AUTOSELECT, b"0".as_ptr(), 1)
-        },
-        ViemStatus::Ok
-    );
-    assert_eq!(
-        unsafe {
-            viem_core_copy_selection_option(
-                core,
-                VIEM_EX_OPTION_AUTOSELECT,
-                buffer.as_mut_ptr(),
-                buffer.len() as u64,
-                &mut required,
-            )
-        },
-        ViemStatus::Ok
-    );
-    assert_eq!(&buffer[..required as usize], b"0");
     for bad in [b"key,invalid".as_slice(), b"mouse,,key", &[0xff]] {
         assert_ne!(
             unsafe {

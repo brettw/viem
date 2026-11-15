@@ -103,6 +103,7 @@ fn consecutive_compositions_over_native_selection_keep_separate_valid_history() 
     for format in [Format::PlainText, Format::Code, Format::Markdown] {
         let mut core = Core::new(Document::from_bytes(b"hello world".to_vec(), Encoding::Utf8, format).unwrap());
         let view = core.add_view(MockTextMeasurementProvider::new(), 300., 160.);
+        core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
         for (offset, extend) in [(0, false), (5, true)] {
             core.handle_with_layout(view, CoreEvent::PlaceCursor {
                 document_revision: core.document().revision(), text_offset: offset,

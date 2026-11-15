@@ -126,9 +126,10 @@ public final class EVConfigurationStore {
   public var smartQuotes: Bool { (root["editing"] as? [String: Any])?["smartQuotes"] as? Bool ?? true }
   /// Home toggles between the first nonblank and the line start.
   public var smartHome: Bool { (root["editing"] as? [String: Any])?["smartHome"] as? Bool ?? true }
-  /// Application default for native selection from the mouse and Shift-arrow
-  /// keys. startup.viem and `:set autoselect` override it until the next launch.
+  /// Application default for keeping selections in Insert mode.
+  /// startup.viem and `:set autoselect` override it until the next launch.
   public var autoselect: Bool { (root["editing"] as? [String: Any])?["autoselect"] as? Bool ?? true }
+  public var shiftselect: Bool { (root["editing"] as? [String: Any])?["shiftselect"] as? Bool ?? true }
   public var markdownFormattedView: Bool {
     (root["editing"] as? [String: Any])?["markdownFormattedView"] as? Bool ?? true
   }
@@ -229,6 +230,7 @@ public final class EVConfigurationStore {
   public func setSmartQuotes(_ enabled: Bool) throws { try update(section: "editing", values: ["smartQuotes": enabled]) }
   public func setSmartHome(_ enabled: Bool) throws { try update(section: "editing", values: ["smartHome": enabled]) }
   public func setAutoselect(_ enabled: Bool) throws { try update(section: "editing", values: ["autoselect": enabled]) }
+  public func setShiftselect(_ enabled: Bool) throws { try update(section: "editing", values: ["shiftselect": enabled]) }
   public func setMarkdownFormattedView(_ enabled: Bool) throws {
     // This default affects future opens; existing views retain their own state.
     try update(section: "editing", values: ["markdownFormattedView": enabled], notify: false)

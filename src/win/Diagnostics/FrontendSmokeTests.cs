@@ -272,7 +272,8 @@ internal static class FrontendSmokeTests
 
     private static void ReplaceSelectComposition(CoreDocument doc, CoreView view)
     {
-        view.Ex("set keymodel=startsel,stopsel selectmode=mouse,key");
+        view.Ex("set autoselect shiftselect keymodel=startsel,stopsel selectmode=mouse,key");
+        view.Command("i");
         view.Key(VIEM_KEY_RIGHT, modifiers: VIEM_KEY_MODIFIER_SHIFT);
         view.Key(VIEM_KEY_RIGHT, modifiers: VIEM_KEY_MODIFIER_SHIFT);
         byte[] before = doc.Source(doc.State.document_revision);
@@ -512,7 +513,7 @@ internal static class FrontendSmokeTests
         Check(config["editing"]?["textWidth"]?.GetValue<int>() == 80, "configuration defaults come from core");
         Check(config["editing"]?["whitespacePresentation"]?["alignIndentsToPreviousLine"]?.GetValue<bool>() == true,
             "indent alignment defaults on in the portable settings schema");
-        foreach (string key in new[] { "caretHoverEffect", "smartQuotes", "smartHome", "markdownAutodetect" })
+        foreach (string key in new[] { "caretHoverEffect", "smartQuotes", "smartHome", "markdownAutodetect", "autoselect", "shiftselect" })
             Check(config["editing"]?[key]?.GetValue<bool>() == true, key + " defaults on");
         var integralConfig = Viem.Windows.Shell.Preferences.Normalize(System.Text.Json.Nodes.JsonNode.Parse("{\"version\":1,\"editing\":{\"textWidth\":72.0}}")!.AsObject());
         Check(integralConfig["editing"]?["textWidth"]?.GetValue<uint>() == 72, "integral JSON values normalize for native integer readers");
@@ -647,6 +648,14 @@ internal static class FrontendSmokeTests
             rejected = true;
         }
         Check(rejected && File.ReadAllBytes(config).AsSpan().SequenceEqual(before), "invalid preferences leave prior file untouched");
+        Check(preferences.Autoselect && preferences.Shiftselect, "both selection settings default on");
+        preferences.Set("editing", "autoselect", false);
+        Check(!new Preferences(test).Autoselect && new Preferences(test).Shiftselect,
+            "Insert selection preference persists independently of Shift-arrow selection");
+        preferences.Set("editing", "shiftselect", false);
+        preferences.Set("editing", "autoselect", true);
+        Check(new Preferences(test).Autoselect && !new Preferences(test).Shiftselect,
+            "Shift-arrow preference persists independently of Insert selection");
         int settingsChanges = 0, recentChanges = 0;
         preferences.Changed += () => settingsChanges++;
         preferences.RecentChanged += () => recentChanges++;

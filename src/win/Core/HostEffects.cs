@@ -28,7 +28,7 @@ internal sealed record HostEffects(ClipboardWrite[] Clipboard, FrontendRequest[]
         foreach (var option in options)
             if ((option.name is VIEM_EX_OPTION_KEYMODEL or VIEM_EX_OPTION_SELECTMODE) && option.value_kind == VIEM_EX_OPTION_VALUE_STRING)
                 selectionOptions[option.name] = Text(bytes, option.text);
-            else if (option.name == VIEM_EX_OPTION_AUTOSELECT && option.value_kind == VIEM_EX_OPTION_VALUE_BOOLEAN)
+            else if ((option.name is VIEM_EX_OPTION_AUTOSELECT or VIEM_EX_OPTION_SHIFTSELECT) && option.value_kind == VIEM_EX_OPTION_VALUE_BOOLEAN)
                 selectionOptions[option.name] = option.scalar_value == 0 ? "0" : "1";
         return new(writes, requests.Select(r => new FrontendRequest(r, Text(bytes, r.text))).ToArray(), output, selectionOptions);
     }

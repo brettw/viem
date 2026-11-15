@@ -236,6 +236,8 @@ fn deleting_complete_emphasis_removes_empty_markers_and_replacement_keeps_its_st
         assert_eq!(document.source_bytes(), source.as_bytes());
         let mut core = Core::new(document);
         let view = core.add_view(MockTextMeasurementProvider::new(), 300., 150.);
+        core.handle(view, CoreEvent::Input(InputEvent::key('i')))
+            .unwrap();
         for (text_offset, extend_selection) in [(6, false), (12, true)] {
             core.handle(
                 view,

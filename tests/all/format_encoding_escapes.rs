@@ -84,6 +84,7 @@ fn native_markdown_replacement_and_continued_typing_preserve_unicode_and_link() 
         let original = document(source, Format::Markdown).source_bytes();
         let mut core = Core::new(document(source, Format::Markdown));
         let view = core.add_view(MockTextMeasurementProvider::new(), 400., 200.);
+        core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
         for (text_offset, extend_selection) in [(5, false), (11, true)] {
             core.handle(
                 view,

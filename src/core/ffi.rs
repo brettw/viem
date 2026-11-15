@@ -573,6 +573,7 @@ pub const VIEM_EX_OPTION_LISTCHARS: u32 = 18;
 pub const VIEM_EX_OPTION_KEYMODEL: u32 = 21;
 pub const VIEM_EX_OPTION_SELECTMODE: u32 = 22;
 pub const VIEM_EX_OPTION_AUTOSELECT: u32 = 23;
+pub const VIEM_EX_OPTION_SHIFTSELECT: u32 = 24;
 pub const VIEM_EX_OPTION_HLSEARCH: u32 = 19;
 pub const VIEM_EX_OPTION_INCSEARCH: u32 = 20;
 
@@ -3336,7 +3337,7 @@ impl OwnedEffectBatch {
             if matches!(ex.navigation, Some(ExNavigation::PhysicalSourceOffset(_))) {
                 ex.navigation = Some(ExNavigation::TextOffset(commands.cursor()));
             }
-            let options = ex.option_effects.iter().filter(|effect| matches!(effect.name, ExOptionName::KeyModel | ExOptionName::SelectMode | ExOptionName::AutoSelect))
+            let options = ex.option_effects.iter().filter(|effect| matches!(effect.name, ExOptionName::KeyModel | ExOptionName::SelectMode | ExOptionName::AutoSelect | ExOptionName::ShiftSelect))
                 .map(|effect| crate::command::ex_execute::ExOptionDisplay { name: effect.name.clone(), value: effect.new_value.clone() }).collect::<Vec<_>>();
             if !options.is_empty() { ex.frontend_requests.push(ExFrontendRequest::Info(ExInfoRequest::Options(options))); }
         }
@@ -3419,6 +3420,7 @@ fn ex_option_name_to_ffi(name: &ExOptionName) -> u32 {
         ExOptionName::List => VIEM_EX_OPTION_LIST,
         ExOptionName::ListChars => VIEM_EX_OPTION_LISTCHARS,
         ExOptionName::AutoSelect => VIEM_EX_OPTION_AUTOSELECT,
+        ExOptionName::ShiftSelect => VIEM_EX_OPTION_SHIFTSELECT,
         ExOptionName::KeyModel => VIEM_EX_OPTION_KEYMODEL,
         ExOptionName::SelectMode => VIEM_EX_OPTION_SELECTMODE,
 
@@ -9151,11 +9153,11 @@ pub unsafe extern "C" fn viem_core_view_select_all(
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_copy_selection_option(handle: ViemCoreHandle, option_kind: u32, output: *mut u8, capacity: u64, out_required: *mut u64) -> ViemStatus {
     ffi_boundary(|| {
-        let keymodel = match option_kind { VIEM_EX_OPTION_KEYMODEL => true, VIEM_EX_OPTION_SELECTMODE | VIEM_EX_OPTION_AUTOSELECT => false, _ => return Err(ViemStatus::InvalidArgument) };
+        let keymodel = match option_kind { VIEM_EX_OPTION_KEYMODEL => true, VIEM_EX_OPTION_SELECTMODE | VIEM_EX_OPTION_AUTOSELECT | VIEM_EX_OPTION_SHIFTSELECT => false, _ => return Err(ViemStatus::InvalidArgument) };
         typed_pointer_region(out_required, 1)?;
         let capacity = checked_length(capacity)?;
         if capacity != 0 { validate_disjoint_regions(&[typed_pointer_region(out_required, 1)?, typed_pointer_region(output, capacity as u64)?])?; }
-        let value = with_core(handle, |core| Ok(if option_kind == VIEM_EX_OPTION_AUTOSELECT { if core.selection_options().autoselect { "1" } else { "0" }.to_owned() } else if keymodel { core.selection_options().keymodel.clone() } else { core.selection_options().selectmode.clone() }))?;
+        let value = with_core(handle, |core| Ok(if option_kind == VIEM_EX_OPTION_AUTOSELECT { if core.selection_options().autoselect { "1" } else { "0" }.to_owned() } else if option_kind == VIEM_EX_OPTION_SHIFTSELECT { if core.selection_options().shiftselect { "1" } else { "0" }.to_owned() } else if keymodel { core.selection_options().keymodel.clone() } else { core.selection_options().selectmode.clone() }))?;
         unsafe { out_required.write(value.len() as u64) };
         if capacity < value.len() { return Err(ViemStatus::BufferTooSmall); }
         if !value.is_empty() { unsafe { copy_output(value.as_bytes(), output) }; }
@@ -9168,12 +9170,13 @@ pub unsafe extern "C" fn viem_core_copy_selection_option(handle: ViemCoreHandle,
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_set_selection_option(handle: ViemCoreHandle, option_kind: u32, value: *const u8, length: u64) -> ViemStatus {
     ffi_boundary(|| {
-        let keymodel = match option_kind { VIEM_EX_OPTION_KEYMODEL => true, VIEM_EX_OPTION_SELECTMODE | VIEM_EX_OPTION_AUTOSELECT => false, _ => return Err(ViemStatus::InvalidArgument) };
+        let keymodel = match option_kind { VIEM_EX_OPTION_KEYMODEL => true, VIEM_EX_OPTION_SELECTMODE | VIEM_EX_OPTION_AUTOSELECT | VIEM_EX_OPTION_SHIFTSELECT => false, _ => return Err(ViemStatus::InvalidArgument) };
         let value = str::from_utf8(unsafe { input_bytes(value, length)? }).map_err(|_| ViemStatus::InvalidUtf8)?;
         with_core_mut(handle, |core| {
-            if option_kind == VIEM_EX_OPTION_AUTOSELECT {
+            if matches!(option_kind, VIEM_EX_OPTION_AUTOSELECT | VIEM_EX_OPTION_SHIFTSELECT) {
                 let enabled = match value { "1" => true, "0" => false, _ => return Err(ViemStatus::InvalidArgument) };
-                core.set_autoselect(enabled);
+                if option_kind == VIEM_EX_OPTION_AUTOSELECT { core.set_autoselect(enabled); }
+                else { core.set_shiftselect(enabled); }
                 Ok(())
             } else if core.set_selection_option(keymodel, value) { Ok(()) } else { Err(ViemStatus::InvalidArgument) }
         })

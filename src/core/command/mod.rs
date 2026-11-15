@@ -3023,6 +3023,7 @@ impl CommandInterpreter {
         if !lines.is_grapheme_boundary(offset) {
             return false;
         }
+        let resume_native_insert = !extend_selection && self.is_native_selection();
         let character_origin = extend_selection.then(|| self.pointer_character_origin.clone()).flatten();
         self.pointer_word_origin = None;
         self.pointer_character_origin = None;
@@ -3071,6 +3072,13 @@ impl CommandInterpreter {
         self.insert_normal_once = None;
         self.ctrl_o_just_started = false;
         self.clear_pending();
+        if resume_native_insert && matches!(self.mode, Mode::Insert | Mode::Replace) {
+            self.start_insert_session(
+                if self.mode == Mode::Replace { InsertPlacement::Replace } else { InsertPlacement::Before },
+                1,
+                None,
+            );
+        }
         true
     }
 
@@ -8821,7 +8829,7 @@ impl CommandInterpreter {
             return self.move_paragraph_boundary(document, key);
         }
         if key == Key::SelectAll {
-            let return_mode = self.mode;
+            let return_mode = if self.is_native_selection() { self.selection_return_mode } else { self.mode };
             let mut output = if self.visual_block_insert.is_some() {
                 self.finish_visual_block_insert(document)?
             } else if matches!(self.mode, Mode::Insert | Mode::Replace)
@@ -8834,8 +8842,8 @@ impl CommandInterpreter {
             if output.status != CommandStatus::Complete {
                 return Ok(output);
             }
-            self.select_all(document)?;
             self.selection_return_mode = if matches!(return_mode, Mode::Insert | Mode::Replace) { return_mode } else { Mode::Normal };
+            self.select_all(document)?;
             output.mode_changed = true;
             output.cursor_moved = true;
             return Ok(output);
@@ -12049,6 +12057,21 @@ impl CommandInterpreter {
         } else {
             Mode::Insert
         };
+        self.start_insert_session(placement, entry_count, source_destination);
+        document.begin_edit_group();
+        CommandOutput {
+            mode_changed: true,
+            cursor_moved: true,
+            ..CommandOutput::complete()
+        }
+    }
+
+    fn start_insert_session(
+        &mut self,
+        placement: InsertPlacement,
+        entry_count: usize,
+        source_destination: Option<crate::document::SourcePoint>,
+    ) {
         let mut program = EditSessionProgram::default();
         if !self.typing_style.is_empty() {
             program.push(EditSessionStep::TypingStyle(self.typing_style.for_repeat()));
@@ -12067,12 +12090,6 @@ impl CommandInterpreter {
             repeat_visual_operator: None,
             replace_journal: Vec::new(),
         });
-        document.begin_edit_group();
-        CommandOutput {
-            mode_changed: true,
-            cursor_moved: true,
-            ..CommandOutput::complete()
-        }
     }
 
     fn validate_edit_session_encoding(
@@ -14329,6 +14346,7 @@ impl CommandInterpreter {
         for effect in effects {
             match (&effect.name, &effect.new_value) {
                 (ExOptionName::AutoSelect, ExOptionValue::Boolean(value)) => self.selection_options.autoselect = *value,
+                (ExOptionName::ShiftSelect, ExOptionValue::Boolean(value)) => self.selection_options.shiftselect = *value,
                 (ExOptionName::KeyModel, ExOptionValue::String(value)) => self.selection_options.keymodel = value.clone(),
                 (ExOptionName::SelectMode, ExOptionValue::String(value)) => self.selection_options.selectmode = value.clone(),
                 (_, ExOptionValue::Reflow(value)) => {

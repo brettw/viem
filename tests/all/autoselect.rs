@@ -37,17 +37,61 @@ fn set(c: &mut CommandInterpreter, d: &mut Document, value: &str) {
 }
 
 #[test]
-fn defaults_are_native_selection_with_unmodified_vim_options() {
+fn defaults_keep_vim_options_and_start_visual_selection_from_normal() {
     let (mut d, mut c) = fixture();
     assert!(c.selection_options().autoselect);
+    assert!(c.selection_options().shiftselect);
     assert!(c.selection_options().keymodel.is_empty());
     assert!(c.selection_options().selectmode.is_empty());
     key(&mut c, &mut d, shifted(NavigationKey::Right));
-    assert!(c.is_native_selection());
-    assert!(!c.is_select_mode());
-    text(&mut c, &mut d, "X");
-    assert_eq!(d.text(), "Xbc def");
-    assert_eq!(c.mode(), Mode::Insert);
+    assert_eq!(c.mode(), Mode::VisualCharacter);
+    assert!(!c.is_text_selection());
+    text(&mut c, &mut d, "d");
+    assert_eq!(d.text(), "c def");
+    assert_eq!(c.mode(), Mode::Normal);
+}
+
+#[test]
+fn shift_selection_option_is_independent_of_insert_selection_option() {
+    for autoselect in [false, true] {
+        for shiftselect in [false, true] {
+            for (entry, mode) in [("", Mode::Normal), ("i", Mode::Insert), ("R", Mode::Replace)] {
+                let (mut d, mut c) = fixture();
+                set(&mut c, &mut d, &format!("{}autoselect {}shiftselect",
+                    if autoselect { "" } else { "no" }, if shiftselect { "" } else { "no" }));
+                text(&mut c, &mut d, entry);
+                key(&mut c, &mut d, shifted(NavigationKey::Right));
+                assert_eq!(c.mode(), if shiftselect { Mode::VisualCharacter } else { mode },
+                    "autoselect={autoselect}, shiftselect={shiftselect}, mode={mode:?}");
+                assert_eq!(c.is_native_selection(), shiftselect && mode == Mode::Insert);
+                assert_eq!(c.cursor(), if shiftselect { 1 } else { 4 });
+                if shiftselect && mode == Mode::Insert {
+                    text(&mut c, &mut d, "X");
+                    assert_eq!(d.text(), "Xbc def");
+                    assert_eq!(c.mode(), Mode::Insert);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn mouse_selection_stays_native_only_when_enabled_in_insert() {
+    for autoselect in [false, true] {
+        for shiftselect in [false, true] {
+            for (entry, mode) in [("", Mode::Normal), ("i", Mode::Insert), ("R", Mode::Replace)] {
+                let (mut d, mut c) = fixture();
+                set(&mut c, &mut d, &format!("{}autoselect {}shiftselect",
+                    if autoselect { "" } else { "no" }, if shiftselect { "" } else { "no" }));
+                text(&mut c, &mut d, entry);
+                assert!(c.set_cursor_from_pointer(&d, 1, BoundaryAffinity::Downstream, true));
+                assert_eq!(c.mode(), Mode::VisualCharacter);
+                assert_eq!(c.is_native_selection(), autoselect && mode == Mode::Insert,
+                    "autoselect={autoselect}, shiftselect={shiftselect}, mode={mode:?}");
+                assert!(!c.is_select_mode());
+            }
+        }
+    }
 }
 
 #[test]
@@ -87,7 +131,7 @@ fn noautoselect_delegates_each_keymodel_and_selectmode_combination_to_vim() {
             "mouse,key,cmd",
         ] {
             let (mut d, mut c) = fixture();
-            set(&mut c, &mut d, &format!("noautoselect km={km} slm={slm}"));
+            set(&mut c, &mut d, &format!("noautoselect noshiftselect km={km} slm={slm}"));
             key(&mut c, &mut d, shifted(NavigationKey::Right));
             assert!(!c.is_native_selection());
             let started = km.contains("startsel");
@@ -130,6 +174,7 @@ fn noautoselect_delegates_each_keymodel_and_selectmode_combination_to_vim() {
 fn native_policy_overrides_entry_without_mutating_vim_option_values() {
     let (mut d, mut c) = fixture();
     set(&mut c, &mut d, "km=stopsel slm=cmd");
+    text(&mut c, &mut d, "i");
     key(&mut c, &mut d, shifted(NavigationKey::Right));
     assert!(c.is_native_selection());
     assert_eq!(c.selection_options().keymodel, "stopsel");
@@ -143,7 +188,7 @@ fn native_policy_overrides_entry_without_mutating_vim_option_values() {
 #[test]
 fn vim_shift_selection_is_inclusive_and_stopsel_moves_instead_of_collapsing() {
     let (mut d, mut c) = fixture();
-    set(&mut c, &mut d, "noautoselect km=startsel,stopsel slm=key");
+    set(&mut c, &mut d, "noautoselect noshiftselect km=startsel,stopsel slm=key");
     key(&mut c, &mut d, shifted(NavigationKey::Right));
     assert!(c.is_select_mode());
     key(&mut c, &mut d, Key::Right);
@@ -165,6 +210,7 @@ fn vim_select_delete_returns_normal_native_delete_continues_typing() {
         assert_eq!(c.mode(), Mode::Normal);
         assert_eq!(d.text(), "bc def");
         let (mut d, mut c) = fixture();
+        text(&mut c, &mut d, "i");
         key(&mut c, &mut d, shifted(NavigationKey::Right));
         key(&mut c, &mut d, deletion);
         assert_eq!(c.mode(), Mode::Insert);
@@ -178,6 +224,7 @@ fn native_selection_does_not_run_vim_select_mappings_and_ctrl_g_is_explicit() {
     set(&mut c, &mut d, "km= slm=");
     text(&mut c, &mut d, ":snoremap x Q");
     key(&mut c, &mut d, Key::Enter);
+    text(&mut c, &mut d, "i");
     key(&mut c, &mut d, shifted(NavigationKey::Right));
     key(&mut c, &mut d, Key::Char('x'));
     assert_eq!(d.text(), "xbc def");
@@ -186,6 +233,7 @@ fn native_selection_does_not_run_vim_select_mappings_and_ctrl_g_is_explicit() {
     key(&mut c, &mut d, Key::Char('x'));
     assert_eq!(d.text(), "Qbc def");
     key(&mut c, &mut d, Key::Escape);
+    text(&mut c, &mut d, "i");
     key(&mut c, &mut d, shifted(NavigationKey::Right));
     key(&mut c, &mut d, Key::Ctrl('g'));
     assert_eq!(c.mode(), Mode::VisualCharacter);
@@ -241,6 +289,7 @@ fn changing_global_option_preserves_current_selection_and_pending_commands() {
     let mut core = Core::new(d);
     let a = core.add_view(MockTextMeasurementProvider::new(), 400., 200.);
     let b = core.add_view(MockTextMeasurementProvider::new(), 400., 200.);
+    core.handle(a, CoreEvent::Input(InputEvent::key('i'))).unwrap();
     core.handle(
         a,
         CoreEvent::Input(InputEvent::Key(shifted(NavigationKey::Right))),
@@ -272,6 +321,7 @@ fn changing_global_option_preserves_current_selection_and_pending_commands() {
 #[test]
 fn native_copy_preserves_its_own_policy() {
     let (mut d, mut c) = fixture();
+    text(&mut c, &mut d, "i");
     key(&mut c, &mut d, shifted(NavigationKey::Right));
     key(&mut c, &mut d, Key::Ctrl('o'));
     text(&mut c, &mut d, "y");
@@ -285,7 +335,7 @@ fn native_copy_preserves_its_own_policy() {
 #[test]
 fn vim_shift_arrows_without_startsel_are_word_motions() {
     let (mut d, mut c) = fixture();
-    set(&mut c, &mut d, "noautoselect");
+    set(&mut c, &mut d, "noshiftselect");
     key(&mut c, &mut d, shifted(NavigationKey::Right));
     assert_eq!(c.mode(), Mode::Normal);
     assert_eq!(c.cursor(), 4);
@@ -296,6 +346,7 @@ fn vim_shift_arrows_without_startsel_are_word_motions() {
 #[test]
 fn native_tab_replaces_selection_instead_of_running_vim_jump_forward() {
     let (mut d, mut c) = fixture();
+    text(&mut c, &mut d, "i");
     key(&mut c, &mut d, shifted(NavigationKey::Right));
     key(&mut c, &mut d, Key::Tab);
     assert_eq!(c.mode(), Mode::Insert);
@@ -308,7 +359,7 @@ fn native_line_selection_collapses_to_its_edges_and_resumes_the_originating_mode
     use viem_core::command::SelectionOrigin;
     use viem_core::layout::MockTextMeasurementProvider;
     use viem_core::{Core, CoreEvent};
-    for resume in [Mode::Normal, Mode::Insert, Mode::Replace] {
+    for resume in [Mode::Insert] {
         for (direction, boundary) in [(Key::Left, 0), (Key::Right, 7)] {
             let (document, _) = fixture();
             let mut core = Core::new(document);
@@ -327,4 +378,150 @@ fn native_line_selection_collapses_to_its_edges_and_resumes_the_originating_mode
             assert_eq!(core.document().text(), "abc def");
         }
     }
+}
+
+#[test]
+fn explicit_shift_mappings_override_both_settings_from_startup_and_commands() {
+    for startup in [false, true] {
+        for enabled in [false, true] {
+            for (mapping, entry, mode) in [("nnoremap", "", Mode::Normal), ("inoremap", "i", Mode::Insert)] {
+                let (mut d, mut c) = fixture();
+                let options = format!("set {}autoselect {}shiftselect",
+                    if enabled { "" } else { "no" }, if enabled { "" } else { "no" });
+                let mapping = format!("{mapping} <S-Right> <Right>");
+                if startup {
+                    assert!(c.configure_startup(&mut d, &format!("{options}\n{mapping}")).is_empty());
+                } else {
+                    text(&mut c, &mut d, &format!(":{options}"));
+                    key(&mut c, &mut d, Key::Enter);
+                    text(&mut c, &mut d, &format!(":{mapping}"));
+                    key(&mut c, &mut d, Key::Enter);
+                }
+                text(&mut c, &mut d, entry);
+                key(&mut c, &mut d, shifted(NavigationKey::Right));
+                assert_eq!(c.mode(), mode);
+                assert_eq!(c.cursor(), 1);
+                assert!(!c.is_text_selection());
+                assert_eq!(d.text(), "abc def");
+            }
+        }
+    }
+}
+
+#[test]
+fn insert_navigation_mapping_overrides_an_active_insert_selection() {
+    for navigation in [Key::Left, shifted(NavigationKey::Left)] {
+        let (mut d, mut c) = fixture();
+        let lhs = if navigation == Key::Left { "<Left>" } else { "<S-Left>" };
+        assert!(c.configure_startup(&mut d, &format!("inoremap {lhs} <Esc>")).is_empty());
+        text(&mut c, &mut d, "i");
+        key(&mut c, &mut d, shifted(NavigationKey::Right));
+        assert!(c.is_native_selection());
+        key(&mut c, &mut d, navigation);
+        assert_eq!(c.mode(), Mode::Normal);
+        assert!(!c.is_text_selection());
+        assert_eq!(d.text(), "abc def");
+    }
+}
+
+#[test]
+fn insert_selection_navigation_mapping_prefix_retains_the_selection_until_resolved() {
+    let (mut d, mut c) = fixture();
+    assert!(c.configure_startup(&mut d, "inoremap <S-Left>x <Esc>").is_empty());
+    text(&mut c, &mut d, "i");
+    key(&mut c, &mut d, shifted(NavigationKey::Right));
+    let anchor = c.visual_anchor();
+    let cursor = c.cursor();
+    let output = c.handle(&mut d, InputEvent::Key(shifted(NavigationKey::Left))).unwrap();
+    assert_eq!(output.status, CommandStatus::Pending);
+    assert!(c.is_native_selection());
+    assert_eq!(c.visual_anchor(), anchor);
+    assert_eq!(c.cursor(), cursor);
+    key(&mut c, &mut d, Key::Char('x'));
+    assert_eq!(c.mode(), Mode::Normal);
+    assert!(!c.is_text_selection());
+    assert_eq!(d.text(), "abc def");
+}
+
+#[test]
+fn insert_selection_replacement_still_uses_insert_typing_mappings() {
+    let (mut d, mut c) = fixture();
+    assert!(c.configure_startup(&mut d, "inoremap x Q\nsnoremap x Z\nxnoremap x d").is_empty());
+    text(&mut c, &mut d, "i");
+    key(&mut c, &mut d, shifted(NavigationKey::Right));
+    key(&mut c, &mut d, Key::Char('x'));
+    assert_eq!(c.mode(), Mode::Insert);
+    assert_eq!(d.text(), "Qbc def");
+}
+
+#[test]
+fn disabled_shift_selection_keeps_explicit_vim_startsel_and_insert_policy() {
+    for autoselect in [false, true] {
+        let (mut d, mut c) = fixture();
+        set(&mut c, &mut d, &format!("{}autoselect noshiftselect keymodel=startsel selectmode=key",
+            if autoselect { "" } else { "no" }));
+        text(&mut c, &mut d, "i");
+        key(&mut c, &mut d, shifted(NavigationKey::Right));
+        assert_eq!(c.mode(), Mode::VisualCharacter);
+        assert_eq!(c.is_native_selection(), autoselect);
+        assert_eq!(c.is_select_mode(), !autoselect);
+    }
+}
+
+#[test]
+fn shiftselect_boolean_option_grammar_and_startup_override() {
+    let (mut d, mut c) = fixture();
+    assert!(c.configure_startup(&mut d, "set noshiftselect").is_empty());
+    assert!(!c.selection_options().shiftselect);
+    for (command, enabled) in [
+        ("shiftselect", true), ("noshiftselect", false), ("invshiftselect", true),
+        ("shiftselect!", false), ("shiftselect&", true),
+    ] {
+        set(&mut c, &mut d, command);
+        assert_eq!(c.selection_options().shiftselect, enabled);
+    }
+    text(&mut c, &mut d, ":set shiftselect?");
+    let output = c.handle(&mut d, InputEvent::Key(Key::Enter)).unwrap().ex_outcome.unwrap();
+    assert!(output.option_effects.is_empty());
+    assert_eq!(output.frontend_requests.len(), 1);
+}
+
+#[test]
+fn clicking_an_insert_selection_resumes_typing_with_a_fresh_undo_and_repeat_unit() {
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
+    let (document, _) = fixture();
+    let mut core = Core::new(document);
+    let view = core.add_view(MockTextMeasurementProvider::new(), 400., 200.);
+    for input in [Key::Char('i'), Key::Char('A'), shifted(NavigationKey::Right)] {
+        core.handle(view, CoreEvent::Input(InputEvent::Key(input))).unwrap();
+    }
+    assert!(core.command_state(view).unwrap().is_native_selection());
+    core.handle(view, CoreEvent::PlaceCursor {
+        document_revision: core.document().revision(), text_offset: 4,
+        affinity: BoundaryAffinity::Downstream, extend_selection: false,
+    }).unwrap();
+    assert_eq!(core.command_state(view).unwrap().mode(), Mode::Insert);
+    assert_eq!(core.command_state(view).unwrap().cursor(), 4);
+    for input in [Key::Char('X'), Key::Char('Y'), Key::Escape] {
+        core.handle(view, CoreEvent::Input(InputEvent::Key(input))).unwrap();
+    }
+    assert_eq!(core.document().text(), "AabcXY def");
+    core.handle(view, CoreEvent::Input(InputEvent::key('u'))).unwrap();
+    assert_eq!(core.document().text(), "Aabc def");
+    core.handle(view, CoreEvent::Input(InputEvent::key('.'))).unwrap();
+    assert_eq!(core.document().text(), "AabcXY def");
+}
+
+#[test]
+fn repeated_select_all_preserves_insert_selection_origin() {
+    let (mut d, mut c) = fixture();
+    text(&mut c, &mut d, "i");
+    for _ in 0..2 {
+        key(&mut c, &mut d, Key::SelectAll);
+        assert!(c.is_native_selection());
+    }
+    key(&mut c, &mut d, Key::Right);
+    assert_eq!(c.mode(), Mode::Insert);
+    assert_eq!(c.cursor(), 7);
 }

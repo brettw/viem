@@ -864,6 +864,7 @@ mod tests {
         let source = include_str!("../../../docs/markdown_demo.md");
         let mut core = Core::new(Document::from_bytes_detect_encoding(source.as_bytes().to_vec(), Format::Markdown).unwrap());
         let view = core.add_view(MockTextMeasurementProvider::new(), 700.0, 400.0);
+        core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
         fill(&mut core, view, true);
         assert!(verified_everywhere(&core, view));
         let table = core.document().projection().tables().iter()

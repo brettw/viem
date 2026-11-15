@@ -500,7 +500,7 @@ const CORE: &[&str] = &[
 ];
 
 /// Viem's own options, also implemented by `:set` in `ex_execute.rs`.
-const VIEM_OPTIONS: &[&str] = &["autoselect", "continuecommentsonenter", "continuecommentsonopenline"];
+const VIEM_OPTIONS: &[&str] = &["autoselect", "shiftselect", "continuecommentsonenter", "continuecommentsonopenline"];
 
 /// Undo, backup and swap options are ignored silently.
 const IGNORED: &[&str] = &[

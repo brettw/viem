@@ -7,11 +7,13 @@ fn apply(document: &mut Document, range: std::ops::Range<usize>) {
     let request = ModelRequest::AssignNamedStyle {
         document: document.id(),
         revision: document.revision(),
-        range,
+        range: range.clone(),
         namespace: StyleNamespace::Character,
         style: "Comment".into(),
     };
-    let prepared = document.prepare_model_request(request).unwrap();
+    let prepared = document.prepare_model_request(request).unwrap_or_else(|error| {
+        panic!("{error:?}, source={:?}, range={range:?}", String::from_utf8_lossy(&document.source_bytes()))
+    });
     document.commit_model_transaction(prepared).unwrap();
 }
 
@@ -47,6 +49,57 @@ fn comment_choice_wraps_visible_selection_and_preserves_exact_history() {
         assert_eq!(document.source_bytes(), source.as_bytes());
         assert!(document.redo());
         assert_eq!(document.source_bytes(), changed);
+    }
+}
+
+#[test]
+fn wrapping_a_comment_retains_the_selected_body_and_direction() {
+    for (source, range) in [
+        ("before word after", 7..11),
+        ("one\n\ntwo", 0..7),
+        ("one\n\ntwo\n\nthree", 1..6),
+    ] {
+        for insert in [false, true] {
+            for reversed in [false, true] {
+                let mut core = Core::new(
+                    Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown)
+                        .unwrap(),
+                );
+                let view = core.add_view(MockTextMeasurementProvider::new(), 600., 300.);
+                let original = core.document().text().to_owned();
+                if insert {
+                    core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
+                }
+                let end = if insert { range.end } else { range.end - 1 };
+                let (anchor, active) = if reversed { (end, range.start) } else { (range.start, end) };
+                for (text_offset, extend_selection) in [(anchor, false), (active, true)] {
+                    core.handle(view, CoreEvent::PlaceCursor {
+                        document_revision: core.document().revision(), text_offset,
+                        affinity: BoundaryAffinity::Downstream, extend_selection,
+                    }).unwrap();
+                }
+                assert_eq!(core.list_selection_identity(view).unwrap().range(), range);
+                assert_eq!(core.command_state(view).unwrap().is_native_selection(), insert);
+                core.handle(view, CoreEvent::AssignNamedStyle {
+                    expected: core.list_selection_identity(view).unwrap(),
+                    style_sheet_revision: core.document().projection().style_sheet().revision,
+                    namespace: StyleNamespace::Character, style: "Comment".into(),
+                }).unwrap();
+                assert_eq!(core.document().text(), format!("{}<!-- {} -->{}",
+                    &original[..range.start], &original[range.clone()], &original[range.end..]));
+                assert_eq!(core.list_selection_identity(view).unwrap().range(), range.start + 5..range.end + 5);
+                let commands = core.command_state(view).unwrap();
+                assert_eq!(commands.mode(), Mode::VisualCharacter);
+                assert_eq!(commands.is_native_selection(), insert);
+                assert_eq!(commands.visual_anchor().unwrap() > commands.cursor(), reversed);
+                assert_eq!(core.selected_named_styles(view).unwrap().character, Some("Comment".into()));
+                let saved = core.document().source_bytes();
+                core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+                assert_eq!(core.document().source_bytes(), source.as_bytes());
+                core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
+                assert_eq!(core.document().source_bytes(), saved);
+            }
+        }
     }
 }
 

@@ -346,6 +346,7 @@ fn empty_paragraph_put_and_enter_keep_whitespace_boundary_work_regional() {
                     assert_eq!(commands.handle(&mut document, InputEvent::key('d')).unwrap().status, CommandStatus::Complete);
                     encode_fixture(&format!("before\n\na\n \n{suffix}").replace('\n', "\r\n"), encoding)
                 } else {
+                    commands.handle(&mut document, InputEvent::key('i')).unwrap();
                     assert!(commands.set_cursor_from_pointer(&document, at + 1, BoundaryAffinity::Downstream, true));
                     original.clone()
                 };

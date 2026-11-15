@@ -141,6 +141,7 @@ fn undo_of_visible_inline_formatting_does_not_reveal_unrelated_paragraph_rows() 
         "Before\n\n".repeat(100), "After\n\n".repeat(100));
     let mut core = Core::new(Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Markdown).unwrap());
     let view = core.add_view(MockTextMeasurementProvider::new(), 600., 240.);
+    core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
     let at = core.document.text().find("word").unwrap();
     for (offset, extend) in [(at, false), (at + 4, true)] {
         core.handle(view, CoreEvent::PlaceCursor {

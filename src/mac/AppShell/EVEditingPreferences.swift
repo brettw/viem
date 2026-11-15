@@ -22,6 +22,7 @@ public final class EVEditingPreferences {
   public private(set) var smartQuotes: Bool
   public private(set) var smartHome: Bool
   public private(set) var autoselect: Bool
+  public private(set) var shiftselect: Bool
   /// Application default `textwidth` in columns for `gq`/`gw` reflow.
   public private(set) var textWidth: UInt32
   public private(set) var indentation: EVIndentationOptions
@@ -36,6 +37,7 @@ public final class EVEditingPreferences {
     smartQuotes = configuration.smartQuotes
     smartHome = configuration.smartHome
     autoselect = configuration.autoselect
+    shiftselect = configuration.shiftselect
     textWidth = configuration.textWidth
     indentation = configuration.indentation
     whitespacePresentation = configuration.whitespacePresentation
@@ -56,13 +58,14 @@ public final class EVEditingPreferences {
 
   public func reloadFromConfiguration() {
     do { try configuration.reloadFromDisk() } catch { return }
-    let changed = caretHoverEffect != configuration.caretHoverEffect || markdownAutodetect != configuration.markdownAutodetect || smartQuotes != configuration.smartQuotes || smartHome != configuration.smartHome || autoselect != configuration.autoselect || textWidth != configuration.textWidth
+    let changed = caretHoverEffect != configuration.caretHoverEffect || markdownAutodetect != configuration.markdownAutodetect || smartQuotes != configuration.smartQuotes || smartHome != configuration.smartHome || autoselect != configuration.autoselect || shiftselect != configuration.shiftselect || textWidth != configuration.textWidth
       || indentation != configuration.indentation || whitespacePresentation != configuration.whitespacePresentation
     markdownAutodetect = configuration.markdownAutodetect
     caretHoverEffect = configuration.caretHoverEffect
     smartQuotes = configuration.smartQuotes
     smartHome = configuration.smartHome
     autoselect = configuration.autoselect
+    shiftselect = configuration.shiftselect
     textWidth = configuration.textWidth
     indentation = configuration.indentation
     whitespacePresentation = configuration.whitespacePresentation
@@ -122,6 +125,12 @@ public final class EVEditingPreferences {
   public func setSmartHome(_ enabled: Bool) {
     guard enabled != smartHome else { return }
     do { try configuration.setSmartHome(enabled) } catch { return }
+    reloadFromConfiguration()
+  }
+
+  public func setShiftselect(_ enabled: Bool) {
+    guard enabled != shiftselect else { return }
+    do { try configuration.setShiftselect(enabled) } catch { return }
     reloadFromConfiguration()
   }
 

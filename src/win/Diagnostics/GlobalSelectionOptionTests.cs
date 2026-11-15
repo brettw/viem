@@ -13,24 +13,25 @@ internal static class GlobalSelectionOptionTests
     {
         string profile = Path.Combine(Path.GetTempPath(), "viem-selection-" + Guid.NewGuid().ToString("N"));
         using var first = new CoreDocument("first"u8.ToArray());
-        first.InitializeStartup("set noautoselect keymodel= selectmode=cmd"u8.ToArray());
+        GlobalSelectionOptions.Seed(first, profile, autoselect: true, shiftselect: true);
+        first.InitializeStartup("set noautoselect noshiftselect keymodel= selectmode=cmd"u8.ToArray());
         GlobalSelectionOptions.Attach(first, profile);
         using var second = new CoreDocument("second"u8.ToArray());
         GlobalSelectionOptions.Attach(second, profile);
         using var other = new CoreDocument("other"u8.ToArray());
         other.InitializeStartup("set keymodel=startsel selectmode=mouse"u8.ToArray());
         GlobalSelectionOptions.Attach(other, profile + "-other");
-        check(first.SelectionOption(VIEM_EX_OPTION_KEYMODEL) == "" && second.SelectionOption(VIEM_EX_OPTION_SELECTMODE) == "cmd" && second.SelectionOption(VIEM_EX_OPTION_AUTOSELECT) == "0",
+        check(first.SelectionOption(VIEM_EX_OPTION_KEYMODEL) == "" && second.SelectionOption(VIEM_EX_OPTION_SELECTMODE) == "cmd" && second.SelectionOption(VIEM_EX_OPTION_AUTOSELECT) == "0" && second.SelectionOption(VIEM_EX_OPTION_SHIFTSELECT) == "0",
             "global selection options initially inherit startup.viem and reach later document cores");
         using var firstView = new CoreView(first, device, dispatcher, 600, 300);
         using var secondView = new CoreView(second, device, dispatcher, 600, 300);
         using var secondSplit = new CoreView(second, device, dispatcher, 600, 300);
         secondView.Command("v"); secondSplit.Command("i");
         var selected = secondView.LogicalSelection();
-        var effects = firstView.ExecuteCommandLine("set autoselect keymodel=startsel,stopsel selectmode=mouse,key")!;
+        var effects = firstView.ExecuteCommandLine("set autoselect shiftselect keymodel=startsel,stopsel selectmode=mouse,key")!;
         GlobalSelectionOptions.Observe(first, effects.SelectionOptions);
         check(second.SelectionOption(VIEM_EX_OPTION_KEYMODEL) == "startsel,stopsel"
-            && second.SelectionOption(VIEM_EX_OPTION_SELECTMODE) == "mouse,key" && second.SelectionOption(VIEM_EX_OPTION_AUTOSELECT) == "1", "runtime selection option changes propagate across document cores");
+            && second.SelectionOption(VIEM_EX_OPTION_SELECTMODE) == "mouse,key" && second.SelectionOption(VIEM_EX_OPTION_AUTOSELECT) == "1" && second.SelectionOption(VIEM_EX_OPTION_SHIFTSELECT) == "1", "runtime selection option changes propagate across document cores");
         check(secondView.IsTextSelection && secondView.LogicalSelection().Equals(selected) && secondSplit.Presentation.mode == VIEM_MODE_INSERT,
             "global option propagation preserves inactive selections and Insert mode in split views");
         check(other.SelectionOption(VIEM_EX_OPTION_KEYMODEL) == "startsel" && other.SelectionOption(VIEM_EX_OPTION_SELECTMODE) == "mouse",
@@ -38,10 +39,19 @@ internal static class GlobalSelectionOptionTests
         int notifications = 0; second.Changed += () => notifications++;
         GlobalSelectionOptions.Observe(first, effects.SelectionOptions);
         check(notifications == 0, "unchanged global option effects do not recurse or refresh unrelated views");
+        effects = firstView.ExecuteCommandLine("set noshiftselect")!;
+        GlobalSelectionOptions.Observe(first, effects.SelectionOptions);
+        GlobalSelectionOptions.Configure(profile, autoselect: false, shiftselect: true);
+        check(second.SelectionOption(VIEM_EX_OPTION_AUTOSELECT) == "0" && second.SelectionOption(VIEM_EX_OPTION_SHIFTSELECT) == "0",
+            "changing Insert selection defaults preserves an explicit Shift-arrow override");
+        GlobalSelectionOptions.Configure(profile, autoselect: false, shiftselect: false);
+        GlobalSelectionOptions.Configure(profile, autoselect: true, shiftselect: true);
+        check(second.SelectionOption(VIEM_EX_OPTION_AUTOSELECT) == "1" && second.SelectionOption(VIEM_EX_OPTION_SHIFTSELECT) == "1",
+            "changing both selection defaults replaces both live values");
         using var future = new CoreDocument("future"u8.ToArray());
         future.InitializeStartup("set keymodel= selectmode=cmd"u8.ToArray());
         GlobalSelectionOptions.Attach(future, profile);
-        check(future.SelectionOption(VIEM_EX_OPTION_KEYMODEL) == "startsel,stopsel" && future.SelectionOption(VIEM_EX_OPTION_SELECTMODE) == "mouse,key" && future.SelectionOption(VIEM_EX_OPTION_AUTOSELECT) == "1",
+        check(future.SelectionOption(VIEM_EX_OPTION_KEYMODEL) == "startsel,stopsel" && future.SelectionOption(VIEM_EX_OPTION_SELECTMODE) == "mouse,key" && future.SelectionOption(VIEM_EX_OPTION_AUTOSELECT) == "1" && future.SelectionOption(VIEM_EX_OPTION_SHIFTSELECT) == "1",
             "future documents inherit live global choices over startup defaults");
         using var futureView = new CoreView(future, device, dispatcher, 600, 300);
         futureView.Key(VIEM_KEY_RIGHT, modifiers: VIEM_KEY_MODIFIER_SHIFT);

@@ -281,7 +281,7 @@ pub enum ExOptionName {
     FormatOptions, Comments, FormatListPat,
     AutoIndent, TabStop, ShiftWidth, SoftTabStop, ExpandTab, SmartTab,
     ContinueCommentsOnEnter, ContinueCommentsOnOpenLine,
-    List, ListChars, KeyModel, SelectMode, AutoSelect,
+    List, ListChars, KeyModel, SelectMode, AutoSelect, ShiftSelect,
 }
 
 impl ExOptionName {
@@ -314,6 +314,7 @@ impl ExOptionName {
             Self::KeyModel => "keymodel",
             Self::SelectMode => "selectmode",
             Self::AutoSelect => "autoselect",
+            Self::ShiftSelect => "shiftselect",
         }
     }
 }
@@ -2510,6 +2511,7 @@ fn prepare_set(
             let mut shown = Vec::new();
             let defaults = super::SelectionOptions::default();
             if !values.selection_options.autoselect { shown.push(display(ExOptionName::AutoSelect, ExOptionValue::Boolean(false))); }
+            if !values.selection_options.shiftselect { shown.push(display(ExOptionName::ShiftSelect, ExOptionValue::Boolean(false))); }
             if values.selection_options.keymodel != defaults.keymodel { shown.push(display(ExOptionName::KeyModel, ExOptionValue::String(values.selection_options.keymodel.clone()))); }
             if values.selection_options.selectmode != defaults.selectmode { shown.push(display(ExOptionName::SelectMode, ExOptionValue::String(values.selection_options.selectmode.clone()))); }
             if values.visible_whitespace.enabled.is_some() {
@@ -2658,6 +2660,7 @@ pub(crate) fn current_option_values(document: &Document, context: &ExExecutionCo
 fn all_option_values(values: &PendingOptions) -> Vec<ExOptionDisplay> {
     let mut result = vec![
         display(ExOptionName::AutoSelect, ExOptionValue::Boolean(values.selection_options.autoselect)),
+        display(ExOptionName::ShiftSelect, ExOptionValue::Boolean(values.selection_options.shiftselect)),
         display(ExOptionName::KeyModel, ExOptionValue::String(values.selection_options.keymodel.clone())),
         display(ExOptionName::SelectMode, ExOptionValue::String(values.selection_options.selectmode.clone())),
         display(ExOptionName::HlSearch, ExOptionValue::Boolean(values.search_options.hlsearch)),
@@ -2923,6 +2926,7 @@ fn apply_option_operation(
     }
     let boolean = match name.as_str() {
         "autoselect" => Some((ExOptionName::AutoSelect, true, &mut values.selection_options.autoselect)),
+        "shiftselect" => Some((ExOptionName::ShiftSelect, true, &mut values.selection_options.shiftselect)),
         "hlsearch" | "hls" => Some((ExOptionName::HlSearch, false, &mut values.search_options.hlsearch)),
         "incsearch" | "is" => Some((ExOptionName::IncSearch, true, &mut values.search_options.incsearch)),
         "ignorecase" | "ic" => Some((ExOptionName::IgnoreCase, false, &mut values.search_options.ignorecase)),

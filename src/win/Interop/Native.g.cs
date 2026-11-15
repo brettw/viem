@@ -1618,6 +1618,7 @@ internal static unsafe partial class Native
     public const uint VIEM_EX_OPTION_KEYMODEL = 21u;
     public const uint VIEM_EX_OPTION_SELECTMODE = 22u;
     public const uint VIEM_EX_OPTION_AUTOSELECT = 23u;
+    public const uint VIEM_EX_OPTION_SHIFTSELECT = 24u;
     public const uint VIEM_EX_OPTION_HLSEARCH = 19u;
     public const uint VIEM_EX_OPTION_INCSEARCH = 20u;
     public const uint VIEM_EX_JUMP_CURRENT = (1u << 0);

@@ -5,6 +5,38 @@ import XCTest
 
 @MainActor
 final class EVEditingPreferencesTests: XCTestCase {
+  func testSelectionCheckboxesDefaultOnAndPersistIndependently() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-selection-settings-\(UUID().uuidString)")
+    addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+    let configuration = EVConfigurationStore(directory: directory)
+    let preferences = EVEditingPreferences(configuration: configuration)
+    let settings = EVSettingsWindowController(store: EVThemeStore(configuration: configuration), editingPreferences: preferences)
+    defer { settings.close() }
+    settings.showWindow(nil)
+    let window = try XCTUnwrap(settings.window)
+    let sidebar = try XCTUnwrap(descendants(window.contentView).first { $0 is NSTableView } as? NSTableView)
+    sidebar.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
+    let insert = try XCTUnwrap(descendants(window.contentView).first { $0.accessibilityLabel() == "Allow selection in insert mode" } as? NSButton)
+    let shift = try XCTUnwrap(descendants(window.contentView).first { $0.accessibilityLabel() == "Use shift-arrow keys to start selection" } as? NSButton)
+    XCTAssertEqual(insert.state, .on)
+    XCTAssertEqual(shift.state, .on)
+    insert.performClick(nil)
+    XCTAssertFalse(preferences.autoselect)
+    XCTAssertTrue(preferences.shiftselect)
+    XCTAssertFalse(EVConfigurationStore(directory: directory).autoselect)
+    XCTAssertTrue(EVConfigurationStore(directory: directory).shiftselect)
+    shift.performClick(nil)
+    XCTAssertFalse(preferences.shiftselect)
+    XCTAssertFalse(EVConfigurationStore(directory: directory).shiftselect)
+    preferences.setAutoselect(true)
+    XCTAssertEqual(insert.state, .on)
+    XCTAssertEqual(shift.state, .off)
+    preferences.setShiftselect(true)
+    XCTAssertEqual(shift.state, .on)
+    XCTAssertTrue(EVConfigurationStore(directory: directory).autoselect)
+    XCTAssertTrue(EVConfigurationStore(directory: directory).shiftselect)
+  }
+
   func testCaretHoverDefaultsOnPersistsAndTracksSettingsCheckbox() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-hover-settings-\(UUID().uuidString)")
     addTeardownBlock { try? FileManager.default.removeItem(at: directory) }

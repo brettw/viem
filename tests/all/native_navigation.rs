@@ -96,6 +96,7 @@ fn word_selection_handles_punctuation_whitespace_empty_lines_and_eof() {
         ("", 0, 0..0),
     ] {
         let (mut core, view) = fixture(source, Format::PlainText);
+        key(&mut core, view, Key::Char('i'));
         word(&mut core, view, at, false);
         assert_eq!(extent(&core, view), expected, "{source:?}");
         assert_eq!(core.document().source_bytes(), source.as_bytes());
@@ -210,6 +211,7 @@ fn paragraph_navigation_uses_semantic_paragraphs_not_wrapped_or_hard_rows() {
 fn paragraph_shift_selection_replaces_and_undoes_exactly() {
     let source = "first paragraph\n\nsecond\nlast";
     let (mut core, view) = fixture(source, Format::PlainText);
+    key(&mut core, view, Key::Char('i'));
     place(&mut core, view, 4);
     key(
         &mut core,
@@ -253,6 +255,7 @@ fn distant_word_and_paragraph_queries_leave_unrelated_text_unmaterialized() {
         "unrelated paragraph\n\n".repeat(20_000)
     );
     let (mut core, view) = fixture(&source, Format::Markdown);
+    key(&mut core, view, Key::Char('i'));
     let at = core.document().projection().text_tree().byte_len() - "target words".len();
     word(&mut core, view, at + 2, false);
     assert_eq!(extent(&core, view), at..at + 6);

@@ -168,6 +168,7 @@ fn replacing_across_passive_inline_scopes_retains_the_first_selected_style() {
                 } else {
                     (range.start, range.end)
                 };
+                input(&mut core, view, InputEvent::key('i'));
                 place(&mut core, view, anchor, false);
                 place(&mut core, view, active, true);
                 if delete_first {

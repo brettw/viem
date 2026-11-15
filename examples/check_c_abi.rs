@@ -246,6 +246,7 @@ _Static_assert(VIEM_MODE_SELECTION_CHARACTER == {selection_character}u, "native 
 _Static_assert(VIEM_MODE_SELECTION_LINE == {selection_line}u, "native Selection line mode");
 _Static_assert(VIEM_MODE_SELECTION_BLOCK == {selection_block}u, "native Selection block mode");
 _Static_assert(VIEM_EX_OPTION_AUTOSELECT == {autoselect}u, "autoselect option");
+_Static_assert(VIEM_EX_OPTION_SHIFTSELECT == {shiftselect}u, "shiftselect option");
 _Static_assert(VIEM_EX_OPTION_WRAP == 1u, "Ex wrap option");
 _Static_assert(VIEM_EX_OPTION_FILE_FORMATS == 4u, "Ex fileformats option");
 _Static_assert(VIEM_EX_OPTION_VALUE_BOOLEAN == 1u, "Ex Boolean value");
@@ -722,6 +723,7 @@ static void typecheck(void) {{
         selection_line = VIEM_MODE_SELECTION_LINE,
         selection_block = VIEM_MODE_SELECTION_BLOCK,
         autoselect = VIEM_EX_OPTION_AUTOSELECT,
+        shiftselect = VIEM_EX_OPTION_SHIFTSELECT,
         set_mode_size = std::mem::size_of::<ViemSetDocumentMode>(),
         document_options = std::mem::size_of::<ViemDocumentOptions>(),
         document_state = std::mem::size_of::<ViemDocumentState>(),

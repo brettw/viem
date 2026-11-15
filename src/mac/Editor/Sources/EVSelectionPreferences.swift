@@ -13,36 +13,44 @@ enum EVSelectionPreferences {
     }
     private static var documents: [WeakDocument] = []
     private static var values: [URL: [UInt32: String]] = [:]
-    /// The Settings default last distributed per profile. Unrelated
-    /// configuration writes leave `:set autoselect` overrides in place.
-    private static var configuredAutoselect: [URL: Bool] = [:]
+    /// Settings defaults last distributed per profile. Unrelated configuration
+    /// writes leave explicit `:set` overrides in place.
+    private static var configured: [URL: [UInt32: Bool]] = [:]
     private static var configurationObserver: NSObjectProtocol?
-    private static let options = [UInt32(VIEM_EX_OPTION_KEYMODEL), UInt32(VIEM_EX_OPTION_SELECTMODE), UInt32(VIEM_EX_OPTION_AUTOSELECT)]
+    private static let options = [UInt32(VIEM_EX_OPTION_KEYMODEL), UInt32(VIEM_EX_OPTION_SELECTMODE), UInt32(VIEM_EX_OPTION_AUTOSELECT), UInt32(VIEM_EX_OPTION_SHIFTSELECT)]
 
     /// Applies the Settings default before startup.viem can override it.
     static func seed(_ document: EVCoreDocumentBackend) throws {
         observeConfiguration()
         let key = document.configuration.directory.standardizedFileURL
-        let enabled = configuredAutoselect[key] ?? document.configuration.autoselect
-        configuredAutoselect[key] = enabled
-        try set(enabled ? "1" : "0", option: UInt32(VIEM_EX_OPTION_AUTOSELECT), on: document)
+        for (option, defaultValue) in defaults(document.configuration) {
+            let enabled = configured[key]?[option] ?? defaultValue
+            configured[key, default: [:]][option] = enabled
+            try set(enabled ? "1" : "0", option: option, on: document)
+        }
+    }
+
+    private static func defaults(_ configuration: EVConfigurationStore) -> [(UInt32, Bool)] {
+        [(UInt32(VIEM_EX_OPTION_AUTOSELECT), configuration.autoselect),
+         (UInt32(VIEM_EX_OPTION_SHIFTSELECT), configuration.shiftselect)]
     }
 
     /// A changed Settings default replaces the live value in every document of
     /// its profile, including one chosen with `:set` or startup.viem.
-    static func configure(autoselect enabled: Bool, directory: URL) {
-        let key = directory.standardizedFileURL
-        // Profiles without a seeded document read the configuration when one opens.
-        guard let previous = configuredAutoselect[key], previous != enabled else { return }
-        configuredAutoselect[key] = enabled
-        let option = UInt32(VIEM_EX_OPTION_AUTOSELECT)
-        let value = enabled ? "1" : "0"
-        guard values[key] != nil, values[key]?[option] != value else { return }
-        values[key]?[option] = value
-        documents.removeAll { $0.value == nil }
-        for target in documents.compactMap(\.value) where target.configuration.directory.standardizedFileURL == key {
-            // A closing core must not keep the remaining documents stale.
-            try? set(value, option: option, on: target)
+    private static func configure(_ configuration: EVConfigurationStore) {
+        let key = configuration.directory.standardizedFileURL
+        for (option, enabled) in defaults(configuration) {
+            // Profiles without a seeded document read the configuration when one opens.
+            guard let previous = configured[key]?[option], previous != enabled else { continue }
+            configured[key]?[option] = enabled
+            let value = enabled ? "1" : "0"
+            guard values[key] != nil, values[key]?[option] != value else { continue }
+            values[key]?[option] = value
+            documents.removeAll { $0.value == nil }
+            for target in documents.compactMap(\.value) where target.configuration.directory.standardizedFileURL == key {
+                // A closing core must not keep the remaining documents stale.
+                try? set(value, option: option, on: target)
+            }
         }
     }
 
@@ -53,7 +61,7 @@ enum EVSelectionPreferences {
         ) { notification in
             MainActor.assumeIsolated {
                 guard let configuration = notification.object as? EVConfigurationStore else { return }
-                configure(autoselect: configuration.autoselect, directory: configuration.directory)
+                configure(configuration)
             }
         }
     }
@@ -76,7 +84,8 @@ enum EVSelectionPreferences {
             let value: String
             switch effect.value {
             case .string(let text): value = text
-            case .boolean(let enabled) where effect.name == UInt32(VIEM_EX_OPTION_AUTOSELECT): value = enabled ? "1" : "0"
+            case .boolean(let enabled) where effect.name == UInt32(VIEM_EX_OPTION_AUTOSELECT)
+                || effect.name == UInt32(VIEM_EX_OPTION_SHIFTSELECT): value = enabled ? "1" : "0"
             default: continue
             }
             guard values[key]?[effect.name] != value else { continue }

@@ -360,6 +360,7 @@ fn native_selection_replacement_is_half_open_in_both_directions() {
     for reverse in [false, true] {
         let mut document = plain("a👩‍💻éb");
         let mut commands = CommandInterpreter::new();
+        key(&mut commands, &mut document, Key::Char('i'));
         let endpoints = if reverse { [14, 1] } else { [1, 14] };
         assert!(commands.set_cursor_from_pointer(
             &document,
@@ -657,6 +658,7 @@ fn failed_native_paste_preserves_pending_operator_mapping_and_selection() {
 
     let mut document = plain("abcdef");
     let mut commands = CommandInterpreter::new();
+    key(&mut commands, &mut document, Key::Char('i'));
     assert!(commands.set_cursor_from_pointer(&document, 1, BoundaryAffinity::Downstream, false));
     assert!(commands.set_cursor_from_pointer(&document, 3, BoundaryAffinity::Upstream, true));
     let output = commands

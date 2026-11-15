@@ -1,8 +1,11 @@
 #if DEBUG
+using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Viem.Windows.Editor;
 using Viem.Windows.Input;
+using Viem.Windows.Shell;
 using Windows.System;
 using static Viem.Windows.Interop.Native;
 
@@ -71,7 +74,7 @@ internal static class SelectionInputTests
         const string original = "alpha beta\nsecond line";
         Check(pane.Document.Source(pane.Document.State.document_revision).Length == 0,
             "pointer fixture begins with an empty source artifact");
-        view.Ex("set autoselect keymodel= selectmode=");
+        view.Ex("set autoselect shiftselect keymodel= selectmode=");
         view.Command("i");
         view.Text(original);
         view.Key(VIEM_KEY_ESCAPE);
@@ -156,8 +159,8 @@ internal static class SelectionInputTests
             await InputRoutingTests.Drag(window, pane.Canvas, new[] { PointAt(6, .9), PointAt(2), PointAt(9), PointAt(6) }, step => {
                 if (step == 0) return;
                 var range = view.LogicalSelection();
-                var expected = step == 1 ? (2ul, 7ul) : step == 2 ? (6ul, 9ul) : (6ul, 7ul);
-                Check(range.text_start == expected.Item1 && range.text_end == expected.Item2,
+                var expected = step == 1 ? (2ul, 7ul) : step == 2 ? (6ul, 10ul) : (6ul, 7ul);
+                Check(view.Presentation.mode == VIEM_MODE_VISUAL_CHARACTER && range.text_start == expected.Item1 && range.text_end == expected.Item2,
                     "Normal-mode dragging includes the clicked character through direction changes");
             });
             view.Key(VIEM_KEY_ESCAPE);
@@ -167,6 +170,7 @@ internal static class SelectionInputTests
             Check(view.Presentation.mode == VIEM_MODE_INSERT && view.Presentation.cursor_utf8_offset == 7,
                 "Insert-mode clicks still choose the nearest boundary on a character's right half");
             view.Key(VIEM_KEY_ESCAPE);
+            view.Command("i");
             await InputRoutingTests.Drag(window, pane.Canvas, new[] { PointAt(0), PointAt(6), PointAt(3) }, _ => { });
             var selection = view.LogicalSelection();
             Check(view.Presentation.mode == VIEM_MODE_SELECTION_CHARACTER && selection.text_start == 0 && selection.text_end == 3,
@@ -185,6 +189,9 @@ internal static class SelectionInputTests
                         Check(selected.text_start == expected[step].Item1 && selected.text_end == expected[step].Item2,
                             $"native double-click drag retains whole words after reversal ({command}, step {step})");
                     }, doubleClick: true);
+                Check(view.Presentation.mode == (command == "i" ? VIEM_MODE_SELECTION_CHARACTER : VIEM_MODE_VISUAL_CHARACTER),
+                    "double-click selection follows the originating Insert or Normal mode");
+                if (command.Length == 0) await InputRoutingTests.Text("c");
                 await InputRoutingTests.Text("Z");
                 Check(pane.Document.FormattedText() == "alpha Z\nsecond line", "typing replaces the complete dragged word");
                 view.Undo();
@@ -198,8 +205,46 @@ internal static class SelectionInputTests
         }
         await TripleClickSelectionTests.Run(pane);
     }
+    private static async Task CheckSelectionSettingsControls(EditorPane pane)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "viem-selection-settings-" + Guid.NewGuid().ToString("N"));
+        var preferences = new Preferences(directory);
+        var settings = new SettingsWindow(preferences);
+        static IEnumerable<CheckBox> Checkboxes(DependencyObject root)
+        {
+            if (root is CheckBox checkbox) yield return checkbox;
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+                foreach (var child in Checkboxes(VisualTreeHelper.GetChild(root, i))) yield return child;
+        }
+        try
+        {
+            settings.Categories.SelectedIndex = 2;
+            settings.Activate();
+            await SelfTestRunner.Until(() => settings.RootControl.IsLoaded);
+            var insert = Checkboxes(settings.RootControl).Single(box => box.Content as string == "Allow selection in insert mode");
+            var shift = Checkboxes(settings.RootControl).Single(box => box.Content as string == "Use shift-arrow keys to start selection");
+            Check(insert.IsChecked == true && shift.IsChecked == true, "Editing exposes both independent selection settings enabled by default");
+            Check(insert.Focus(FocusState.Programmatic), "Insert selection checkbox accepts keyboard focus");
+            await InputRoutingTests.Key(VirtualKey.Space);
+            Check(!preferences.Autoselect && preferences.Shiftselect && shift.IsChecked == true
+                && !new Preferences(directory).Autoselect, "Insert selection checkbox persists without changing Shift-arrow selection");
+            Check(shift.Focus(FocusState.Programmatic), "Shift-arrow selection checkbox accepts keyboard focus");
+            await InputRoutingTests.Key(VirtualKey.Space);
+            Check(!preferences.Autoselect && !preferences.Shiftselect && insert.IsChecked == false
+                && !new Preferences(directory).Shiftselect, "Shift-arrow checkbox persists without changing Insert selection");
+        }
+        finally
+        {
+            settings.Close();
+            Directory.Delete(directory, recursive: true);
+            var window = App.Instance.Windows.Single(w => w.Panes.Contains(pane));
+            window.Activate(); pane.FocusEditor();
+        }
+    }
+
     internal static async Task Run(EditorPane pane, bool pointerPlacement = true)
     {
+        await CheckSelectionSettingsControls(pane);
         if (pointerPlacement) await RunPointerPlacement(pane);
         var fixture = new KeyboardFixture(pane);
         try
@@ -213,6 +258,7 @@ internal static class SelectionInputTests
             await fixture.DeleteFromMenu();
             await fixture.PointerSelection();
             await fixture.SelectionOptions();
+            await fixture.IndependentSelectionSettingsAndMappings();
         }
         finally {
             fixture.Reset();
@@ -233,16 +279,17 @@ internal static class SelectionInputTests
             window = App.Instance.Windows.Single(w => w.Panes.Contains(pane));
         }
 
-        private async Task Start(uint offset = 0)
+        private async Task Start(uint offset = 0, bool insert = false)
         {
             await InputRoutingTests.Key(VirtualKey.Escape);
             view.Place(offset, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, pane.Document.State.document_revision);
             pane.FocusEditor();
+            if (insert) await InputRoutingTests.Text("i");
         }
 
-        private async Task SelectTwo()
+        private async Task SelectTwo(bool insert = true)
         {
-            await Start();
+            await Start(insert: insert);
             await InputRoutingTests.Key(VirtualKey.Right, shift: true);
             await InputRoutingTests.Key(VirtualKey.Right, shift: true);
         }
@@ -250,14 +297,14 @@ internal static class SelectionInputTests
         internal void Reset()
         {
             view.Key(VIEM_KEY_ESCAPE);
-            view.Ex("set autoselect& keymodel& selectmode&");
+            view.Ex("set autoselect& shiftselect& keymodel& selectmode&");
             view.Ex("%d");
             pane.FocusEditor();
         }
 
         internal async Task SeedNativeText()
         {
-            view.Ex("set autoselect keymodel= selectmode=");
+            view.Ex("set autoselect shiftselect keymodel= selectmode=");
             pane.FocusEditor();
             await InputRoutingTests.Text("ialpha beta");
             await InputRoutingTests.Key(VirtualKey.Enter);
@@ -287,25 +334,25 @@ internal static class SelectionInputTests
 
         internal async Task WordAndLineNavigation()
         {
-            await Start();
+            await Start(insert: true);
             await InputRoutingTests.Key(VirtualKey.Right, control: true, shift: true);
             var selection = view.LogicalSelection();
             Check(selection.text_start == 0 && selection.text_end == 6, "native Ctrl+Shift+Right extends by a whole word");
             await InputRoutingTests.Key(VirtualKey.Left);
             Check(!view.HasSelection, "unshifted navigation ends selection when keymodel includes stopsel");
-            await Start(3);
+            await Start(3, insert: true);
             await InputRoutingTests.Key(VirtualKey.Home, shift: true);
             selection = view.LogicalSelection();
             Check(selection.text_start == 0 && selection.text_end == 3, "native Shift+Home extends to the line start");
-            await Start(3);
+            await Start(3, insert: true);
             await InputRoutingTests.Key(VirtualKey.End, shift: true);
             selection = view.LogicalSelection();
             Check(selection.text_start == 3 && selection.text_end == 10, "native Shift+End extends through the line end");
-            await Start(12);
+            await Start(12, insert: true);
             await InputRoutingTests.Key(VirtualKey.Home, control: true, shift: true);
             selection = view.LogicalSelection();
             Check(selection.text_start == 0 && selection.text_end == 12, $"native Ctrl+Shift+Home selects to the document start (range={selection.text_start}..{selection.text_end}, mode={view.Presentation.mode}, error={pane.LastError})");
-            await Start(3);
+            await Start(3, insert: true);
             await InputRoutingTests.Key(VirtualKey.End, control: true, shift: true);
             selection = view.LogicalSelection();
             Check(selection.text_start == 3 && selection.text_end == (ulong)original.Length, "native Ctrl+Shift+End selects through EOF");
@@ -313,17 +360,17 @@ internal static class SelectionInputTests
 
         internal async Task ParagraphNavigation()
         {
-            await Start();
+            await Start(insert: true);
             await InputRoutingTests.Key(VirtualKey.Down, shift: true);
             Check(view.IsTextSelection && view.LogicalSelection().text_end > 10, "native Shift+Down extends to the next row");
-            await Start(3);
+            await Start(3, insert: true);
             await InputRoutingTests.Key(VirtualKey.Down, control: true);
             Check(view.Presentation.cursor_utf8_offset == 11, "Ctrl+Down moves to the next paragraph start");
             await InputRoutingTests.Key(VirtualKey.Down, control: true);
             Check(view.Presentation.cursor_utf8_offset == 23, "repeated Ctrl+Down advances another paragraph");
             await InputRoutingTests.Key(VirtualKey.Up, control: true);
             Check(view.Presentation.cursor_utf8_offset == 11, "Ctrl+Up at a paragraph start moves to the preceding start");
-            await Start(3);
+            await Start(3, insert: true);
             await InputRoutingTests.Key(VirtualKey.Down, control: true, shift: true);
             var selection = view.LogicalSelection();
             Check(selection.text_start == 3 && selection.text_end == 11, "Ctrl+Shift+Down extends through a paragraph boundary");
@@ -411,7 +458,7 @@ internal static class SelectionInputTests
 
         internal async Task PointerSelection()
         {
-            await Start();
+            await Start(insert: true);
             window.Activate();
             var layout = view.Layout();
             var viewport = view.Viewport;
@@ -422,15 +469,73 @@ internal static class SelectionInputTests
                 new global::Windows.Foundation.Point((first.x + first.advance * .1 - viewport.left) / pane.Canvas.ActualWidth, y),
                 new global::Windows.Foundation.Point((last.x + last.advance * .9 - viewport.left) / pane.Canvas.ActualWidth, y)
             };
-            await InputRoutingTests.Drag(window, pane.Canvas, points, _ => { });
-            Check(view.IsTextSelection && pane.CanCopy && view.Selection().Rectangles.Length > 0,
-                "native pointer dragging uses selectmode=mouse and paints an actionable selection");
+            foreach (bool autoselect in new[] { false, true })
+            {
+                view.Ex($"set {(autoselect ? "" : "no")}autoselect noshiftselect keymodel= selectmode=");
+                foreach (bool insert in new[] { false, true })
+                {
+                    await Start(insert: insert);
+                    await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
+                    await InputRoutingTests.Drag(window, pane.Canvas, points, _ => { });
+                    uint expected = insert && autoselect ? VIEM_MODE_SELECTION_CHARACTER : VIEM_MODE_VISUAL_CHARACTER;
+                    Check(view.Presentation.mode == expected && pane.CanCopy && view.Selection().Rectangles.Length > 0,
+                        $"mouse selection follows Insert selection permission independently of Shift-arrow selection ({autoselect}, {insert})");
+                    Check(pane.Document.FormattedText() == original, "changing pointer selection policy leaves source unchanged");
+                }
+            }
+        }
+
+        internal async Task IndependentSelectionSettingsAndMappings()
+        {
+            foreach (bool autoselect in new[] { false, true })
+                foreach (bool shiftselect in new[] { false, true })
+                {
+                    view.Ex($"set {(autoselect ? "" : "no")}autoselect {(shiftselect ? "" : "no")}shiftselect keymodel= selectmode=");
+                    foreach (bool insert in new[] { false, true })
+                    {
+                        await Start(insert: insert);
+                        await InputRoutingTests.Key(VirtualKey.Right, shift: true);
+                        uint expected = shiftselect ? (insert ? VIEM_MODE_SELECTION_CHARACTER : VIEM_MODE_VISUAL_CHARACTER)
+                            : (insert ? VIEM_MODE_INSERT : VIEM_MODE_NORMAL);
+                        Check(view.Presentation.mode == expected,
+                            $"Shift-arrow selection is independent of Insert selection permission ({autoselect}, {shiftselect}, {insert})");
+                        if (!shiftselect) Check(!view.HasSelection && view.Presentation.cursor_utf8_offset == 6,
+                            "disabled Shift-arrow selection retains Vim word motion");
+                    }
+                }
+            view.Ex("set autoselect shiftselect keymodel= selectmode=");
+            view.Ex("nnoremap <S-Right> l");
+            view.Ex("inoremap <S-Right> <Left>");
+            try
+            {
+                await Start();
+                await InputRoutingTests.Key(VirtualKey.Right, shift: true);
+                Check(view.Presentation.mode == VIEM_MODE_NORMAL && view.Presentation.cursor_utf8_offset == 1 && !view.HasSelection,
+                    "an explicit Normal Shift-arrow mapping overrides selection settings");
+                await Start(2, insert: true);
+                await InputRoutingTests.Key(VirtualKey.Right, shift: true);
+                Check(view.Presentation.mode == VIEM_MODE_INSERT && view.Presentation.cursor_utf8_offset == 1 && !view.HasSelection,
+                    "an explicit Insert Shift-arrow mapping overrides selection settings");
+            }
+            finally { view.Ex("nunmap <S-Right>"); view.Ex("iunmap <S-Right>"); }
+            view.Ex("inoremap <S-Left> <Esc>");
+            try
+            {
+                await Start(insert: true);
+                await InputRoutingTests.Key(VirtualKey.Right, shift: true);
+                Check(view.Presentation.mode == VIEM_MODE_SELECTION_CHARACTER, "unmapped Shift-arrow starts Insert selection");
+                await InputRoutingTests.Key(VirtualKey.Left, shift: true);
+                Check(view.Presentation.mode == VIEM_MODE_NORMAL && !view.HasSelection,
+                    "an explicit Insert Shift-arrow mapping also overrides selection extension");
+            }
+            finally { view.Ex("iunmap <S-Left>"); }
+            Check(pane.Document.FormattedText() == original, "selection settings and mapped navigation preserve source");
         }
 
         internal async Task SelectionOptions()
         {
-            view.Ex("set noautoselect keymodel=startsel selectmode=key");
-            await SelectTwo();
+            view.Ex("set noautoselect noshiftselect keymodel=startsel selectmode=key");
+            await SelectTwo(insert: false);
             await InputRoutingTests.Key(VirtualKey.Right);
             Check(view.IsTextSelection, "omitting stopsel keeps unshifted navigation inside the selection");
             view.Ex("set keymodel= selectmode=");
@@ -438,7 +543,7 @@ internal static class SelectionInputTests
             await InputRoutingTests.Key(VirtualKey.Right, shift: true);
             Check(!view.HasSelection, "empty keymodel preserves Vim navigation without starting a selection");
             view.Ex("set keymodel=startsel,stopsel selectmode=");
-            await SelectTwo();
+            await SelectTwo(insert: false);
             Check(view.IsVisual && !view.IsTextSelection, "empty selectmode starts Visual mode from Shift navigation");
             view.Ex("set selectmode=cmd");
             await Start();

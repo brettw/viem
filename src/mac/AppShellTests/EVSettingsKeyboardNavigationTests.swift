@@ -100,14 +100,17 @@ final class EVSettingsKeyboardNavigationTests: XCTestCase {
     XCTAssertEqual(configuration.viewMargins.top, 37)
     let width = try field("Text width (columns)", in: window)
     let autoselect = try XCTUnwrap(descendants(window.contentView).compactMap { $0 as? NSButton }
-      .first { $0.accessibilityLabel() == "Use native selection for mouse and Shift-arrow keys" })
+      .first { $0.accessibilityLabel() == "Allow selection in insert mode" })
+    let shiftselect = try XCTUnwrap(descendants(window.contentView).compactMap { $0 as? NSButton }
+      .first { $0.accessibilityLabel() == "Use shift-arrow keys to start selection" })
     let smartHome = try XCTUnwrap(descendants(window.contentView).compactMap { $0 as? NSButton }
       .first { $0.accessibilityLabel() == "Smart Home" })
     let tabstop = try field("Indentation tabstop", in: window)
     let shiftwidth = try field("Indentation shiftwidth", in: window)
     XCTAssertEqual(smartHome.state, .on)
     XCTAssertTrue(width.nextKeyView === autoselect)
-    XCTAssertTrue(autoselect.nextKeyView === smartHome)
+    XCTAssertTrue(autoselect.nextKeyView === shiftselect)
+    XCTAssertTrue(shiftselect.nextKeyView === smartHome)
     XCTAssertTrue(smartHome.nextKeyView === tabstop)
     XCTAssertTrue(tabstop.nextKeyView === shiftwidth)
     XCTAssertTrue(window.makeFirstResponder(width))
