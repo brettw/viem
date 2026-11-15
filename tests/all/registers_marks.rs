@@ -566,6 +566,32 @@ fn linewise_visual_and_yank_marks_report_the_maximum_column() {
 }
 
 #[test]
+fn change_end_mark_never_rests_on_a_line_break() {
+    let (mut core, view) = editor("one\ntwo words\nthree\nfour");
+    let marks = |core: &mut Editor| messages(&ex(core, view, "echo getpos(\"'[\")[1:2] getpos(\"']\")[1:2]"));
+    // A linewise put ends on the last character of its last line.
+    ex(&mut core, view, "2yank");
+    keys(&mut core, view, "ggp");
+    assert_eq!(marks(&mut core), ["[2, 1] [2, 9]"]);
+    keys(&mut core, view, "u");
+    ex(&mut core, view, "2,3yank");
+    keys(&mut core, view, "ggP");
+    assert_eq!(marks(&mut core), ["[1, 1] [2, 5]"]);
+    keys(&mut core, view, "u");
+    // An empty last line ends at its start.
+    ex(&mut core, view, "call setreg('a', ['', 'x', ''], 'l')");
+    keys(&mut core, view, "gg\"ap");
+    assert_eq!(marks(&mut core), ["[2, 1] [4, 1]"]);
+    keys(&mut core, view, "u");
+    // So does a characterwise yank that includes the line break.
+    keys(&mut core, view, "ggjv$y");
+    assert_eq!(marks(&mut core), ["[2, 1] [2, 9]"]);
+    // A characterwise change keeps its last character.
+    keys(&mut core, view, "0yiwP");
+    assert_eq!(marks(&mut core), ["[2, 1] [2, 3]"]);
+}
+
+#[test]
 fn script_linewise_register_puts_whole_lines() {
     for (format, source, keys_text, expected, expected_source) in [
         (Format::Markdown, "p\n\nz", "\"ap", "p\nqq\nz", "p\n\nqq\n\nz"),

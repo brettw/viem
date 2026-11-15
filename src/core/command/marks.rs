@@ -21,13 +21,24 @@ impl CommandInterpreter {
         change: bool,
     ) {
         let lines = document.hard_line_snapshot();
-        let end = if range.end > range.start {
+        let mut end = if range.end > range.start {
             lines
                 .previous_grapheme_boundary(range.end)
                 .unwrap_or(range.start)
         } else {
             range.start
         };
+        // Vim never leaves `']` on a line break: a change or yank ending with
+        // one (a linewise put, `v$y`) ends on the last character before it,
+        // or at the start of an empty line. Insert-mode changes end where
+        // the typing ended instead.
+        if !continuing_insert && end > range.start {
+            if let Ok(line) = lines.line_at_offset(end) {
+                if line.separator_range().is_some_and(|separator| separator.start == end) && !line.content_range().is_empty() {
+                    end = lines.previous_grapheme_boundary(end).unwrap_or(end).max(range.start);
+                }
+            }
+        }
         self.line_end_marks.remove(&']');
         let continuing_insert = continuing_insert
             && self.affected_insert_unit == Some(document.edit_group_generation());
