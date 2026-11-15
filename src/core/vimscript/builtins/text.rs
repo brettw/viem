@@ -870,7 +870,7 @@ fn rand(args: &[Value]) -> EvalResult<Value> {
         let result = xoshiro(&mut state);
         let mut data = list.data();
         for (index, value) in state.iter().enumerate() {
-            data.items[index] = Value::Number(*value as i64);
+            data.items.set(index, Value::Number(*value as i64));
         }
         return Ok(Value::Number(result as i64));
     }

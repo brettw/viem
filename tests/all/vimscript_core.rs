@@ -392,3 +392,38 @@ fn append_above_the_cursor_keeps_it_on_its_content() {
         assert_eq!(messages(&ex(&mut core, view, "echo line('.') col('.') getline('.')")), [expected], "{append}");
     }
 }
+
+#[test]
+fn search_honors_wrapscan_and_the_skip_expression() {
+    let (mut core, view) = editor("one\ntwo\nthree\n");
+    let echo = |core: &mut Editor, line: &str| messages(&ex(core, view, line));
+    ex(&mut core, view, "set nowrapscan | call cursor(3, 1)");
+    assert_eq!(echo(&mut core, "echo search('one') line('.')"), ["0 3"]);
+    assert_eq!(echo(&mut core, "echo search('one', 'w') line('.')"), ["1 1"]);
+    ex(&mut core, view, "set wrapscan | call setline(1, ['one', 'two', 'one']) | call cursor(1, 1)");
+    // Every match is skipped, so the cursor stays put.
+    assert_eq!(echo(&mut core, "echo search('one', 'W', 0, 0, '1') line('.')"), ["0 1"]);
+    assert_eq!(echo(&mut core, "echo search('one', 'W', 0, 0, 'line(\".\") == 1') line('.')"), ["3 3"]);
+    ex(&mut core, view, "call cursor(1, 1)");
+    assert_eq!(echo(&mut core, "echo search('one', 'W', 0, 0, {-> line('.') == 1}) line('.')"), ["3 3"]);
+    ex(&mut core, view, "call cursor(1, 1)");
+    assert_eq!(echo(&mut core, "echo search('one', 'nW', 0, 0, '0') line('.')"), ["3 1"]);
+    // An error in the skip expression propagates and leaves the cursor.
+    ex(&mut core, view, "call cursor(2, 2)");
+    let outcome = ex(&mut core, view, "echo search('one', 'W', 0, 0, 'nosuchvar')");
+    assert!(error_text(&outcome).contains("E121"), "{outcome:?}");
+    assert_eq!(echo(&mut core, "echo line('.') col('.')"), ["2 2"]);
+}
+
+#[test]
+fn vim9_functions_compile_ex_commands_by_their_own_grammar() {
+    let directory = std::env::temp_dir().join(format!("viem-vim9-ex-compile-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("compile.vim");
+    std::fs::write(&path, "vim9script\ndef Replace()\n  s/old/[new]/\n  normal! A(z)\nenddef\nsetline(1, 'old')\nReplace()\n").unwrap();
+    let (mut core, view) = editor("before\n");
+    let outcome = ex(&mut core, view, &format!("source {}", path.display()));
+    assert_eq!(status(&outcome), CommandStatus::Complete, "{outcome:?}");
+    assert_eq!(core.document().text(), "[new](z)\n");
+    std::fs::remove_dir_all(directory).unwrap();
+}

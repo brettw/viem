@@ -212,35 +212,40 @@ impl<P: TextMeasurementProvider> CoreScriptHost<'_, P> {
     }
 
     /// `search()` and `searchpos()`: Vim regex over physical source lines.
-    fn search(&mut self, rt: &Runtime, args: &[Value], positions: bool) -> EvalResult<Value> {
+    fn search(&mut self, rt: &mut Runtime, args: &[Value], positions: bool) -> EvalResult<Value> {
         let pattern = args.first().map(|value| value.to_text()).transpose()?.unwrap_or_default();
         let flags = args.get(1).map(|value| value.to_text()).transpose()?.unwrap_or_default();
         let stop = args.get(2).map(|value| value.to_number()).transpose()?.unwrap_or(0).max(0) as usize;
+        let skip = match args.get(4) {
+            Some(Value::String(text)) if text.as_bytes().iter().all(u8::is_ascii_whitespace) => None,
+            Some(Value::Number(0)) | None => None,
+            Some(skip) => Some(skip.clone()),
+        };
         let backward = flags.contains('b');
-        let wrap = !flags.contains('W');
+        // Without `w` or `W`, 'wrapscan' decides, as for `/`.
+        let wrap = if flags.contains('W') { false } else { flags.contains('w') || self.commands().script_wrapscan() };
         let accept_at_cursor = flags.contains('c');
         let to_end = flags.contains('e');
         let compiled = crate::vimscript::regex::compile(pattern.as_bytes(), self.ignorecase())?;
-        let document = &self.core.document;
-        let commands = self.commands();
-        let count = document.physical_source_line_number_count().max(1);
-        let line_text = |line: usize| -> String {
-            document.physical_line(line - 1).map(|physical| physical.content_text().to_string()).unwrap_or_default()
+        let (count, cursor_line, cursor_column) = {
+            let document = &self.core.document;
+            let commands = self.commands();
+            let count = document.physical_source_line_number_count().max(1);
+            let cursor_line = (commands.script_cursor_line(document).max(1) as usize).min(count);
+            (count, cursor_line, commands.script_cursor_column(document).max(1) as usize)
         };
-        let cursor_line = (commands.script_cursor_line(document).max(1) as usize).min(count);
-        let cursor_column = commands.script_cursor_column(document).max(1) as usize - 1;
-        let mut fuel = 50_000_000u64;
-        let mut found = None;
         let lines: Vec<usize> = if backward {
             (1..=cursor_line).rev().chain(if wrap { (cursor_line..=count).rev().collect::<Vec<_>>() } else { Vec::new() }).collect()
         } else {
             (cursor_line..=count).chain(if wrap { (1..=cursor_line).collect::<Vec<_>>() } else { Vec::new() }).collect()
         };
+        let mut fuel = 50_000_000u64;
+        let mut found = None;
         'lines: for (visit, line) in lines.into_iter().enumerate() {
             if stop > 0 && ((backward && line < stop) || (!backward && line > stop)) {
                 break;
             }
-            let text = line_text(line);
+            let text = self.core.document.physical_line(line - 1).map(|physical| physical.content_text().to_string()).unwrap_or_default();
             let mut matches = Vec::new();
             let mut start = 0;
             while let Some(found) = crate::vimscript::regex::find_at(&compiled, &text, start, &mut fuel)? {
@@ -250,30 +255,63 @@ impl<P: TextMeasurementProvider> CoreScriptHost<'_, P> {
                     break;
                 }
             }
+            if backward {
+                matches.reverse();
+            }
             let first_visit = visit == 0;
             let wrapped_visit = !first_visit && line == cursor_line;
-            let candidates: Box<dyn Iterator<Item = &std::ops::Range<usize>>> =
-                if backward { Box::new(matches.iter().rev()) } else { Box::new(matches.iter()) };
-            for range in candidates {
+            let cursor = cursor_column - 1;
+            for range in matches {
                 let column = if to_end { range.end.saturating_sub(1).max(range.start) } else { range.start };
                 let acceptable = if first_visit {
-                    if backward { column < cursor_column || (accept_at_cursor && column == cursor_column) } else { column > cursor_column || (accept_at_cursor && column == cursor_column) }
+                    if backward { column < cursor || (accept_at_cursor && column == cursor) } else { column > cursor || (accept_at_cursor && column == cursor) }
                 } else if wrapped_visit {
-                    if backward { column >= cursor_column } else { column <= cursor_column }
+                    if backward { column >= cursor } else { column <= cursor }
                 } else {
                     true
                 };
-                if acceptable {
-                    found = Some((line, column + 1));
-                    break 'lines;
+                if !acceptable {
+                    continue;
                 }
+                if let Some(skip) = &skip {
+                    // Vim evaluates the skip expression with the cursor on the match.
+                    self.dispatch(rt, ScriptAction::SetCursor { line, column: column + 1 })?;
+                    let skipped = match skip {
+                        Value::Funcref(funcref) => rt.call_funcref(self, funcref, Vec::new(), None),
+                        other => {
+                            let text = other.to_vstr()?;
+                            let sid = rt.current_sid();
+                            rt.eval_expression(self, text.as_bytes(), sid)
+                        }
+                    };
+                    let skipped = match skipped.and_then(|value| Ok(value.to_number()?)) {
+                        Ok(value) => value != 0,
+                        Err(error) => {
+                            // The error propagates and the cursor stays put.
+                            self.dispatch(rt, ScriptAction::SetCursor { line: cursor_line, column: cursor_column })?;
+                            return Err(error);
+                        }
+                    };
+                    if skipped {
+                        continue;
+                    }
+                }
+                found = Some((line, column + 1));
+                break 'lines;
             }
         }
-        let _ = rt;
+        let moved_for_skip = skip.is_some();
         let Some((line, column)) = found else {
+            if moved_for_skip {
+                self.dispatch(rt, ScriptAction::SetCursor { line: cursor_line, column: cursor_column })?;
+            }
             return Ok(if positions { Value::list(vec![0.into(), 0.into()]) } else { Value::Number(0) });
         };
-        if !flags.contains('n') {
+        if flags.contains('n') {
+            if moved_for_skip {
+                self.dispatch(rt, ScriptAction::SetCursor { line: cursor_line, column: cursor_column })?;
+            }
+        } else {
             self.dispatch(rt, ScriptAction::SetCursor { line, column })?;
         }
         Ok(if positions { Value::list(vec![(line as i64).into(), (column as i64).into()]) } else { Value::Number(line as i64) })

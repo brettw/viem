@@ -277,7 +277,7 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
             let flat = flatten(rt, list, depth)?;
             if name == "flatten" {
                 list.check_writable()?;
-                list.data().items = flat;
+                list.data().items.replace(flat);
                 Ok(args[0].clone())
             } else {
                 Ok(Value::list(flat))
@@ -380,7 +380,10 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
         }),
         "empty" => arity(name, args, 1, 1).and_then(|()| Ok(Value::Number((matches!(args[0], Value::Object(_)) || args[0].is_empty_value()) as i64))),
         "copy" => arity(name, args, 1, 1).and_then(|()| Ok(args[0].copy(false))),
-        "deepcopy" => arity(name, args, 1, 2).and_then(|()| Ok(args[0].copy(true))),
+        "deepcopy" => arity(name, args, 1, 2).and_then(|()| {
+            let noref = args.get(1).map(|value| value.to_bool()).transpose()?.unwrap_or(false);
+            Ok(args[0].deep_copy(noref)?)
+        }),
         "list2str" => arity(name, args, 1, 2).and_then(|()| {
             let Value::List(list) = &args[0] else { return Err(list_required(0)) };
             let mut out = String::new();
@@ -597,7 +600,7 @@ fn remove(args: &[Value]) -> EvalResult<Value> {
                     if end < start || end >= len {
                         return Err(Fail::Error(VimError::new(16, "Invalid range")));
                     }
-                    let removed: Vec<Value> = list.data().items.drain(start as usize..=end as usize).collect();
+                    let removed = list.data().items.drain(start as usize..end as usize + 1);
                     Ok(Value::list(removed))
                 }
             }
@@ -613,6 +616,7 @@ fn remove(args: &[Value]) -> EvalResult<Value> {
             dict.remove(key.as_bytes()).ok_or_else(|| Fail::Error(VimError::new(716, format!("Key not present in Dictionary: \"{}\"", key.to_str_lossy()))))
         }
         Value::Blob(blob) => {
+            blob.check_argument("remove")?;
             let len = blob.len() as i64;
             let mut start = args[1].to_number()?;
             if start < 0 {
@@ -660,11 +664,7 @@ fn extend(args: &[Value], new: bool) -> EvalResult<Value> {
                 }
                 None => len as usize,
             };
-            let mut data = target.data();
-            let tail = data.items.split_off(index);
-            data.items.extend(source);
-            data.items.extend(tail);
-            drop(data);
+            target.data().items.insert_all(index, source);
             Ok(Value::List(target))
         }
         (Value::Dict(target), Value::Dict(source)) => {
@@ -724,52 +724,80 @@ fn apply_callback(rt: &mut Runtime, host: &mut dyn ScriptHost, callback: &Value,
 fn map_filter(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args: &[Value]) -> EvalResult<Value> {
     let callback = &args[1];
     match &args[0] {
-        Value::List(list) => {
-            if name != "mapnew" && name != "foreach" {
-                list.check_writable()?;
+        Value::List(list) if matches!(name, "map" | "filter") => {
+            // Like Vim, change the List as each callback returns, so later
+            // callbacks see earlier results. filter() removes items and needs
+            // the List unlocked; map() replaces values and needs each item
+            // unlocked.
+            if name == "filter" {
+                list.check_argument(name)?;
+            } else if list.data().null {
+                return Err(Fail::Error(VimError::new(1130, "Cannot add to null list")));
             }
-            let items = list.snapshot();
-            let mut results = Vec::with_capacity(items.len());
-            let total = items.len();
-            for (index, item) in items.iter().cloned().enumerate() {
-                let result = match apply_callback(rt, host, callback, (index as i64).into(), item.clone()) {
+            let mut index = 0;
+            let mut key = 0i64;
+            while let Some(item) = list.get(index) {
+                if name == "map" && list.data().items.lock(index).is_locked() {
+                    return Err(Fail::Error(VimError::new(741, "Value is locked: map() argument")));
+                }
+                let result = match apply_callback(rt, host, callback, key.into(), item.clone()) {
                     Ok(result) => result,
                     Err(fail) => {
                         callback_failed(rt, host, fail)?;
-                        // Keep the remaining items unchanged.
-                        if !matches!(name, "foreach") {
-                            if name == "filter" {
-                                results.extend(items[index..total].iter().cloned());
-                            } else {
-                                results.extend(items[index..total].iter().cloned());
-                            }
+                        break;
+                    }
+                };
+                key += 1;
+                let mut data = list.data();
+                // The callback may have shortened the List.
+                if index >= data.items.len() {
+                    break;
+                }
+                if name == "map" {
+                    drop(data);
+                    let result = list.checked_value(result)?;
+                    let mut data = list.data();
+                    if index < data.items.len() {
+                        data.items.set(index, result);
+                    }
+                    index += 1;
+                } else if result.to_bool()? {
+                    index += 1;
+                } else {
+                    data.items.remove(index);
+                }
+            }
+            Ok(args[0].clone())
+        }
+        Value::List(list) => {
+            let items = list.snapshot();
+            let mut results = Vec::with_capacity(items.len());
+            for (index, item) in items.iter().cloned().enumerate() {
+                let result = match apply_callback(rt, host, callback, (index as i64).into(), item) {
+                    Ok(result) => result,
+                    Err(fail) => {
+                        callback_failed(rt, host, fail)?;
+                        if name == "mapnew" {
+                            results.extend(items[index..].iter().cloned());
                         }
                         break;
                     }
                 };
-                match name {
-                    "filter" => {
-                        if result.to_bool()? {
-                            results.push(item);
-                        }
-                    }
-                    "foreach" => {}
-                    _ => results.push(result),
+                if name == "mapnew" {
+                    results.push(result);
                 }
             }
-            match name {
-                "mapnew" => Ok(Value::list(results)),
-                "foreach" => Ok(args[0].clone()),
-                _ => {
-                    let results = results.into_iter().map(|v|list.checked_value(v)).collect::<Result<Vec<_>, _>>()?;
-                    list.data().items = results;
-                    Ok(args[0].clone())
-                }
-            }
+            Ok(if name == "mapnew" { Value::list(results) } else { args[0].clone() })
         }
         Value::Dict(dict) => {
+            if name == "filter" && dict.data().lock.is_locked() {
+                return Err(Fail::Error(VimError::new(741, "Value is locked: filter() argument")));
+            }
             let target = if name == "mapnew" { Dict::new() } else { dict.clone() };
             for (key, value) in dict.snapshot() {
+                if name == "map" && dict.data().items.get(key.as_bytes()).is_some_and(|item| item.lock.is_locked()) {
+                    return Err(Fail::Error(VimError::new(741, "Value is locked: map() argument")));
+                }
                 let result = match apply_callback(rt, host, callback, Value::String(key.clone()), value.clone()) {
                     Ok(result) => result,
                     Err(fail) => {
@@ -806,6 +834,9 @@ fn map_filter(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args: &[V
             Ok(if name == "foreach" { args[0].clone() } else { Value::String(out.into()) })
         }
         Value::Blob(blob) => {
+            if name == "filter" {
+                blob.check_argument(name)?;
+            }
             let bytes = blob.bytes();
             let mut out = Vec::new();
             for (index, byte) in bytes.into_iter().enumerate() {
@@ -838,7 +869,8 @@ fn sort_uniq(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args: &[Va
         return Err(Fail::Error(VimError::new(686, format!("Argument of {name}() must be a List"))));
     };
     list.check_writable()?;
-    let mut items = list.snapshot();
+    // Each item keeps the index it came from, so its lock moves with it.
+    let mut items: Vec<(usize, Value)> = list.snapshot().into_iter().enumerate().collect();
     #[derive(Clone, Copy)]
     enum How {
         String { ignore_case: bool },
@@ -925,14 +957,14 @@ fn sort_uniq(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args: &[Va
     };
     if name == "sort" {
         // Stable merge sort calling back into the runtime.
-        let mut sorted: Vec<Value> = Vec::with_capacity(items.len());
+        let mut sorted: Vec<(usize, Value)> = Vec::with_capacity(items.len());
         for item in items.drain(..) {
             let position = {
                 let mut low = 0;
                 let mut high = sorted.len();
                 while low < high {
                     let middle = (low + high) / 2;
-                    if compare(rt, host, &sorted[middle], &item) == std::cmp::Ordering::Greater {
+                    if compare(rt, host, &sorted[middle].1, &item.1) == std::cmp::Ordering::Greater {
                         high = middle;
                     } else {
                         low = middle + 1;
@@ -948,12 +980,12 @@ fn sort_uniq(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args: &[Va
         if let Some(fail) = failure {
             return Err(fail);
         }
-        list.data().items = sorted;
+        list.data().items.arrange(sorted);
     } else {
-        let mut unique: Vec<Value> = Vec::new();
+        let mut unique: Vec<(usize, Value)> = Vec::new();
         for item in items {
-            if let Some(last) = unique.last() {
-                if compare(rt, host, last, &item) == std::cmp::Ordering::Equal && (callback.is_some() || values_equal(last, &item, matches!(how, How::String { ignore_case: true }), 0).unwrap_or(false) || !matches!(how, How::String { .. })) {
+            if let Some((_, last)) = unique.last() {
+                if compare(rt, host, last, &item.1) == std::cmp::Ordering::Equal && (callback.is_some() || values_equal(last, &item.1, matches!(how, How::String { ignore_case: true }), 0).unwrap_or(false) || !matches!(how, How::String { .. })) {
                     continue;
                 }
             }
@@ -962,7 +994,7 @@ fn sort_uniq(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args: &[Va
         if let Some(fail) = failure {
             return Err(fail);
         }
-        list.data().items = unique;
+        list.data().items.arrange(unique);
     }
     let _ = Lock::Unlocked;
     Ok(args[0].clone())

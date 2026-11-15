@@ -239,21 +239,32 @@ fn assign(rt: &mut Runtime, host: &mut dyn ScriptHost, target: Target, value: Va
         }
         Target::Index { container, key } => match container {
             Value::List(list) => {
-                list.check_writable()?;
                 let value = list.checked_value(value)?;
+                let vim9 = rt.vim9();
                 let mut data = list.data();
+                if data.null {
+                    return Err(Fail::Error(VimError::new(1130, "Cannot add to null list")));
+                }
                 let len = data.items.len() as i64;
                 let mut index = key.to_number()?;
                 if index < 0 {
                     index += len;
                 }
-                if index < 0 || index > len {
+                // Only Vim9 appends by assigning just past the end.
+                if index < 0 || index > len || index == len && !vim9 {
                     return Err(Fail::Error(VimError::new(684, format!("List index out of range: {}", key.to_number()?))));
                 }
                 if index == len {
+                    if data.lock.is_locked() {
+                        return Err(Fail::Error(VimError::new(741, "Value is locked")));
+                    }
                     data.items.push(value);
                 } else {
-                    data.items[index as usize] = value;
+                    // Replacing an item needs only that item to be unlocked.
+                    if data.items.lock(index as usize).is_locked() {
+                        return Err(Fail::Error(VimError::new(741, "Value is locked")));
+                    }
+                    data.items.set(index as usize, value);
                 }
                 Ok(())
             }
@@ -306,7 +317,9 @@ fn assign(rt: &mut Runtime, host: &mut dyn ScriptHost, target: Target, value: Va
             let Value::List(source) = value else {
                 return Err(Fail::Error(VimError::new(709, "[:] requires a List or Blob value")));
             };
-            list.check_writable()?;
+            if list.data().null {
+                return Err(Fail::Error(VimError::new(1130, "Cannot add to null list")));
+            }
             let source = source.snapshot().into_iter().map(|v|list.checked_value(v)).collect::<Result<Vec<_>, _>>()?;
             let mut data = list.data();
             let len = data.items.len() as i64;
@@ -328,6 +341,14 @@ fn assign(rt: &mut Runtime, host: &mut dyn ScriptHost, target: Target, value: Va
                 None => None,
             };
             let start = start as usize;
+            // Replaced items must be unlocked, and appending needs the List
+            // itself unlocked; check before changing anything.
+            let replaced = start..(start + source.len()).min(data.items.len());
+            if replaced.clone().any(|index| data.items.lock(index).is_locked())
+                || start + source.len() > data.items.len() && end.is_none() && data.lock.is_locked()
+            {
+                return Err(Fail::Error(VimError::new(741, "Value is locked")));
+            }
             match end {
                 Some(end) => {
                     let count = (end - start as i64 + 1).max(0) as usize;
@@ -339,14 +360,14 @@ fn assign(rt: &mut Runtime, host: &mut dyn ScriptHost, target: Target, value: Va
                     }
                     for (offset, item) in source.into_iter().enumerate() {
                         if start + offset < data.items.len() {
-                            data.items[start + offset] = item;
+                            data.items.set(start + offset, item);
                         }
                     }
                 }
                 None => {
                     for (offset, item) in source.into_iter().enumerate() {
                         if start + offset < data.items.len() {
-                            data.items[start + offset] = item;
+                            data.items.set(start + offset, item);
                         } else {
                             data.items.push(item);
                         }
@@ -410,7 +431,13 @@ fn lock_value_inner(value: &Value, depth: i64, lock: bool, recursive: bool,
             let items = {
                 let mut data = list.data();
                 if data.lock != Lock::Fixed { data.lock = state; }
-                data.items.clone()
+                // Depth 1 locks only the List; deeper also locks its items.
+                if depth > 1 {
+                    for index in 0..data.items.len() {
+                        data.items.set_lock(index, state);
+                    }
+                }
+                data.items.to_vec()
             };
             for item in items {
                 lock_value_inner(&item, depth - 1, lock, recursive, visited, active)?;
@@ -771,6 +798,9 @@ pub(crate) fn unlet_command(rt: &mut Runtime, host: &mut dyn ScriptHost, argumen
                     if index < 0 || index >= len {
                         return Err(Fail::Error(VimError::new(684, format!("List index out of range: {}", key.to_number()?))));
                     }
+                    if data.items.lock(index as usize).is_locked() {
+                        return Err(Fail::Error(VimError::new(741, "Value is locked")));
+                    }
                     data.items.remove(index as usize);
                 }
                 Value::Dict(dict) => {
@@ -822,7 +852,10 @@ pub(crate) fn unlet_command(rt: &mut Runtime, host: &mut dyn ScriptHost, argumen
                 }
                 let end = end.min(len - 1);
                 if start >= 0 && start <= end {
-                    data.items.drain(start as usize..=end as usize);
+                    if (start as usize..=end as usize).any(|index| data.items.lock(index).is_locked()) {
+                        return Err(Fail::Error(VimError::new(741, "Value is locked")));
+                    }
+                    data.items.drain(start as usize..end as usize + 1);
                 }
             }
             Target::Option(..) | Target::Register(_) => {
@@ -831,6 +864,21 @@ pub(crate) fn unlet_command(rt: &mut Runtime, host: &mut dyn ScriptHost, argumen
         }
     }
     Ok(())
+}
+
+/// `:lockvar D.key`: lock one Dictionary entry and, to `depth`, its value.
+fn lock_dict_entry(dict: &Dict, key: VStr, state: Lock, depth: i64, lock: bool) -> EvalResult<()> {
+    let value = {
+        let mut data = dict.data();
+        let Some(item) = data.items.get_mut(key.as_bytes()) else {
+            return Err(Fail::Error(VimError::new(716, format!("Key not present in Dictionary: \"{}\"", key.to_str_lossy()))));
+        };
+        if item.lock != Lock::Fixed {
+            item.lock = state;
+        }
+        item.value.clone()
+    };
+    Ok(lock_value(&value, depth, lock)?)
 }
 
 pub(crate) fn lock_command(rt: &mut Runtime, host: &mut dyn ScriptHost, argument: &[u8], lock: bool, force: bool) -> EvalResult<()> {
@@ -854,8 +902,36 @@ pub(crate) fn lock_command(rt: &mut Runtime, host: &mut dyn ScriptHost, argument
         let mut eval = Eval::new(rt, host, argument, at, true);
         let target = parse_target(&mut eval)?;
         at = eval.pos;
-        let Some(Target::Variable(name)) = target else {
-            continue;
+        let state = if lock { Lock::Locked } else { Lock::Unlocked };
+        let name = match target {
+            Some(Target::Variable(name)) => name,
+            // A List item or Dictionary entry has its own lock, like a variable.
+            Some(Target::Index { container: Value::List(list), key }) => {
+                let value = {
+                    let mut data = list.data();
+                    let len = data.items.len() as i64;
+                    let mut index = key.to_number()?;
+                    if index < 0 {
+                        index += len;
+                    }
+                    if index < 0 || index >= len {
+                        return Err(Fail::Error(VimError::new(684, format!("List index out of range: {}", key.to_number()?))));
+                    }
+                    data.items.set_lock(index as usize, state);
+                    data.items[index as usize].clone()
+                };
+                lock_value(&value, depth, lock)?;
+                continue;
+            }
+            Some(Target::Index { container: Value::Dict(dict), key }) => {
+                lock_dict_entry(&dict, key.to_vstr()?, state, depth, lock)?;
+                continue;
+            }
+            Some(Target::DictKey { dict, key }) => {
+                lock_dict_entry(&dict, key, state, depth, lock)?;
+                continue;
+            }
+            _ => continue,
         };
         let (dict, key, _) = rt.variable_slot(host, &name)?;
         let value = {

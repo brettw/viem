@@ -295,6 +295,10 @@ impl CommandInterpreter {
         self.search_options.ignorecase
     }
 
+    pub(crate) fn script_wrapscan(&self) -> bool {
+        self.search_options.wrapscan
+    }
+
     /// Physical one-based line of the cursor.
     pub(crate) fn script_cursor_line(&self, document: &Document) -> i64 {
         document

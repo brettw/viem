@@ -436,6 +436,14 @@ fn trim(bytes: &[u8]) -> &[u8] {
     &bytes[start..end]
 }
 
+/// The full name of the Ex command `src` starts with, after modifiers and
+/// a range: `Some("")` for a range alone, `None` when it does not parse.
+pub(crate) fn command_name(src: &[u8]) -> Option<String> {
+    let header = parse_header(src, 0).ok()??;
+    let name = String::from_utf8_lossy(&header.name).into_owned();
+    Some(super::excmds::lookup(&name).map_or(name, str::to_owned))
+}
+
 /// Where a Vim9 `#` comment starts for the command at `col`. As in Vim, a
 /// command that takes the rest of the line as its argument has no comment,
 /// and `:substitute` looks for one only after its pattern and replacement.
@@ -1363,7 +1371,12 @@ fn cmd_for(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], header: &Hea
                 }
             };
             if let Some(items) = items {
-                cond.for_state = Some(ForState { items, index: 0, targets, rest });
+                let compiled = rt.frames.last().is_some_and(|frame| frame.vim9 && matches!(frame.kind, FrameKind::Function));
+                let watcher = match &items {
+                    ForItems::List(list) if !compiled => Some(list.data().items.watch(0)),
+                    _ => None,
+                };
+                cond.for_state = Some(ForState { items, index: 0, watcher, targets, rest });
             }
         }
         (Err(fail), _) if active => failure = Some(fail),
@@ -1410,12 +1423,18 @@ fn advance_for(rt: &mut Runtime, host: &mut dyn ScriptHost) -> EvalResult<()> {
             cond.active = false;
             return Ok(());
         };
+        if let Some(watcher) = &state.watcher {
+            state.index = watcher.load(std::sync::atomic::Ordering::Relaxed);
+        }
         let value = match &state.items {
             ForItems::List(list) => list.get(state.index),
             ForItems::Chars(chars) => chars.get(state.index).map(|c| Value::String(c.clone())),
             ForItems::Blob(bytes) => bytes.get(state.index).map(|b| Value::Number(*b as i64)),
         };
         state.index += 1;
+        if let Some(watcher) = &state.watcher {
+            watcher.store(state.index, std::sync::atomic::Ordering::Relaxed);
+        }
         match value {
             Some(value) => {
                 cond.active = true;

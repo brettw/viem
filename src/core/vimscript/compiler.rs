@@ -491,7 +491,13 @@ fn reachable_lines(
         let text = super::source::vim9_comment_prefix(&text).trim();
         let (command, argument) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
         let active = branches.last().is_none_or(|b| b.2);
-        let constant = if matches!(command, "if" | "elseif") && active {
+        // An elseif can run when its :if is reachable and no earlier arm is
+        // known to be taken, whatever the previous arm's condition was.
+        let reachable = match command {
+            "elseif" => branches.last().is_some_and(|b| b.0 && !b.1),
+            _ => active,
+        };
+        let constant = if matches!(command, "if" | "elseif") && reachable {
             let mut eval = super::expr::Eval::constant(rt, host, argument.as_bytes());
             eval.eval1()
                 .ok()
@@ -939,6 +945,23 @@ fn check_inner(
             }
             "let" => return Err(VimError::new(1126, "Cannot use :let in Vim9 script").into()),
             "break" | "continue" | "finish" => {}
+            _ if is_ex_command(source) => {
+                // Command arguments have their own grammar; only the name is
+                // checked here, as Vim does when compiling.
+                let known = match super::commands::command_name(source.as_bytes()) {
+                    Some(name) => {
+                        name.is_empty()
+                            || matches!(name.as_str(), "legacy" | "vim9cmd")
+                            || super::excmds::lookup(&name).is_some()
+                            || rt.state.user_command(&name).is_some()
+                    }
+                    None => false,
+                };
+                if !known {
+                    // Vim reports an unknown command in a :def as invalid.
+                    return Err(VimError::new(476, format!("Invalid command: {source}")).into());
+                }
+            }
             _ => {
                 if let Some((position, op)) = assignment_operator(source.as_bytes()) {
                     let target = source[..position].trim();
@@ -1084,6 +1107,40 @@ fn bind_pattern(
 
 /// Locate statement assignment without confusing quoted text, subscripts,
 /// comparisons or lambda arrows with an lvalue's assignment operator.
+/// Whether a Vim9 statement is an Ex command rather than an assignment or
+/// an expression. As at run time, a leading name followed by `(`, `->`, a
+/// member, an index or an assignment operator starts an expression;
+/// anything else is a command, whatever its argument contains.
+fn is_ex_command(source: &str) -> bool {
+    let bytes = source.as_bytes();
+    if bytes.first().is_some_and(|b| matches!(b, b'\'' | b'"' | b'[' | b'(' | b'{' | b'&' | b'$' | b'@' | b'+' | b'-')) {
+        return false;
+    }
+    let is_name = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'#');
+    let mut at = 0;
+    if bytes.len() > 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes.get(2).is_some_and(|b| is_name(*b)) {
+        at = 2;
+    }
+    let name_start = at;
+    while bytes.get(at).is_some_and(|b| is_name(*b)) {
+        at += 1;
+    }
+    if at == name_start {
+        return true;
+    }
+    match bytes.get(at) {
+        Some(b'(' | b'[') => return false,
+        Some(b'.') if bytes.get(at + 1).is_some_and(|b| is_name(*b)) => return false,
+        _ => {}
+    }
+    let rest = source[at..].trim_start();
+    if rest.starts_with("->") {
+        return false;
+    }
+    !["..=", "+=", "-=", "*=", "/=", "%="].iter().any(|op| rest.starts_with(op))
+        && !(rest.starts_with('=') && !rest.starts_with("==") && !rest.starts_with("=~"))
+}
+
 fn assignment_operator(source: &[u8]) -> Option<(usize, &'static str)> {
     let mut at = 0;
     let mut depth = 0usize;

@@ -216,6 +216,9 @@ pub(crate) enum ForItems {
 pub(crate) struct ForState {
     pub items: ForItems,
     pub index: usize,
+    /// Outside a compiled `:def`, Vim follows the List's next item rather
+    /// than an index, so removing items while looping skips none.
+    pub watcher: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
     pub targets: Vec<VStr>,
     pub rest: Option<VStr>,
 }

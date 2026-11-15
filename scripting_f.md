@@ -73,11 +73,10 @@ Some error numbers differ only because the oracle is 9.1 and the target is
 - `cursor(-1, -1)` returns -1 instead of E475, and `setpos('.', [1, 1])`
   returns 0 instead of -1.
 - `search()`:
-  - ignores `nowrapscan` and `smartcase`;
+  - ignores `smartcase`;
   - returns the wrong sub-pattern number for `'p'`, and `searchpos()` omits
     it;
-  - accepts invalid flags, ignores the skip expression, and treats an empty
-    pattern as a match (Vim: E35);
+  - accepts invalid flags and treats an empty pattern as a match (Vim: E35);
   - cannot match across lines with `\n`.
 - Queries for a nonexistent buffer or window answer for the current one:
   `getbufline(99, 1)`, `getbufoneline(99, 1)`, `bufexists(99)`,

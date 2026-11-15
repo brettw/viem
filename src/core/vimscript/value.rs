@@ -85,12 +85,173 @@ impl Lock {
     }
 }
 
+/// Progress of one `copy()` or `deepcopy()`.
+struct CopyState {
+    deep: bool,
+    /// Copy every occurrence of a container instead of sharing one copy.
+    noref: bool,
+    /// Copies made so far, by source identity, unless `noref`.
+    copies: Vec<(usize, Value)>,
+    /// Nesting reached the limit and copying stopped.
+    too_deep: bool,
+}
+
 #[derive(Debug, Default)]
 pub struct ListData {
     pub null: bool,
-    pub items: Vec<Value>,
+    pub items: ListItems,
+    /// The List itself: a locked List cannot gain or lose items.
     pub lock: Lock,
     pub member_type: Option<super::types::Type>,
+}
+
+/// A List's items with their own `:lockvar` state, which stops an item's
+/// value from changing. As in Vim, an item's lock moves with the item. Reads
+/// go through the slice; every change keeps values and locks in step.
+#[derive(Debug, Default)]
+pub struct ListItems {
+    values: Vec<Value>,
+    /// Empty while no item is locked; otherwise one entry per value.
+    locks: Vec<Lock>,
+    /// Legacy `:for` loops' next positions. Like Vim's list watchers, each
+    /// keeps referring to the same item while the List changes.
+    watchers: Vec<std::sync::Weak<std::sync::atomic::AtomicUsize>>,
+}
+
+impl ListItems {
+    /// Follow the item at `position` (or the end) through later changes.
+    pub fn watch(&mut self, position: usize) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+        let watcher = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(position));
+        self.watchers.retain(|watcher| watcher.strong_count() > 0);
+        self.watchers.push(std::sync::Arc::downgrade(&watcher));
+        watcher
+    }
+    fn move_watchers(&mut self, adjust: impl Fn(usize) -> usize) {
+        use std::sync::atomic::Ordering;
+        self.watchers.retain(|watcher| match watcher.upgrade() {
+            Some(position) => {
+                position.store(adjust(position.load(Ordering::Relaxed)), Ordering::Relaxed);
+                true
+            }
+            None => false,
+        });
+    }
+    pub fn to_vec(&self) -> Vec<Value> {
+        self.values.clone()
+    }
+    pub fn into_vec(self) -> Vec<Value> {
+        self.values
+    }
+    pub fn lock(&self, index: usize) -> Lock {
+        self.locks.get(index).copied().unwrap_or_default()
+    }
+    pub fn set_lock(&mut self, index: usize, lock: Lock) {
+        if index >= self.values.len() || self.locks.is_empty() && lock == Lock::Unlocked {
+            return;
+        }
+        if self.locks.is_empty() {
+            self.locks = vec![Lock::Unlocked; self.values.len()];
+        }
+        if self.locks[index] != Lock::Fixed {
+            self.locks[index] = lock;
+        }
+        if self.locks.iter().all(|lock| *lock == Lock::Unlocked) {
+            self.locks.clear();
+        }
+    }
+    /// Replace the value at `index`, keeping its lock.
+    pub fn set(&mut self, index: usize, value: Value) {
+        self.values[index] = value;
+    }
+    pub fn push(&mut self, value: Value) {
+        if !self.watchers.is_empty() {
+            return self.insert_all(self.values.len(), vec![value]);
+        }
+        self.values.push(value);
+        if !self.locks.is_empty() {
+            self.locks.push(Lock::Unlocked);
+        }
+    }
+    pub fn insert(&mut self, index: usize, value: Value) {
+        self.insert_all(index, vec![value]);
+    }
+    pub fn remove(&mut self, index: usize) -> Value {
+        self.drain(index..index + 1).pop().expect("removed index is in range")
+    }
+    pub fn drain(&mut self, range: std::ops::Range<usize>) -> Vec<Value> {
+        if !self.locks.is_empty() {
+            self.locks.drain(range.clone());
+        }
+        // A watcher on a removed item moves to the item after the range.
+        let (start, end) = (range.start, range.end);
+        self.move_watchers(|position| if position >= end { position - (end - start) } else { position.min(start) });
+        self.values.drain(range).collect()
+    }
+    pub fn clear(&mut self) {
+        self.values.clear();
+        self.locks.clear();
+        self.move_watchers(|_| 0);
+    }
+    pub fn take(&mut self) -> Vec<Value> {
+        self.locks.clear();
+        self.move_watchers(|_| 0);
+        std::mem::take(&mut self.values)
+    }
+    /// Replace every item, as `flatten()` does. Watchers keep their index.
+    pub fn replace(&mut self, values: Vec<Value>) {
+        self.values = values;
+        self.locks.clear();
+        let len = self.values.len();
+        self.move_watchers(|position| position.min(len));
+    }
+    pub fn reverse(&mut self) {
+        self.values.reverse();
+        self.locks.reverse();
+        let len = self.values.len();
+        // A watcher at the end stays there; others follow their item.
+        self.move_watchers(|position| if position < len { len - 1 - position } else { position });
+    }
+    pub fn extend(&mut self, values: impl IntoIterator<Item = Value>) {
+        for value in values {
+            self.push(value);
+        }
+    }
+    /// Replace the items with `items`, each paired with the index of the item
+    /// it came from, whose lock it keeps (`sort()` and `uniq()`).
+    pub fn arrange(&mut self, items: Vec<(usize, Value)>) {
+        let locks: Vec<Lock> = if self.locks.is_empty() { Vec::new() } else { items.iter().map(|(index, _)| self.lock(*index)).collect() };
+        let origins: Vec<usize> = items.iter().map(|(index, _)| *index).collect();
+        self.values = items.into_iter().map(|(_, value)| value).collect();
+        self.locks = if locks.iter().all(|lock| *lock == Lock::Unlocked) { Vec::new() } else { locks };
+        let len = self.values.len();
+        self.move_watchers(|position| origins.iter().position(|origin| *origin == position).unwrap_or(len));
+    }
+    /// Insert `values` before `index`.
+    pub fn insert_all(&mut self, index: usize, values: Vec<Value>) {
+        if !self.locks.is_empty() {
+            self.locks.splice(index..index, std::iter::repeat_n(Lock::Unlocked, values.len()));
+        }
+        // A watcher keeps its item, so items inserted before it, or after the
+        // last item when it is at the end, are skipped.
+        let count = values.len();
+        if count > 0 {
+            self.move_watchers(|position| if position >= index { position + count } else { position });
+        }
+        self.values.splice(index..index, values);
+    }
+}
+
+impl From<Vec<Value>> for ListItems {
+    fn from(values: Vec<Value>) -> Self {
+        Self { values, locks: Vec::new(), watchers: Vec::new() }
+    }
+}
+
+impl std::ops::Deref for ListItems {
+    type Target = [Value];
+    fn deref(&self) -> &[Value] {
+        &self.values
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -102,14 +263,14 @@ impl List {
         match ty {Some(t) => {let value = t.check(value)?; t.attach(&value); Ok(value)}, None => Ok(value)}
     }
     pub fn new(items: Vec<Value>) -> Self {
-        Self(Arc::new(Mutex::new(ListData { null: false, items, lock: Lock::Unlocked, member_type: None })))
+        Self(Arc::new(Mutex::new(ListData { null: false, items: items.into(), lock: Lock::Unlocked, member_type: None })))
     }
     /// Never hold the guard while evaluating or touching another container.
     pub fn data(&self) -> MutexGuard<'_, ListData> {
         self.0.lock().unwrap_or_else(|poison| poison.into_inner())
     }
     pub fn snapshot(&self) -> Vec<Value> {
-        self.data().items.clone()
+        self.data().items.to_vec()
     }
     pub fn len(&self) -> usize {
         self.data().items.len()
@@ -271,6 +432,14 @@ impl Blob {
         if data.null {return Err(VimError::new(1131, "Cannot add to null blob"));}
         if data.lock.is_locked() {return Err(VimError::new(741, "Value is locked"));}
         Ok(())
+    }
+    /// Locked check for a builtin's argument, e.g. "remove() argument".
+    pub fn check_argument(&self, function: &str) -> Result<(), VimError> {
+        if self.data().lock.is_locked() {
+            Err(VimError::new(741, format!("Value is locked: {function}() argument")))
+        } else {
+            Ok(())
+        }
     }
     pub fn new(bytes: Vec<u8>) -> Self {
         Self(Arc::new(Mutex::new(BlobData { null: false, bytes, lock: Lock::Unlocked })))
@@ -613,42 +782,65 @@ impl Value {
         String::from_utf8_lossy(&self.string_bytes()).into_owned()
     }
 
-    /// A deep or shallow copy (`deepcopy()` / `copy()`). `noref` deep copies
-    /// share converted children for repeated references, like Vim.
+    /// A deep or shallow copy. A deep copy shares one copy of a container
+    /// that appears more than once; see `deep_copy()` for `deepcopy()`.
     pub fn copy(&self, deep: bool) -> Value {
-        let mut copies = Vec::new();
-        self.copy_inner(deep, &mut copies, 0)
+        self.copy_inner(&mut CopyState { deep, noref: false, copies: Vec::new(), too_deep: false }, 0)
     }
 
-    fn copy_inner(&self, deep: bool, copies: &mut Vec<(usize, Value)>, depth: usize) -> Value {
+    /// `deepcopy()`. With `noref`, every occurrence of a container becomes
+    /// its own copy, so a cyclic value cannot be copied. As in Vim, nesting
+    /// beyond 100 levels fails with E698.
+    pub fn deep_copy(&self, noref: bool) -> Result<Value, VimError> {
+        let mut state = CopyState { deep: true, noref, copies: Vec::new(), too_deep: false };
+        let copy = self.copy_inner(&mut state, 0);
+        if state.too_deep {
+            // The partial copy refers to the original at its deepest level,
+            // so it is dropped, never cleared.
+            drop(copy);
+            return Err(VimError::new(698, "Variable nested too deep for making a copy"));
+        }
+        Ok(copy)
+    }
+
+    fn copy_inner(&self, state: &mut CopyState, depth: usize) -> Value {
+        let descend = state.deep && !state.too_deep;
+        if descend && depth >= 100 && matches!(self, Value::List(_) | Value::Dict(_)) {
+            state.too_deep = true;
+        }
+        let descend = descend && !state.too_deep;
         match self {
             Value::List(list) => {
-                if let Some((_, copied)) = copies.iter().find(|(id, _)| *id == list.id()) {
+                if let Some((_, copied)) = state.copies.iter().find(|(id, _)| *id == list.id()) {
                     return copied.clone();
                 }
                 let new = List::new(Vec::new());
                 let (null, member_type) = {let data = list.data(); (data.null, data.member_type.clone())};
                 {let mut data = new.data(); data.null = null; data.member_type = member_type;}
-                copies.push((list.id(), Value::List(new.clone())));
+                if !state.noref {
+                    state.copies.push((list.id(), Value::List(new.clone())));
+                }
                 let items = list.snapshot();
-                let items = if deep && depth < 100 {
-                    items.iter().map(|item| item.copy_inner(true, copies, depth + 1)).collect()
+                let items = if descend {
+                    items.iter().map(|item| item.copy_inner(state, depth + 1)).collect()
                 } else {
                     items
                 };
-                new.data().items = items;
+                new.data().items = items.into();
                 Value::List(new)
             }
             Value::Dict(dict) => {
-                if let Some((_, copied)) = copies.iter().find(|(id, _)| *id == dict.id()) {
+                if let Some((_, copied)) = state.copies.iter().find(|(id, _)| *id == dict.id()) {
                     return copied.clone();
                 }
                 let new = Dict::new();
                 let (null, member_type, declarations) = {let data = dict.data(); (data.null, data.member_type.clone(), data.declarations.clone())};
                 {let mut data = new.data(); data.null = null; data.member_type = member_type; data.declarations = declarations;}
-                copies.push((dict.id(), Value::Dict(new.clone())));
+                if !state.noref {
+                    state.copies.push((dict.id(), Value::Dict(new.clone())));
+                }
                 for (key, value) in dict.snapshot() {
-                    let value = if deep && depth < 100 { value.copy_inner(true, copies, depth + 1) } else { value };
+                    let value = if descend { value.copy_inner(state, depth + 1) } else { value };
                     new.insert(key, value);
                 }
                 Value::Dict(new)
@@ -676,7 +868,7 @@ impl Value {
                 }
                 Value::Tuple(items) if seen.insert(Arc::as_ptr(&items) as usize) => pending.extend(items.iter().cloned()),
                 Value::List(list) if seen.insert(list.id()) => {
-                    let items = std::mem::take(&mut list.data().items);
+                    let items = list.data().items.take();
                     pending.extend(items);
                 }
                 Value::Dict(dict) | Value::Module(dict) if seen.insert(dict.id()) => {
