@@ -33,7 +33,7 @@ results do not edit the document. Numbers become text; lists become lines.
 ## Script register values
 
 `:let @r` and `setreg()` follow Vim's register types. A List is linewise and a
-String is linewise only when it ends in a line feed; `setreg()`'s `c`/`v`,
+String is linewise when it ends in LF or CR; `setreg()`'s `c`/`v`,
 `l`/`V` and `b`/CTRL-V options choose a type explicitly, and `a` appends. As in
 Vim, an appended register takes the appended value's type, and only a String
 appended to a characterwise register continues its last line; this differs from
@@ -47,8 +47,16 @@ block row cannot contain a literal line feed. A width given to `setreg()`
 register round-trips; otherwise the width is the widest row in display cells,
 counting each ASCII character, a tab included, as one cell, as Vim does. As in
 Vim, appending to a block register takes the width of the appended rows. The
-width does not pad rows when a block is put: puts place rows by screen
-position.
+width pads each counted copy before surviving text. At a line's end, only the
+final copy omits its padding. Puts place rows by screen position, and the
+complete padded result is limited to 64 MiB.
+
+Script register Strings and List rows preserve their original bytes. Invalid
+UTF-8 bytes remain available through script reads; putting them into a document
+fails without editing it. An expression register read as a List returns its
+evaluated String as one item, including any embedded or trailing line endings.
+Register redirection clears or appends immediately and publishes each captured
+message, including across separately entered commands.
 
 `getreginfo()` returns a register's lines, type and whether the unnamed
 register points to it, and `setreg()` accepts that Dictionary to restore it.

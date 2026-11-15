@@ -82,6 +82,8 @@ pub struct HostCommand {
     pub modifiers: Modifiers,
     /// Script context for `<SID>` and script-local mappings.
     pub sid: usize,
+    /// Source line where a mapping was defined, zero for interactive input.
+    pub lnum: usize,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -368,8 +370,8 @@ pub(crate) struct Capture {
 
 #[derive(Clone, Debug)]
 pub(crate) enum Redirect {
-    Variable { name: Vec<u8>, append: bool, text: Vec<u8> },
-    Register { name: char, append: bool, text: Vec<u8> },
+    Variable { name: Vec<u8>, append: bool, text: Vec<u8>, limit: usize },
+    Register { name: char, text: Vec<u8>, limit: usize },
 }
 
 pub struct Runtime {
@@ -393,7 +395,9 @@ pub struct Runtime {
     /// Preserve an uncatchable failure's origin before synchronous frames unwind.
     pub(crate) interrupt_context: Option<ScriptError>,
     pub(crate) captures: Vec<Capture>,
-    pub(crate) redirect: Option<Redirect>,
+    /// Output callbacks cannot return failures; propagate their bounded-work
+    /// failure at the same command boundary as ordinary evaluation failures.
+    output_failure: Option<Fail>,
     /// The command currently executing, for "Vim(cmd):E..." exceptions.
     pub(crate) current_command: String,
     /// Autocommand events queued by host commands, fired after the command.
@@ -433,7 +437,7 @@ impl Runtime {
             errors: Vec::new(),
             interrupt_context: None,
             captures: Vec::new(),
-            redirect: None,
+            output_failure: None,
             current_command: String::new(),
             queued_events: Vec::new(),
             autocmd_depth: 0,
@@ -655,6 +659,7 @@ impl Runtime {
         let executing = frame.executing();
         self.did_emsg = false;
         let CommandOutcome { next, result } = super::commands::execute_command(self, host, &line, col, executing);
+        let result = self.output_failure.take().map_or(result, Err);
         if index < self.frames.len() {
             let frame = &mut self.frames[index];
             match next {
@@ -817,11 +822,29 @@ impl Runtime {
             Message::Echon(text) => (false, text.clone()),
             Message::Error(error) => (true, error.error.text()),
         };
-        if let Some(Redirect::Variable { text: buffer, .. } | Redirect::Register { text: buffer, .. }) = &mut self.redirect {
+        if let Some(mut redirect) = self.state.take_redirect() {
+            let (buffer, limit) = match &mut redirect {
+                Redirect::Variable { text, limit, .. } | Redirect::Register { text, limit, .. } => (text, *limit),
+            };
+            if buffer.len().saturating_add(text.len()).saturating_add(newline as usize) > limit {
+                // Dropping the taken redirection disables capture. Its live
+                // register retains the last complete message, with no partial
+                // write from the message that exhausted the budget.
+                self.output_failure = Some(Fail::Interrupt("redirection output limit exceeded".into()));
+                return;
+            }
             if newline {
                 buffer.push(b'\n');
             }
             buffer.extend_from_slice(text.as_bytes());
+            if let Redirect::Register { name, text, .. } = &redirect {
+                // Register redirection is visible immediately, including while
+                // the next command in the same script is being evaluated.
+                if let Err(error) = host.set_register(*name, &Value::String(text.clone().into()), false) {
+                    self.state.set_vvar("errmsg", error.text().into());
+                }
+            }
+            self.state.set_redirect(Some(redirect));
         }
         if let Some(capture) = self.captures.last_mut() {
             if newline {
@@ -857,6 +880,10 @@ impl Runtime {
             let trys = self.frames[index].active_trys(0);
             self.trylevel = self.trylevel.saturating_sub(trys);
             self.frames[index].cstack.clear();
+        }
+        let frame = &self.frames[index];
+        if matches!(frame.kind, FrameKind::Script { .. }) && frame.vim9 && !frame.had_error {
+            self.state.module_loading(frame.sid, false, true);
         }
         self.pop_frame(Some(host));
         Ok(())
@@ -913,6 +940,9 @@ impl Runtime {
     }
 
     fn release_frame(&mut self, frame: &Frame) {
+        if matches!(frame.kind, FrameKind::Script { .. }) && frame.vim9 && self.state.module_status(frame.sid).1 {
+            self.state.module_loading(frame.sid, false, false);
+        }
         for _ in frame.cstack.iter().filter(|cond| cond.kind == CondKind::Try && cond.in_catch) {
             self.leave_catch();
         }
@@ -1207,11 +1237,19 @@ impl Runtime {
     }
 
     pub(crate) fn autocmd_frames(&mut self, event: usize, matched: &str, group: Option<usize>) -> Vec<Frame> {
+        self.autocmd_frames_impl(event, matched, group, false)
+    }
+
+    pub(crate) fn explicit_autocmd_frames(&mut self, event: usize, matched: &str, group: Option<usize>) -> Vec<Frame> {
+        self.autocmd_frames_impl(event, matched, group, true)
+    }
+
+    fn autocmd_frames_impl(&mut self, event: usize, matched: &str, group: Option<usize>, explicit: bool) -> Vec<Frame> {
         if self.frames.iter().any(|frame| frame.noautocmd) { return Vec::new(); }
         // Before the first command runs, frames are only queued siblings.
         let parent = (!self.current_command.is_empty()).then(|| self.frames.iter().rev().find(|frame| frame.autocmd)).flatten();
         let level = parent.map_or(0, |frame| frame.autocmd_level);
-        if level >= 10 || parent.is_some_and(|frame| !frame.autocmd_nested) { return Vec::new(); }
+        if level >= 10 || !explicit && parent.is_some_and(|frame| !frame.autocmd_nested) { return Vec::new(); }
         let file_event = !matches!(
             super::autocmd::event_name(event),
             "FileType" | "Syntax" | "ColorScheme" | "ColorSchemePre" | "User" | "OptionSet"
@@ -1448,6 +1486,7 @@ impl Runtime {
             if !super::vvars::writable(&key_text) {
                 return Err(Fail::Error(VimError::new(46, format!("Cannot change read-only variable \"{}\"", String::from_utf8_lossy(name)))));
             }
+            let value = super::vvars::assignment(&key_text, &self.state.vvar(&key_text), value)?;
             self.state.set_vvar(&key_text, value);
             return Ok(());
         }
@@ -1552,17 +1591,17 @@ impl Runtime {
         let mut all = funcref.args().to_vec();
         all.extend(args);
         if let Some(class) = funcref.class() {return super::objects::construct(self, host, class, &funcref.name().to_str_lossy(), all, funcref.specialization());}
-        if let Some(function) = funcref.specialization() {return self.call_user_function_inner(host, function, all, self_dict, None, funcref.receiver());}
-        if let Some(receiver) = funcref.receiver() {
-            let function = self.state.function(funcref.name().as_bytes()).ok_or_else(||VimError::unknown_function(funcref.name().as_bytes()))?;
-            return self.call_user_function_receiver(host, function, all, Some(receiver));
-        }
         let dict = match (funcref.dict(), self_dict) {
             (Some(bound), _) if !funcref.auto_bound() => Some(bound.clone()),
             (_, Some(dict)) => Some(dict),
             (Some(bound), None) => Some(bound.clone()),
             (None, None) => None,
         };
+        if let Some(function) = funcref.specialization() {return self.call_user_function_inner(host, function, all, dict, None, funcref.receiver());}
+        if let Some(receiver) = funcref.receiver() {
+            let function = self.state.function(funcref.name().as_bytes()).ok_or_else(||VimError::unknown_function(funcref.name().as_bytes()))?;
+            return self.call_user_function_receiver(host, function, all, Some(receiver));
+        }
         self.call_function(host, funcref.name().as_bytes(), all, dict)
     }
 
@@ -1692,7 +1731,9 @@ impl Runtime {
             for (index, value) in rest.iter().enumerate() {
                 arguments.insert(format!("{}", index + 1), value.clone());
             }
-            arguments.insert("000", Value::list(rest));
+            let rest = super::value::List::new(rest);
+            rest.data().lock = Lock::Fixed;
+            arguments.insert("000", Value::List(rest));
         }
         {
             let mut data = arguments.data();
@@ -1852,4 +1893,51 @@ fn check_funcref_name(name: &[u8], scope: char) -> Result<(), Fail> {
         return Err(Fail::Error(VimError::new(704, format!("Funcref variable name must start with a capital: {}", String::from_utf8_lossy(name)))));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod redirect_tests {
+    use super::*;
+    use crate::vimscript::tests::MemoryHost;
+
+    fn command(state: &ScriptState, host: &mut MemoryHost, text: &str) -> Runtime {
+        let mut runtime = Runtime::new(state.clone());
+        runtime.push_command_line(text, 0);
+        assert_eq!(runtime.run(host), RunState::Complete);
+        runtime
+    }
+
+    #[test]
+    fn register_capture_budget_survives_runtimes_and_preserves_complete_messages() {
+        let state = ScriptState::new();
+        let mut host = MemoryHost::new();
+        state.set_redirect(Some(Redirect::Register { name: 'q', text: Vec::new(), limit: 5 }));
+        assert!(command(&state, &mut host, "echon 'abc'").errors.is_empty());
+        assert!(command(&state, &mut host, "echon 'de'").errors.is_empty());
+        assert_eq!(host.get_register('q').unwrap().to_bytes().unwrap(), b"abcde");
+
+        let failed = command(&state, &mut host, "echo 'X' | let g:ran = 1");
+        assert!(failed.aborted);
+        assert_eq!(failed.errors.len(), 1);
+        assert_eq!(failed.errors[0].error.message, "redirection output limit exceeded");
+        assert!(state.globals().get_str("ran").is_none());
+        assert_eq!(host.get_register('q').unwrap().to_bytes().unwrap(), b"abcde");
+        assert!(state.take_redirect().is_none());
+
+        assert!(command(&state, &mut host, "echo 'available'").errors.is_empty());
+        assert_eq!(host.get_register('q').unwrap().to_bytes().unwrap(), b"abcde");
+    }
+
+    #[test]
+    fn variable_capture_append_checks_the_combined_output_before_publication() {
+        let state = ScriptState::new();
+        let mut host = MemoryHost::new();
+        assert!(command(&state, &mut host, "let g:captured = 'old'").errors.is_empty());
+        state.set_redirect(Some(Redirect::Variable { name: b"g:captured".to_vec(), append: true, text: b"new".to_vec(), limit: 5 }));
+        let failed = command(&state, &mut host, "redir END");
+        assert!(failed.aborted);
+        assert_eq!(failed.errors[0].error.message, "redirection output limit exceeded");
+        assert_eq!(state.globals().get_str("captured").unwrap().to_bytes().unwrap(), b"old");
+        assert!(state.take_redirect().is_none());
+    }
 }

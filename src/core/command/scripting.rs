@@ -22,6 +22,7 @@ pub(crate) enum ScriptAction {
         argument: String,
         /// Script id for `<SID>` in mappings.
         sid: usize,
+        lnum: usize,
         visual_range: Option<ex_addresses::ResolvedExRange>,
     },
     /// Move the cursor to a one-based physical source line and byte column.
@@ -47,8 +48,8 @@ impl YankEvent {
         let dict = crate::vimscript::Dict::from_pairs([
             ("regcontents".into(), Value::List(contents)),
             ("regname".into(), Value::from(self.register.clone())), ("regtype".into(), Value::from(self.kind.clone())),
-            ("operator".into(), Value::from("y")), ("inclusive".into(), Value::Number(self.inclusive as i64)),
-            ("visual".into(), Value::Number(self.visual as i64)),
+            ("operator".into(), Value::from("y")), ("inclusive".into(), Value::Bool(self.inclusive)),
+            ("visual".into(), Value::Bool(self.visual)),
         ]);
         { let mut data = dict.data(); data.lock = crate::vimscript::value::Lock::Fixed;
           for item in data.items.values_mut() { item.lock = crate::vimscript::value::Lock::Fixed; } }
@@ -160,18 +161,15 @@ fn changes_file_policy(name: Option<&str>, text: &str) -> bool {
 /// Autocommand events a successful host command fires: `:colorscheme`
 /// (ColorScheme) and file type changes (FileType), matched against the
 /// scheme or file type name.
-pub(crate) fn command_events(command: &HostCommand) -> Vec<(&'static str, String)> {
+pub(crate) fn command_events(command: &HostCommand, argument: &str) -> Vec<(&'static str, String)> {
     if command.modifiers.noautocmd { return Vec::new(); }
-    let argument = command.argument.trim();
+    let argument = argument.trim();
     match command.name {
         Some("colorscheme") if !argument.is_empty() => vec![("ColorScheme", argument.to_owned())],
         Some("setfiletype") if !argument.is_empty() => vec![("FileType", argument.to_owned())],
-        Some("set" | "setlocal" | "setglobal") => argument
-            .split_whitespace()
-            .filter_map(|part| part.split_once('='))
+        Some("set" | "setlocal" | "setglobal") => argument.split_once('=')
             .filter(|(name, _)| matches!(*name, "ft" | "filetype"))
-            .map(|(_, value)| ("FileType", value.to_owned()))
-            .collect(),
+            .map(|(_, value)| vec![("FileType", value.to_owned())]).unwrap_or_default(),
         _ => Vec::new(),
     }
 }
@@ -247,6 +245,9 @@ impl CommandInterpreter {
             '%' if document.artifact_binding().is_none() && self.current_artifact.is_none() => return Ok(Value::str("")),
             _ => {}
         }
+        if let Some(value) = self.registers.get(name).filter(|value| std::str::from_utf8(value.script_bytes()).is_err()) {
+            return Ok(Value::String(value.script_bytes().into()));
+        }
         match self.read_register_value_for_put(document, name) {
             Ok(Some(value)) => Ok(Value::String(register_text(&value).into())),
             Ok(None) => Ok(Value::str("")),
@@ -264,7 +265,7 @@ impl CommandInterpreter {
 
     /// `:let @r` and `setreg()`. `kind` is `setreg()`'s explicit type; without
     /// one, a List is linewise and a String is linewise only when it ends in
-    /// a line feed, as in Vim.
+    /// LF or CR, as in Vim.
     fn set_script_register_with_type(
         &mut self,
         name: char,
@@ -296,7 +297,8 @@ impl CommandInterpreter {
             let combined = script_append_value(self.registers.get(name), value, kind, width)?;
             self.append_script_register(name, combined)
         } else {
-            let value = script_register_value(value, kind)?.with_block_width(width);
+            let value = script_register_value(value, kind)?;
+            let value = if width.is_some() { value.with_block_width(width) } else { value };
             self.write_script_register(name, value)
         };
         result.map_err(|error| VimError::plain(error.to_string()))
@@ -653,46 +655,39 @@ impl CommandInterpreter {
                 Ok(Value::Number(document.physical_line_index_at_source((byte as usize - 1).min(document.source_byte_len())).map_or(-1, |index| index as i64 + 1)))
             })(),
             "getreg" => (|| {
-                let register = args.first().map(|value| value.to_text()).transpose()?.and_then(|text| text.chars().next()).unwrap_or('"');
+                let register = args.first().map(|value| value.to_text()).transpose()?.and_then(|text| text.chars().next())
+                    .unwrap_or_else(|| self.requested_register.or(self.script_register_context).unwrap_or('"'));
                 let as_list = args.get(2).map(|value| value.to_bool()).transpose()?.unwrap_or(false);
-                if register == '=' && args.get(1).is_some_and(|value| value.to_bool().unwrap_or(false)) {
-                    let expression = self.last_expression.clone();
-                    return Ok(if as_list {
-                        // Vim's expression register always holds one line.
-                        Value::list(vec![Value::from(expression.unwrap_or_default())])
-                    } else {
-                        Value::from(expression.unwrap_or_default())
-                    });
+                if register == '=' {
+                    let value = if args.get(1).is_some_and(|value| value.to_bool().unwrap_or(false)) {
+                        Value::from(self.last_expression.clone().unwrap_or_default())
+                    } else { self.script_register(document, register)? };
+                    return Ok(if as_list { Value::list(vec![value]) } else { value });
                 }
                 if as_list && !matches!(register, ':' | '/' | '%') {
-                    // Lines end only at semantic breaks (or block rows); a
-                    // literal line feed stays inside its line, as setreg()
-                    // reads it from a List item.
-                    return Ok(match self.read_register_value_for_put(document, register) {
-                        Ok(Some(value)) => Value::list(register_lines(&value).into_iter().map(Value::from).collect()),
-                        Ok(None) if register == '=' => Value::list(vec![Value::str("")]),
+                    // Preserve List items' literal LF bytes, and exact byte
+                    // Strings even when no Unicode put projection exists.
+                    let value = if let Some(value) = self.registers.get(register)
+                        .filter(|value| std::str::from_utf8(value.script_bytes()).is_err()) {
+                        Ok(Some(value.clone()))
+                    } else { self.read_register_value_for_put(document, register) };
+                    return Ok(match value {
+                        Ok(Some(value)) => Value::list(register_lines(&value).into_iter().map(|bytes| Value::String(bytes.into())).collect()),
                         Ok(None) => Value::list(Vec::new()),
                         Err(error) => return Err(VimError::plain(format!("{error:?}")).into()),
                     });
                 }
                 let value = self.script_register(document, register)?;
-                if as_list {
-                    let text = value.to_text()?;
-                    let mut lines: Vec<Value> = text.split('\n').map(Value::from).collect();
-                    if text.ends_with('\n') {
-                        lines.pop();
-                    }
-                    return Ok(Value::list(lines));
-                }
+                if as_list { return Ok(Value::list(vec![value])); }
                 Ok(value)
             })(),
             "getregtype" => (|| {
-                let register = args.first().map(|value| value.to_text()).transpose()?.and_then(|text| text.chars().next()).unwrap_or('"');
+                let register = args.first().map(|value| value.to_text()).transpose()?.and_then(|text| text.chars().next()).unwrap_or_else(|| self.requested_register.or(self.script_register_context).unwrap_or('"'));
                 if matches!(register, '%' | '#' | '=' | ':' | '/' | '.' | '_') {
                     // Vim reports these as characterwise even when empty.
                     return Ok(Value::str("v"));
                 }
-                Ok(Value::from(match self.read_register_value_for_put(document, register) {
+                Ok(Value::from(match self.read_register_value(document, register) {
                     Ok(Some(value)) => match value.kind {
                         RegisterKind::Linewise => "V".to_owned(),
                         RegisterKind::Blockwise => format!("\x16{}", value.block_width()),
@@ -702,13 +697,13 @@ impl CommandInterpreter {
                 }))
             })(),
             "getreginfo" => (|| {
-                let register = args.first().map(|value| value.to_text()).transpose()?.and_then(|text| text.chars().next()).unwrap_or('"');
+                let register = args.first().map(|value| value.to_text()).transpose()?.and_then(|text| text.chars().next()).unwrap_or_else(|| self.requested_register.or(self.script_register_context).unwrap_or('"'));
                 let register = register.to_ascii_lowercase();
                 let present = match register {
                     '=' | '_' => true,
                     '/' => self.last_search.is_some(),
                     ':' => self.last_command_line.is_some(),
-                    _ => matches!(self.read_register_value_for_put(document, register), Ok(Some(_))),
+                    _ => matches!(self.read_register_value(document, register), Ok(Some(_))),
                 };
                 if !present {
                     return Ok(Value::Dict(vimscript::Dict::new()));
@@ -761,7 +756,8 @@ impl CommandInterpreter {
             "hlexists" | "hlID" | "synID" | "synIDtrans" | "foldlevel" | "pumvisible" | "complete_check" | "getcmdwintype"
             | "reg_recording" | "reg_executing" | "getchangelist" | "haslocaldir" => Ok(match name {
                 "reg_recording" => Value::String(self.recording.as_ref().map(|(name, _)| name.to_string()).unwrap_or_default().into()),
-                "reg_executing" | "getcmdwintype" => Value::str(""),
+                "reg_executing" => Value::from(self.executing_macro.map(|name| name.to_string()).unwrap_or_default()),
+                "getcmdwintype" => Value::str(""),
                 "getchangelist" => {
                     let lines = document.hard_line_snapshot();
                     let (changes, index) = self.change_list();
@@ -863,7 +859,7 @@ impl CommandInterpreter {
         if range.trim() == "%" {
             return Ok((1, count));
         }
-        let resolve = |part: &str| -> Result<i64, VimError> {
+        let resolve = |part: &str, current: i64| -> Result<i64, VimError> {
             let part = part.trim();
             if part.is_empty() {
                 return Ok(current);
@@ -899,9 +895,13 @@ impl CommandInterpreter {
             Ok(value)
         };
         let (first, last) = match range.split_once([',', ';']) {
-            Some((first, last)) => (resolve(first)?, resolve(last)?),
+            Some((first, last)) => {
+                let first = resolve(first, current)?;
+                let last_current = if range.as_bytes().get(range.find([',', ';']).unwrap()) == Some(&b';') { first } else { current };
+                (first, resolve(last, last_current)?)
+            }
             None => {
-                let line = resolve(range)?;
+                let line = resolve(range, current)?;
                 (line, line)
             }
         };
@@ -912,12 +912,16 @@ impl CommandInterpreter {
     }
 
     /// Dynamic variables: `v:count`, `v:count1`, `v:register`, `b:changedtick`, ...
+    pub(crate) fn script_requested_register(&self) -> Option<char> {
+        self.requested_register
+    }
+
     pub(crate) fn script_dynamic_variable(&self, document: &Document, name: &[u8]) -> Option<Value> {
         Some(match name {
             b"v:count" | b"count" => Value::Number(self.script_count.unwrap_or(0) as i64),
             b"v:count1" => Value::Number(self.script_count.unwrap_or(1).max(1) as i64),
             b"v:prevcount" => Value::Number(0),
-            b"v:register" => Value::String(self.requested_register.unwrap_or('"').to_string().into()),
+            b"v:register" => Value::String(self.requested_register.or(self.script_register_context).unwrap_or('"').to_string().into()),
             b"v:hlsearch" => Value::Number((self.search_options.hlsearch && !self.search_highlight_suppressed) as i64),
             b"v:searchforward" => Value::Number(self.last_search.as_ref().is_none_or(|(direction, _)| *direction == SearchDirection::Forward) as i64),
             b"v:insertmode" => Value::str(if self.mode == Mode::Replace { "r" } else { "i" }),
@@ -992,100 +996,78 @@ fn setreg_options(options: &str) -> Result<(bool, Option<RegisterKind>, Option<u
 /// separates lines, so it is a semantic break; in a List each item is one
 /// line and a line feed inside an item is that line's literal content.
 fn script_register_value(value: &Value, kind: Option<RegisterKind>) -> Result<RegisterValue, VimError> {
-    let invalid = |error| VimError::plain(format!("{error:?}"));
     match value {
         Value::List(list) => {
-            let lines: Vec<String> = list.snapshot().iter().map(|item| item.to_text()).collect::<Result<_, _>>()?;
-            let kind = kind.unwrap_or(RegisterKind::Linewise);
-            register_from_lines(&lines, kind)
+            let lines: Vec<Vec<u8>> = list.snapshot().iter().map(Value::to_bytes).collect::<Result<_, _>>()?;
+            register_from_lines(&lines, kind.unwrap_or(RegisterKind::Linewise))
         }
         other => {
-            let mut text = other.to_text()?;
-            let kind = kind.unwrap_or(if text.ends_with('\n') { RegisterKind::Linewise } else { RegisterKind::Characterwise });
-            match kind {
-                RegisterKind::Blockwise => {
-                    if text.ends_with('\n') { text.pop(); }
-                    RegisterValue::try_new(text, kind, Vec::new()).map_err(invalid)
-                }
-                RegisterKind::Linewise => {
-                    if !text.ends_with('\n') { text.push('\n'); }
-                    Ok(RegisterValue::linewise(text))
-                }
-                RegisterKind::Characterwise => Ok(RegisterValue::characterwise(text)),
-            }
+            let mut bytes = other.to_bytes()?;
+            let kind = kind.unwrap_or(if bytes.ends_with(b"\n") || bytes.ends_with(b"\r") { RegisterKind::Linewise } else { RegisterKind::Characterwise });
+            if kind == RegisterKind::Blockwise && bytes.ends_with(b"\n") { bytes.pop(); }
+            if kind == RegisterKind::Linewise && !bytes.ends_with(b"\n") { bytes.push(b'\n'); }
+            Ok(RegisterValue::from_script_bytes(bytes, kind))
         }
     }
 }
 
-/// A register value from its lines. Each line is literal; lines are joined by
-/// semantic breaks, or by row separators in a block.
-fn register_from_lines(lines: &[String], kind: RegisterKind) -> Result<RegisterValue, VimError> {
-    let invalid = |error| VimError::plain(format!("{error:?}"));
-    if kind == RegisterKind::Blockwise {
-        if lines.iter().any(|line| line.contains('\n')) {
-            return Err(VimError::plain("E475: Invalid argument: a block row cannot contain a line feed"));
-        }
-        return RegisterValue::try_new(lines.join("\n"), kind, Vec::new()).map_err(invalid);
+/// Each List item is literal; only the inserted delimiters are semantic breaks.
+fn register_from_lines(lines: &[Vec<u8>], kind: RegisterKind) -> Result<RegisterValue, VimError> {
+    if kind == RegisterKind::Blockwise && lines.iter().any(|line| line.contains(&b'\n')) {
+        return Err(VimError::plain("E475: Invalid argument: a block row cannot contain a line feed"));
     }
-    let mut text = String::new();
+    let mut bytes = Vec::new();
     let mut breaks = Vec::new();
     for (index, line) in lines.iter().enumerate() {
         if index > 0 {
-            breaks.push(text.len());
-            text.push('\n');
+            if kind != RegisterKind::Blockwise { breaks.push(bytes.len()); }
+            bytes.push(b'\n');
         }
-        text.push_str(line);
+        bytes.extend_from_slice(line);
     }
     if kind == RegisterKind::Linewise {
-        breaks.push(text.len());
-        text.push('\n');
+        breaks.push(bytes.len());
+        bytes.push(b'\n');
     }
-    RegisterValue::try_new(text, kind, breaks).map_err(invalid)
+    RegisterValue::from_script_parts(bytes, kind, breaks).map_err(|error| VimError::plain(error.to_string()))
 }
 
-/// `setreg()` and `:let @R` appending, like Vim's `str_to_reg`: the result
-/// takes the appended value's type, and only a String appended to a
-/// characterwise register continues its last line.
+/// Script append takes the new value's type. Only a String appended to a
+/// characterwise register continues the destination's last line.
 fn script_append_value(existing: Option<&RegisterValue>, value: &Value, kind: Option<RegisterKind>, width: Option<usize>) -> Result<RegisterValue, VimError> {
-    let kind = script_register_value(value, kind)?.kind;
-    let appended: Vec<String> = match value {
-        Value::List(list) => list.snapshot().iter().map(|item| item.to_text()).collect::<Result<_, _>>()?,
+    let incoming = script_register_value(value, kind)?;
+    let kind = incoming.kind;
+    let appended: Vec<Vec<u8>> = match value {
+        Value::List(list) => list.snapshot().iter().map(Value::to_bytes).collect::<Result<_, _>>()?,
         other => {
-            let text = other.to_text()?;
-            let mut lines: Vec<String> = text.split('\n').map(str::to_owned).collect();
-            if kind != RegisterKind::Characterwise && text.ends_with('\n') {
-                lines.pop();
-            }
+            let bytes = other.to_bytes()?;
+            let mut lines: Vec<Vec<u8>> = bytes.split(|byte| *byte == b'\n').map(<[u8]>::to_vec).collect();
+            if kind != RegisterKind::Characterwise && bytes.ends_with(b"\n") { lines.pop(); }
             lines
         }
     };
-    // As in Vim, an appended block's width comes from the appended rows.
-    let width = width.or_else(|| appended.iter().map(|line| registers::block_cells(line)).max());
+    let width = width.or_else(|| (kind == RegisterKind::Blockwise).then(|| incoming.block_width()));
     let mut lines = existing.map(register_lines).unwrap_or_default();
     let mut appended = appended.into_iter();
     if existing.is_some_and(|existing| existing.kind == RegisterKind::Characterwise) && !matches!(value, Value::List(_)) {
-        if let (Some(last), Some(first)) = (lines.last_mut(), appended.next()) {
-            last.push_str(&first);
-        }
+        if let (Some(last), Some(first)) = (lines.last_mut(), appended.next()) { last.extend_from_slice(&first); }
     }
     lines.extend(appended);
     Ok(register_from_lines(&lines, kind)?.with_block_width(width))
 }
 
-/// A register's lines for `getreg(r, 1, 1)`: split at semantic breaks, or at
-/// every row of a block, without a linewise value's final empty line.
-fn register_lines(value: &RegisterValue) -> Vec<String> {
+/// Script byte rows split only at semantic delimiters or block separators.
+fn register_lines(value: &RegisterValue) -> Vec<Vec<u8>> {
+    let bytes = value.script_bytes();
     let mut lines = Vec::new();
     let mut start = 0;
-    for (offset, _) in value.text.match_indices('\n') {
-        if value.kind == RegisterKind::Blockwise || value.is_hard_break(offset) {
-            lines.push(value.text[start..offset].to_owned());
+    for (offset, byte) in bytes.iter().enumerate() {
+        if *byte == b'\n' && (value.kind == RegisterKind::Blockwise || value.script_hard_break_offsets().binary_search(&offset).is_ok()) {
+            lines.push(bytes[start..offset].to_vec());
             start = offset + 1;
         }
     }
-    if value.kind != RegisterKind::Linewise || start < value.text.len() {
-        lines.push(value.text[start..].to_owned());
-    }
+    if value.kind != RegisterKind::Linewise || start < bytes.len() { lines.push(bytes[start..].to_vec()); }
     lines
 }
 
@@ -1155,9 +1137,15 @@ impl ScriptHost for InterpreterHost<'_> {
             if let Some(error) = error {
                 return Err(Fail::Error(error));
             }
-        }
-        for (event, matched) in command_events(command) {
-            rt.queue_event_name(event, matched);
+            let argument = if text == command.text { command.argument.as_str() } else { text.split_once(' ').map_or("", |(_, argument)| argument) };
+            for (event, matched) in command_events(command, argument) {
+                if event == "FileType" {
+                    let matched = self.commands.script_option(self.document, "filetype")?.to_text()?;
+                    rt.fire_event_now(self, event, &matched)?;
+                } else {
+                    rt.queue_event_name(event, matched);
+                }
+            }
         }
         Ok(())
     }
@@ -1168,7 +1156,7 @@ impl ScriptHost for InterpreterHost<'_> {
         let text = super::options::set_command_for(self.commands, self.document, name, scope, value)?;
         let (verb, argument) = text.split_once(' ').unwrap_or((&text, ""));
         let command = HostCommand { text: text.clone(), name: crate::vimscript::excmds::lookup(verb),
-            bang: false, range: String::new(), argument: argument.into(), modifiers: Default::default(), sid: rt.current_sid() };
+            bang: false, range: String::new(), argument: argument.into(), modifiers: Default::default(), sid: rt.current_sid(), lnum: 0 };
         self.execute(rt, &command)
     }
     fn option_exists(&self, name: &str, working: bool) -> bool {
@@ -1247,9 +1235,9 @@ pub(crate) fn host_command_exists(name: &str) -> bool {
 
 impl CommandInterpreter {
     /// A mapping command by full name; a listing becomes a message.
-    pub(crate) fn execute_mapping_command(&mut self, name: &str, bang: bool, argument: &str, sid: usize) -> CommandOutput {
+    pub(crate) fn execute_mapping_command(&mut self, name: &str, bang: bool, argument: &str, sid: usize, lnum: usize) -> CommandOutput {
         self.mapping_pending.clear();
-        match self.mappings.execute_command(name, bang, argument, sid) {
+        match self.mappings.execute_command(name, bang, argument, sid, lnum) {
             Ok(None) => CommandOutput::complete(),
             Ok(Some(listing)) => {
                 let mut outcome = ExOutcome::default();
@@ -1267,7 +1255,7 @@ impl CommandInterpreter {
                 else { CommandOutput { status: CommandStatus::Error("E790: undojoin is not allowed after undo".into()), ..CommandOutput::complete() } };
         }
         if let Some(name) = command.name.filter(|name| mappings::is_mapping_command(name)) {
-            return self.execute_mapping_command(name, command.bang, &command.argument, command.sid);
+            return self.execute_mapping_command(name, command.bang, &command.argument, command.sid, command.lnum);
         }
         if let Some(name) = command.name.filter(|name| abbreviations::is_abbreviation_command(name)) {
             return self.execute_abbreviation_command(name, &command.argument, command.sid);
@@ -1350,13 +1338,13 @@ impl CommandInterpreter {
         visual_range: Option<&ex_addresses::ResolvedExRange>,
     ) -> CommandOutput {
         match action {
-            ScriptAction::Command { text, name, bang, argument, sid, .. } => {
+            ScriptAction::Command { text, name, bang, argument, sid, lnum, .. } => {
                 if name == Some("undojoin") {
                     return if document.join_next_change() { CommandOutput::complete() }
                         else { CommandOutput { status: CommandStatus::Error("E790: undojoin is not allowed after undo".into()), ..CommandOutput::complete() } };
                 }
                 if let Some(name) = name.filter(|name| mappings::is_mapping_command(name)) {
-                    return self.execute_mapping_command(name, bang, &argument, sid);
+                    return self.execute_mapping_command(name, bang, &argument, sid, lnum);
                 }
                 if let Some(name) = name.filter(|name| abbreviations::is_abbreviation_command(name)) {
                     return self.execute_abbreviation_command(name, &argument, sid);

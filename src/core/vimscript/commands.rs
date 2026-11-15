@@ -514,6 +514,7 @@ pub(crate) fn execute_command(rt: &mut Runtime, host: &mut dyn ScriptHost, line:
             argument: String::new(),
             modifiers: header.modifiers,
             sid: rt.current_sid(),
+            lnum: rt.error_context().lnum.unwrap_or(0),
         };
         rt.current_command.clear();
         let result = host.execute(rt, &command);
@@ -594,7 +595,8 @@ pub(crate) fn execute_command(rt: &mut Runtime, host: &mut dyn ScriptHost, line:
     if super::excmds::is_map_like(full) {
         argument = expand_leaders(rt, host, &argument);
     }
-    let command = host_command(src, &header, full, &argument, rt.current_sid());
+    let mut command = host_command(src, &header, full, &argument, rt.current_sid());
+    command.lnum = rt.error_context().lnum.unwrap_or(0);
     rt.current_command = full.to_string();
     let silent_errors = header.modifiers.silent_errors;
     let silent = header.modifiers.silent && !header.modifiers.unsilent;
@@ -651,6 +653,7 @@ fn host_command(src: &[u8], header: &Header, full: &'static str, argument: &[u8]
         argument: String::from_utf8_lossy(argument).into_owned(),
         modifiers: header.modifiers.clone(),
         sid,
+        lnum: 0,
     }
 }
 
@@ -670,7 +673,7 @@ pub fn single_host_command(state: &super::ScriptState, line: &str) -> Option<Hos
             return None;
         }
         let range = String::from_utf8_lossy(&header.range).into_owned();
-        return Some(HostCommand { text: range.clone(), name: None, bang: false, range, argument: String::new(), modifiers: Modifiers::default(), sid: 0 });
+        return Some(HostCommand { text: range.clone(), name: None, bang: false, range, argument: String::new(), modifiers: Modifiers::default(), sid: 0, lnum: 0 });
     }
     let name = String::from_utf8_lossy(&header.name);
     if header.name[0].is_ascii_uppercase() && (state.user_command(&name).is_some() || !state.user_commands_with_prefix(&name).is_empty()) {
@@ -1043,7 +1046,7 @@ fn run_script_command(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], h
                 let command = HostCommand {
                     text: format!("source {argument}"), name: Some("source"),
                     bang: false, range: String::new(), argument,
-                    modifiers: header.modifiers.clone(), sid: rt.current_sid(),
+                    modifiers: header.modifiers.clone(), sid: rt.current_sid(), lnum: rt.error_context().lnum.unwrap_or(0),
                 };
                 outcome(next, host.execute(rt, &command))
             } else {
@@ -1060,7 +1063,7 @@ fn run_script_command(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], h
             let command = HostCommand {
                 text: format!("{name}{} {argument}", if header.bang { "!" } else { "" }),
                 name: Some(name), bang: header.bang, range: String::new(), argument,
-                modifiers: header.modifiers.clone(), sid: rt.current_sid(),
+                modifiers: header.modifiers.clone(), sid: rt.current_sid(), lnum: rt.error_context().lnum.unwrap_or(0),
             };
             outcome(next, host.execute(rt, &command))
         }
@@ -1140,6 +1143,7 @@ fn run_script_command(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], h
                 argument: text[4..].to_string(),
                 modifiers: Modifiers::default(),
                 sid: rt.current_sid(),
+                lnum: rt.error_context().lnum.unwrap_or(0),
             };
             let result = host.execute(rt, &command);
             outcome(next, result)
@@ -1772,7 +1776,7 @@ fn cmd_return(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], at: usize
         return error(Next::NextLine, VimError::new(133, ":return not inside a function"));
     }
     let at = skip_white(src, at);
-    let (value, next) = if at >= src.len() || src[at] == b'|' || src[at] == b'"' && !rt.vim9() {
+    let (value, next) = if at >= src.len() || src[at] == b'|' {
         (Value::Number(0), after_expression(src, at, true).unwrap_or(Next::NextLine))
     } else {
         let mut eval = Eval::new(rt, host, src, at, true);
@@ -1796,6 +1800,18 @@ fn cmd_call(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], header: &He
     if at >= src.len() {
         return error(Next::NextLine, VimError::new(471, "Argument required"));
     }
+    let range = if header.range.is_empty() {
+        None
+    } else {
+        match host_range(rt, host, &header.range) {
+            Ok(range) => Some(range),
+            Err(fail) => return outcome(Next::NextLine, Err(fail)),
+        }
+    };
+    // Arguments are evaluated at each addressed line, including the first.
+    if let Some((first, _)) = range {
+        if let Err(fail) = host_set_line(rt, host, first) { return outcome(Next::NextLine, Err(fail)); }
+    }
     let mut eval = Eval::new(rt, host, src, at, true);
     let callee = eval.parse_callee();
     let mut end = eval.pos;
@@ -1807,28 +1823,30 @@ fn cmd_call(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], header: &He
     let Some(callee) = callee else {
         return error(Next::NextLine, VimError::new(129, format!("Function name required: {}", String::from_utf8_lossy(&src[at..]))));
     };
-    let range = if header.range.is_empty() {
-        None
-    } else {
-        match host_range(rt, host, &header.range) {
-            Ok(range) => Some(range),
-            Err(fail) => return outcome(Next::NextLine, Err(fail)),
-        }
-    };
     // More subscripts after the call: evaluate synchronously.
     let rest = skip_white(src, end);
     let has_subscripts = src.get(rest) == Some(&b'[') || src[rest.min(src.len())..].starts_with(b"->") || (src.get(end) == Some(&b'.') && src.get(end + 1).is_some_and(|b| is_name_char(*b)));
-    let function = rt.state.function(callee.funcref.name().as_bytes());
+    let function = callee.funcref.specialization().or_else(|| rt.state.function(callee.funcref.name().as_bytes()));
     if has_subscripts || function.is_none() || range.is_some() && !function.as_ref().is_some_and(|f| f.flags.range) {
         let result = (|| -> EvalResult<()> {
             let value = match (&range, &function) {
-                (Some((first, last)), Some(function)) if !function.flags.range => {
+                (Some((first, last)), function) if !function.as_ref().is_some_and(|function| function.flags.range) => {
                     let mut value = Value::Number(0);
                     for line in *first..=*last {
-                        host_set_line(rt, host, line)?;
-                        let mut args = callee.funcref.args().to_vec();
-                        args.extend(callee.args.clone());
-                        value = rt.call_user_function(host, function.clone(), args, callee.funcref.dict().cloned(), Some((line, line)))?;
+                        let repeated;
+                        let current = if line == *first { &callee } else {
+                            host_set_line(rt, host, line)?;
+                            repeated = Eval::new(rt, host, src, at, true).parse_callee()?
+                                .ok_or_else(|| VimError::new(129, "Function name required"))?;
+                            &repeated
+                        };
+                        value = if let Some(function) = current.funcref.specialization().or_else(|| rt.state.function(current.funcref.name().as_bytes())) {
+                            let mut args = current.funcref.args().to_vec();
+                            args.extend(current.args.clone());
+                            rt.call_user_function(host, function, args, current.funcref.dict().cloned(), Some((line, line)))?
+                        } else {
+                            rt.call_funcref(host, &current.funcref, current.args.clone(), None)?
+                        };
                     }
                     value
                 }
@@ -2029,10 +2047,13 @@ pub(crate) fn source_file(rt: &mut Runtime, host: &mut dyn ScriptHost, argument:
 fn redir(rt: &mut Runtime, host: &mut dyn ScriptHost, argument: &[u8]) -> EvalResult<()> {
     let text = String::from_utf8_lossy(argument).trim().to_string();
     if text.eq_ignore_ascii_case("end") || text.eq_ignore_ascii_case("END") {
-        match rt.redirect.take() {
-            Some(super::exec::Redirect::Variable { name, append, text }) => {
+        match rt.state.take_redirect() {
+            Some(super::exec::Redirect::Variable { name, append, text, limit }) => {
                 let value = if append {
                     let mut existing = rt.get_variable(host, &name).ok().and_then(|v| v.to_bytes().ok()).unwrap_or_default();
+                    if existing.len().saturating_add(text.len()) > limit {
+                        return Err(Fail::Interrupt("redirection output limit exceeded".into()));
+                    }
                     existing.extend(text);
                     existing
                 } else {
@@ -2040,21 +2061,19 @@ fn redir(rt: &mut Runtime, host: &mut dyn ScriptHost, argument: &[u8]) -> EvalRe
                 };
                 rt.set_variable(host, &name, Value::String(value.into()), false)?;
             }
-            Some(super::exec::Redirect::Register { name, append, text }) => {
-                host.set_register(name, &Value::String(text.into()), append).map_err(Fail::Error)?;
-            }
+            Some(super::exec::Redirect::Register { .. }) => {}
             None => {}
         }
         return Ok(());
     }
     if let Some(rest) = text.strip_prefix("=>>") {
-        rt.redirect = Some(super::exec::Redirect::Variable { name: rest.trim().as_bytes().to_vec(), append: true, text: Vec::new() });
+        rt.state.set_redirect(Some(super::exec::Redirect::Variable { name: rest.trim().as_bytes().to_vec(), append: true, text: Vec::new(), limit: super::builtins::MAX_STRING_BYTES }));
         return Ok(());
     }
     if let Some(rest) = text.strip_prefix("=>") {
         let name = rest.trim().as_bytes().to_vec();
         rt.set_variable(host, &name, "".into(), false)?;
-        rt.redirect = Some(super::exec::Redirect::Variable { name, append: false, text: Vec::new() });
+        rt.state.set_redirect(Some(super::exec::Redirect::Variable { name, append: false, text: Vec::new(), limit: super::builtins::MAX_STRING_BYTES }));
         return Ok(());
     }
     if let Some(rest) = text.strip_prefix('@') {
@@ -2063,7 +2082,16 @@ fn redir(rt: &mut Runtime, host: &mut dyn ScriptHost, argument: &[u8]) -> EvalRe
         let rest: String = chars.collect();
         let append = rest.trim_start().starts_with(">>");
         let register = if name.is_ascii_uppercase() { name.to_ascii_lowercase() } else { name };
-        rt.redirect = Some(super::exec::Redirect::Register { name: register, append: append || name.is_ascii_uppercase(), text: Vec::new() });
+        let captured = if append || name.is_ascii_uppercase() {
+            host.get_register(register).map_err(Fail::Error)?.to_bytes()?
+        } else {
+            host.set_register(register, &Value::str(""), false).map_err(Fail::Error)?;
+            Vec::new()
+        };
+        if captured.len() > super::builtins::MAX_STRING_BYTES {
+            return Err(Fail::Interrupt("redirection output limit exceeded".into()));
+        }
+        rt.state.set_redirect(Some(super::exec::Redirect::Register { name: register, text: captured, limit: super::builtins::MAX_STRING_BYTES }));
         return Ok(());
     }
     Err(Fail::Error(VimError::plain("Viem scripts cannot redirect output to files")))
@@ -2238,7 +2266,7 @@ fn cmd_doautocmd(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], at: us
         if group.is_none() {
             if let Err(fail) = host.runtime_event(rt, name, &matched) { return outcome(next, Err(fail)); }
         }
-        frames.extend(rt.autocmd_frames(event, &matched, group));
+        frames.extend(rt.explicit_autocmd_frames(event, &matched, group));
     }
     if frames.is_empty() {
         rt.emit(host, Message::Echo(format!("No matching autocommands: {}", text.trim())));

@@ -326,12 +326,17 @@ def stage_consistency(run, args, full):
 
 
 def stage_memory(run, args):
-    cargo_artifact(run, "memory", ["--release", "--offline", "--example", "large_file_memory"], "large_file_memory")
+    executable = cargo_artifact(run, "memory", ["--release", "--offline", "--example", "large_file_memory"], "large_file_memory")
     limits = "scripts/fixtures/large-file-memory-limits.json"
+    failures = []
     for name, flags in [("standard", []), ("supplemental", ["--supplemental"]), ("rich-paste", ["--rich-paste"])]:
-        run.command("memory", name, ["python3", "scripts/measure-large-file-memory.py", *flags,
-                                     "--output", str(run.out / f"memory-{name}.json"), "--limits", limits],
-                    allow_failure=args.keep_going)
+        code, _ = run.command("memory", name, [sys.executable, "scripts/measure-large-file-memory.py", "--binary", executable, *flags,
+                                              "--output", str(run.out / f"memory-{name}.json"), "--limits", limits],
+                              allow_failure=args.keep_going)
+        if code != 0:
+            failures.append(f"{name} (exit {code})")
+    if failures:
+        raise StageFailure(f"memory: failed allocation probes: {', '.join(failures)}")
 
 
 def stage_native(run, args):

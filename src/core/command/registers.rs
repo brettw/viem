@@ -31,6 +31,15 @@ pub struct RegisterValue {
     /// A blockwise register's width given to `setreg()`; without one, the
     /// width is its widest row.
     block_width: Option<usize>,
+    /// Exact script String bytes when no Unicode text projection exists.
+    /// Script reads retain these bytes; formatted puts reject them explicitly.
+    script_bytes: Option<Arc<ScriptRegisterBytes>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ScriptRegisterBytes {
+    bytes: Vec<u8>,
+    hard_break_offsets: Vec<usize>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -108,6 +117,7 @@ impl<'a> RegisterReadContext<'a> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RegisterReadError {
+    InvalidUnicode,
     ClipboardUnavailable(ClipboardTarget),
     NoCurrentArtifact,
     ArtifactPathIsNotUtf8,
@@ -124,6 +134,7 @@ pub enum RegisterReadError {
 impl fmt::Display for RegisterReadError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidUnicode => formatter.write_str("register contents are not valid UTF-8"),
             Self::ClipboardUnavailable(target) => {
                 write!(
                     formatter,
@@ -218,6 +229,7 @@ impl RegisterValue {
             kind,
             hard_break_offsets,
             clipboard_fragment: None,
+            script_bytes: None,
             block_width: None,
         })
     }
@@ -226,7 +238,10 @@ impl RegisterValue {
     /// reports it: the width given to `setreg()`, or the widest row. Like
     /// Vim, each ASCII character, a tab included, is one cell.
     pub fn block_width(&self) -> usize {
-        self.block_width.unwrap_or_else(|| self.text.split('\n').map(block_cells).max().unwrap_or(0))
+        self.block_width.unwrap_or_else(|| match &self.script_bytes {
+            Some(raw) => script_block_width(&raw.bytes, false),
+            None => self.text.split('\n').map(block_cells).max().unwrap_or(0),
+        })
     }
 
     /// Give a blockwise register an explicit width, as `setreg()`'s `b{width}`.
@@ -235,6 +250,40 @@ impl RegisterValue {
             self.block_width = width;
         }
         self
+    }
+
+    pub(crate) fn explicit_block_width(&self) -> Option<usize> { self.block_width }
+
+    pub(crate) fn from_script_bytes(bytes: Vec<u8>, kind: RegisterKind) -> Self {
+        // Vim's String form measures with the remaining byte length, unlike
+        // List rows: a truncated leading UTF-8 byte occupies one cell there.
+        let width = (kind == RegisterKind::Blockwise && std::str::from_utf8(&bytes).is_err())
+            .then(|| script_block_width(&bytes, true));
+        let breaks = if kind == RegisterKind::Blockwise { Vec::new() }
+            else { bytes.iter().enumerate().filter_map(|(at, byte)| (*byte == b'\n').then_some(at)).collect() };
+        let mut value = Self::from_script_parts(bytes, kind, breaks).expect("breaks inferred from script bytes are valid");
+        value.block_width = width;
+        value
+    }
+
+    pub(crate) fn from_script_parts(bytes: Vec<u8>, kind: RegisterKind, hard_break_offsets: Vec<usize>) -> Result<Self, RegisterValueError> {
+        validate_break_offsets_bytes(&bytes, kind, &hard_break_offsets)?;
+        match String::from_utf8(bytes) {
+            Ok(text) => Self::try_new(text, kind, hard_break_offsets),
+            Err(error) => {
+                let mut value = Self::try_new("", kind, Vec::new())?;
+                value.script_bytes = Some(Arc::new(ScriptRegisterBytes { bytes: error.into_bytes(), hard_break_offsets }));
+                Ok(value)
+            }
+        }
+    }
+
+    pub(crate) fn script_bytes(&self) -> &[u8] {
+        self.script_bytes.as_ref().map_or(self.text.as_bytes(), |raw| raw.bytes.as_slice())
+    }
+
+    pub(crate) fn script_hard_break_offsets(&self) -> &[usize] {
+        self.script_bytes.as_ref().map_or(self.hard_break_offsets.as_slice(), |raw| raw.hard_break_offsets.as_slice())
     }
 
     pub fn hard_break_offsets(&self) -> &[usize] {
@@ -297,6 +346,14 @@ fn validate_break_offsets(
     kind: RegisterKind,
     hard_break_offsets: &[usize],
 ) -> Result<(), RegisterValueError> {
+    validate_break_offsets_bytes(text.as_bytes(), kind, hard_break_offsets)
+}
+
+fn validate_break_offsets_bytes(
+    text: &[u8],
+    kind: RegisterKind,
+    hard_break_offsets: &[usize],
+) -> Result<(), RegisterValueError> {
     let mut previous = None;
     for &offset in hard_break_offsets {
         if offset >= text.len() {
@@ -313,7 +370,7 @@ fn validate_break_offsets(
                 });
             }
         }
-        if text.as_bytes()[offset] != b'\n' {
+        if text[offset] != b'\n' {
             return Err(RegisterValueError::BreakOffsetIsNotLineFeed { offset });
         }
         if kind == RegisterKind::Blockwise {
@@ -493,6 +550,9 @@ impl Registers {
         name: char,
         context: RegisterReadContext<'_>,
     ) -> Result<Option<RegisterValue>, RegisterReadError> {
+        if self.get(name).is_some_and(|value| value.script_bytes.is_some()) {
+            return Err(RegisterReadError::InvalidUnicode);
+        }
         if let Some(normalized) = normalize_named(name) {
             if let Some(events) = self
                 .bank
@@ -642,13 +702,14 @@ impl Registers {
                 |existing| append_value(&existing.value, value),
             );
             let replay = previous.as_ref().and_then(|existing| {
-                existing.replay.as_ref().map(|events| {
+                existing.replay.as_ref().and_then(|events| {
+                    if !combined.text.starts_with(&existing.value.text) { return None; }
                     let mut events = events.clone();
                     events.extend(register_suffix_as_macro_events(
                         &combined,
                         existing.value.text.len(),
                     ));
-                    events
+                    Some(events)
                 })
             });
             self.store(
@@ -755,6 +816,33 @@ fn same_slot<T>(before: Option<&Arc<T>>, after: Option<&Arc<T>>) -> bool {
 }
 
 fn append_value(existing: &RegisterValue, appended: &RegisterValue) -> RegisterValue {
+    if existing.script_bytes().is_empty() { return appended.clone(); }
+    if existing.script_bytes.is_some() || appended.script_bytes.is_some() {
+        let kind = if existing.kind == RegisterKind::Linewise || appended.kind == RegisterKind::Linewise {
+            RegisterKind::Linewise
+        } else { existing.kind };
+        let mut bytes = existing.script_bytes().to_vec();
+        let mut breaks = existing.script_hard_break_offsets().to_vec();
+        if existing.kind == RegisterKind::Blockwise || appended.kind == RegisterKind::Linewise {
+            let semantic = bytes.len().checked_sub(1).is_some_and(|offset| breaks.binary_search(&offset).is_ok());
+            if !bytes.ends_with(b"\n") || kind == RegisterKind::Linewise && !semantic {
+                if kind == RegisterKind::Linewise { breaks.push(bytes.len()); }
+                bytes.push(b'\n');
+            }
+        }
+        let appended_at = bytes.len();
+        bytes.extend_from_slice(appended.script_bytes());
+        breaks.extend(appended.script_hard_break_offsets().iter().map(|offset| appended_at + offset));
+        let semantic = bytes.len().checked_sub(1).is_some_and(|offset| breaks.binary_search(&offset).is_ok());
+        if kind == RegisterKind::Linewise && (!bytes.ends_with(b"\n") || !semantic) {
+            breaks.push(bytes.len());
+            bytes.push(b'\n');
+        }
+        if kind == RegisterKind::Blockwise { breaks.clear(); }
+        return RegisterValue::from_script_parts(bytes, kind, breaks)
+            .expect("appending validated register values preserves their invariants")
+            .with_block_width(existing.explicit_block_width());
+    }
     if existing.text.is_empty() {
         return appended.clone();
     }
@@ -803,8 +891,10 @@ fn append_value(existing: &RegisterValue, appended: &RegisterValue) -> RegisterV
         // characterwise fragment originally carried that meaning.
         hard_break_offsets.clear();
     }
-    RegisterValue::try_new(text, kind, hard_break_offsets)
-        .expect("appending validated register values preserves their invariants")
+    let mut value = RegisterValue::try_new(text, kind, hard_break_offsets)
+        .expect("appending validated register values preserves their invariants");
+    value.block_width = existing.block_width;
+    value
 }
 
 fn normalize_named(name: char) -> Option<char> {
@@ -813,17 +903,7 @@ fn normalize_named(name: char) -> Option<char> {
 }
 
 fn register_value_as_macro_events(value: &RegisterValue) -> Vec<InputEvent> {
-    value
-        .text
-        .char_indices()
-        .map(|(offset, character)| {
-            if character == '\n' && value.is_hard_break(offset) {
-                InputEvent::Key(Key::Enter)
-            } else {
-                InputEvent::Key(Key::Char(character))
-            }
-        })
-        .collect()
+    register_suffix_as_macro_events(value, 0)
 }
 
 fn register_suffix_as_macro_events(value: &RegisterValue, start: usize) -> Vec<InputEvent> {
@@ -832,11 +912,15 @@ fn register_suffix_as_macro_events(value: &RegisterValue, start: usize) -> Vec<I
         .char_indices()
         .map(|(relative, character)| {
             let offset = start + relative;
-            if character == '\n' && value.is_hard_break(offset) {
-                InputEvent::Key(Key::Enter)
-            } else {
-                InputEvent::Key(Key::Char(character))
-            }
+            InputEvent::Key(match character {
+                '\n' if value.is_hard_break(offset) => Key::Enter,
+                '\r' => Key::Enter,
+                '\u{1b}' => Key::Escape,
+                '\t' => Key::Tab,
+                '\u{8}' => Key::Backspace,
+                c if c.is_ascii_control() && ('\u{1}'..='\u{1a}').contains(&c) => Key::Ctrl((c as u8 + b'a' - 1) as char),
+                _ => Key::Char(character),
+            })
         })
         .collect()
 }
@@ -963,6 +1047,38 @@ pub(crate) fn is_valid_register(name: char) -> bool {
 /// Display cells of a block row as Vim counts a register's width.
 pub(crate) fn block_cells(row: &str) -> usize {
     row.chars().map(|character| if character.is_ascii() { 1 } else { unicode_width::UnicodeWidthChar::width(character).unwrap_or(1) }).sum()
+}
+
+/// Width of byte register rows, retaining Vim's <xx> display for invalid
+/// bytes. Length-limited String input counts an incomplete leading byte as
+/// one cell; List input counts each invalid byte as four cells.
+fn script_block_width(bytes: &[u8], length_limited: bool) -> usize {
+    let mut maximum = 0;
+    let mut width = 0;
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'\n' {
+            maximum = maximum.max(width);
+            width = 0;
+            at += 1;
+            continue;
+        }
+        let length = match bytes[at] {
+            0..=0x7f => 1, 0xc2..=0xdf => 2, 0xe0..=0xef => 3, 0xf0..=0xf4 => 4,
+            _ => 1,
+        };
+        let character = bytes.get(at..at + length).and_then(|encoded| std::str::from_utf8(encoded).ok());
+        if let Some(character) = character {
+            width += block_cells(character);
+            at += length;
+        } else {
+            let truncated = length_limited && std::str::from_utf8(&bytes[at..]).err()
+                .is_some_and(|error| error.valid_up_to() == 0 && error.error_len().is_none());
+            width += if truncated { 1 } else { 4 };
+            at += 1;
+        }
+    }
+    maximum.max(width)
 }
 
 fn is_writable(name: char) -> bool {

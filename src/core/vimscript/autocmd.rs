@@ -134,17 +134,29 @@ impl AutocmdTable {
         self.groups[group - 1] = None;
         Ok(in_use)
     }
-    pub fn add(&mut self, mut autocmd: Autocmd) {
-        self.next_id += 1;
-        autocmd.id = self.next_id;
-        self.entries.push(autocmd);
+    pub fn add(&mut self, autocmd: Autocmd) {
+        let patterns = match &autocmd.pattern {
+            AutocmdPattern::Buffer => vec![AutocmdPattern::Buffer],
+            AutocmdPattern::Pattern(patterns) => split_patterns(patterns).into_iter().map(AutocmdPattern::Pattern).collect(),
+        };
+        for pattern in patterns {
+            let mut entry = autocmd.clone();
+            self.next_id += 1;
+            entry.id = self.next_id;
+            entry.pattern = pattern;
+            self.entries.push(entry);
+        }
     }
     /// Remove definitions selected by `:autocmd!`. `None` matches anything.
     pub fn remove(&mut self, group: usize, event: Option<usize>, pattern: Option<&AutocmdPattern>) {
+        let patterns = pattern.map(|pattern| match pattern {
+            AutocmdPattern::Buffer => vec![AutocmdPattern::Buffer],
+            AutocmdPattern::Pattern(patterns) => split_patterns(patterns).into_iter().map(AutocmdPattern::Pattern).collect(),
+        });
         self.entries.retain(|entry| {
             !(entry.group == group
                 && event.is_none_or(|event| entry.event == event)
-                && pattern.is_none_or(|pattern| &entry.pattern == pattern))
+                && patterns.as_ref().is_none_or(|patterns| patterns.contains(&entry.pattern)))
         });
     }
     pub fn remove_id(&mut self, id: u64) {

@@ -835,6 +835,8 @@ pub(crate) fn start_script(rt: &mut Runtime, arguments: &[u8]) -> EvalResult<()>
         rt.state.reset_vim9_script(sid);
     }
     rt.state.set_script_vim9(sid, true);
+    rt.state.module_loading(sid, true, false);
+    rt.state.script_vars(sid).unwrap().data().exports.get_or_insert_with(Default::default);
     let frame = rt.current_frame_mut().unwrap();
     frame.vim9 = true;
     frame.abort_on_error = true;

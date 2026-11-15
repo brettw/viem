@@ -291,6 +291,18 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
         if !self.evaluate {
             return Ok(Value::Number(0));
         }
+        if self.rt.vim9() {
+            use super::types::Type;
+            let (left_type, right_type) = (Type::infer(&left), Type::infer(&right));
+            left_type.require_value()?;
+            right_type.require_value()?;
+            let compatible = matches!(left_type, Type::Any) || matches!(right_type, Type::Any)
+                || std::mem::discriminant(&left_type) == std::mem::discriminant(&right_type)
+                || matches!((&left_type, &right_type), (Type::Number, Type::Float) | (Type::Float, Type::Number));
+            if !compatible {
+                return Err(VimError::new(1072, format!("Cannot compare {left_type} with {right_type}")).into());
+            }
+        }
         if self.analyzing() {return Ok(Value::type_value(super::types::Type::Bool));}
         if self.rt.vim9() && (matches!(left, Value::Null) || matches!(right, Value::Null)) && matches!(op, CompareOp::Equal | CompareOp::NotEqual) {
             let equal = left.is_null() && right.is_null(); return Ok(Value::Bool(if op == CompareOp::Equal {equal} else {!equal}));
@@ -1310,7 +1322,7 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
                     value = self.analysis.unwrap().member(self.rt, &value, &self.src[start..self.pos])?;
                 }
                 b'[' => {
-                    self_dict = None;
+                    self_dict = match &value { Value::Dict(dict) => Some(dict.clone()), _ => None };
                     value = self.index(value)?;
                 }
                 b'.' if self.evaluate && matches!(value, Value::Class(_) | Value::Object(_)) && is_name_char(self.peek_at(1)) => {
@@ -1372,7 +1384,15 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
                     self_dict = None;
                     after_call = true;
                 }
-                _ => return Ok(value),
+                _ => {
+                    if let (Value::Funcref(reference), Some(dict)) = (&value, self_dict) {
+                        if (reference.dict().is_none() || reference.auto_bound())
+                            && reference.specialization().or_else(|| self.rt.state.function(reference.name().as_bytes())).is_some_and(|function| function.flags.dict) {
+                            return Ok(Value::Funcref(reference.bind(reference.args().to_vec(), Some(dict), true)));
+                        }
+                    }
+                    return Ok(value);
+                }
             }
         }
     }
@@ -1609,7 +1629,8 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
         let funcref = if let Some(types) = specialization {super::vim9::specialize(self.rt, &funcref, types)?} else {funcref};
         let args = self.call_arguments()?;
         let funcref = match self_dict {
-            Some(dict) if funcref.dict().is_none() || funcref.auto_bound() => {
+            Some(dict) if (funcref.dict().is_none() || funcref.auto_bound())
+                && funcref.specialization().or_else(|| self.rt.state.function(funcref.name().as_bytes())).is_some_and(|function| function.flags.dict) => {
                 funcref.bind(funcref.args().to_vec(), Some(dict), true)
             }
             _ => funcref,

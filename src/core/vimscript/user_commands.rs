@@ -222,10 +222,8 @@ pub(crate) fn expand(
         if let Some(first) = argument.chars().next() {
             if first.is_ascii_alphanumeric() || "\"-+*:.%#/=_".contains(first) {
                 let rest = argument[first.len_utf8()..].to_string();
-                if rest.is_empty() || rest.starts_with(char::is_whitespace) {
-                    register = first.to_string();
-                    argument = rest.trim_start().to_string();
-                }
+                register = first.to_string();
+                argument = rest.trim_start().to_string();
             }
         }
     }

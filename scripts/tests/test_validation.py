@@ -170,6 +170,40 @@ class ValidationTests(unittest.TestCase):
             self.assertEqual(len(set(logs)), 2)
             self.assertTrue(all(Path(log).exists() for log in logs))
 
+    def test_memory_probes_use_resolved_cargo_artifact_and_current_python(self):
+        # Cargo may report a custom target directory and a platform suffix;
+        # every probe must run that artifact instead of reconstructing a path.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = str(root / 'custom Cargo output' / 'large_file_memory.exe')
+            run = mock.Mock(out=root)
+            run.command.return_value = (0, None)
+            args = mock.Mock(keep_going=True)
+            with mock.patch.object(validate, 'cargo_artifact', return_value=binary) as artifact:
+                validate.stage_memory(run, args)
+            artifact.assert_called_once_with(run, 'memory',
+                ['--release', '--offline', '--example', 'large_file_memory'], 'large_file_memory')
+            expected = []
+            for name, flags in [('standard', []), ('supplemental', ['--supplemental']),
+                                ('rich-paste', ['--rich-paste'])]:
+                expected.append(mock.call('memory', name,
+                    [sys.executable, 'scripts/measure-large-file-memory.py', '--binary', binary, *flags,
+                     '--output', str(root / f'memory-{name}.json'),
+                     '--limits', 'scripts/fixtures/large-file-memory-limits.json'], allow_failure=True))
+            self.assertEqual(run.command.call_args_list, expected)
+
+    def test_memory_keep_going_reports_all_failures_after_attempting_every_probe(self):
+        run = mock.Mock(out=Path('validation-output'))
+        run.command.side_effect = [(1, None), (2, None), (0, None)]
+        args = mock.Mock(keep_going=True)
+        with mock.patch.object(validate, 'cargo_artifact', return_value='resolved-probe.exe'):
+            with self.assertRaisesRegex(validate.StageFailure,
+                                        r'memory: failed allocation probes: standard \(exit 1\), supplemental \(exit 2\)'):
+                validate.stage_memory(run, args)
+        self.assertEqual([call.args[1] for call in run.command.call_args_list],
+                         ['standard', 'supplemental', 'rich-paste'])
+        self.assertTrue(all(call.kwargs['allow_failure'] for call in run.command.call_args_list))
+
     def test_baseline_worktrees_and_builds_are_removed_but_results_kept(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

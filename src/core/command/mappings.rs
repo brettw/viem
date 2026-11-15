@@ -39,6 +39,7 @@ struct Mapping {
     nowait: bool,
     buffer: bool,
     sid: usize,
+    lnum: usize,
     select_as_visual: bool,
 }
 
@@ -46,6 +47,7 @@ struct Mapping {
 pub(crate) struct MappingReplayPlan {
     pub events: Vec<(InputEvent, bool)>,
     pub restore_select: bool,
+    pub register: Option<char>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -362,12 +364,12 @@ impl KeyMappings {
             None => (false, rest),
         };
         command_kind(full, bang)?;
-        Some(self.execute_command(full, bang, rest.trim_start_matches([' ', '\t']), 0).map(|_| ()))
+        Some(self.execute_command(full, bang, rest.trim_start_matches([' ', '\t']), 0, 0).map(|_| ()))
     }
 
     /// Execute a mapping command given its full name. `Ok(Some(text))` is
     /// a listing to show.
-    pub(crate) fn execute_command(&mut self, name: &str, bang: bool, argument: &str, sid: usize) -> Result<Option<String>, String> {
+    pub(crate) fn execute_command(&mut self, name: &str, bang: bool, argument: &str, sid: usize, lnum: usize) -> Result<Option<String>, String> {
         let (mode, operation) = command_kind(name, bang).ok_or_else(|| format!("E492: Not an editor command: {name}"))?;
         let (attributes, rest) = parse_attributes(argument);
         if operation == Operation::Clear {
@@ -419,6 +421,7 @@ impl KeyMappings {
                 nowait: attributes.nowait,
                 buffer: attributes.buffer,
                 sid,
+                lnum,
                 select_as_visual: mode & SELECT != 0 && mode & VISUAL != 0,
             });
         }
@@ -496,7 +499,7 @@ impl KeyMappings {
                         .fold(0, |modes, other| modes | other.mode);
                     return Value::Dict(crate::vimscript::Dict::from_pairs([
                         ("lhs".into(), Value::str(&mapping.lhs_text)),
-                        ("lhsraw".into(), Value::str(&mapping.lhs_text)),
+                        ("lhsraw".into(), Value::String(raw_mapping_keys(&mapping.lhs, &mapping.lhs_text).into())),
                         ("rhs".into(), Value::str(&mapping.rhs_text)),
                         ("silent".into(), Value::Number(mapping.silent as i64)),
                         ("noremap".into(), Value::Number(!mapping.recursive as i64)),
@@ -507,7 +510,7 @@ impl KeyMappings {
                         ("mode".into(), Value::String(mode_chars(modes).into())),
                         ("sid".into(), Value::Number(mapping.sid as i64)),
                         ("scriptversion".into(), Value::Number(1)),
-                        ("lnum".into(), Value::Number(0)),
+                        ("lnum".into(), Value::Number(mapping.lnum as i64)),
                         ("abbr".into(), Value::Number(0)),
                         ("mode_bits".into(), Value::Number(modes as i64)),
                     ]));
@@ -516,6 +519,100 @@ impl KeyMappings {
             }
         }
     }
+}
+
+/// Vim's mapping metadata uses its three-byte termcap key representation,
+/// independently of the portable private-use representation used for replay.
+fn raw_mapping_keys(keys: &[Key], spelling: &str) -> Vec<u8> {
+    use crate::vimscript::keys::{SpecialKey, SPECIAL_BASE};
+    fn special(key: SpecialKey) -> (u8, u8) {
+        use SpecialKey::*;
+        match key {
+            Up => (b'k', b'u'), Down => (b'k', b'd'), Left => (b'k', b'l'), Right => (b'k', b'r'),
+            Home => (b'k', b'h'), End => (b'@', b'7'), PageUp => (b'k', b'P'), PageDown => (b'k', b'N'),
+            Insert => (b'k', b'I'), Delete => (b'k', b'D'), Backspace => (b'k', b'b'),
+            Help => (b'%', b'1'), Undo => (b'&', b'8'),
+            F(n @ 1..=9) => (b'k', b'0' + n), F(10) => (b'k', b';'),
+            F(n @ 11..=19) => (b'F', b'0' + n - 10), F(n) => (b'F', b'A' + n - 20),
+            Plug => (253, 83), Snr => (253, 82), Cmd => (253, 103), ScriptCmd => (253, 104),
+            Ignore => (253, 53), Nul => (255, b'X'),
+            KeypadHome => (b'K', b'1'), KeypadEnd => (b'K', b'4'),
+            KeypadPageUp => (b'K', b'3'), KeypadPageDown => (b'K', b'5'),
+            KeypadInsert => (253, 79), KeypadDelete => (253, 80),
+            KeypadPlus => (b'K', b'6'), KeypadMinus => (b'K', b'7'), KeypadDivide => (b'K', b'8'),
+            KeypadMultiply => (b'K', b'9'), KeypadEnter => (b'K', b'A'), KeypadPoint => (b'K', b'B'),
+            Keypad(n) => (b'K', b'C' + n), Paste => (b'P', b'S'),
+            Mouse(n) => match n {
+                0..=8 => (253, 44 + n), 9..=14 => (253, 89 + n - 9),
+                15 => (253, 76), 16 => (253, 75), 17 => (253, 78), 18 => (253, 77),
+                19 => (253, 100), 20 => (253, 69), 21 => (253, 70),
+                22 => (251, b'X'), 23 => (247, b'X'), 24 => (246, b'X'),
+                25 => (243, b'X'), 26 => (241, b'X'), 27 => (238, b'X'),
+                28 => (237, b'X'), _ => (236, b'X'),
+            },
+        }
+    }
+    let mut bytes = Vec::new();
+    for key in keys {
+        let (code, modifiers) = match *key {
+            Key::Char(c) if (SPECIAL_BASE..SPECIAL_BASE + 0x2000).contains(&(c as u32)) => {
+                (SpecialKey::from_code(c as u32 - SPECIAL_BASE).map(special), 0)
+            }
+            Key::Char(c) => { bytes.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes()); continue; }
+            Key::Ctrl(c) => { bytes.push((c.to_ascii_uppercase() as u8) & 0x1f); continue; }
+            Key::Escape => { bytes.push(27); continue; }
+            Key::Enter => { bytes.push(13); continue; }
+            Key::Tab => { bytes.push(9); continue; }
+            Key::BackTab => (Some((b'k', b'B')), 0),
+            Key::Backspace => (Some(special(SpecialKey::Backspace)), 0),
+            Key::Delete => (Some(special(SpecialKey::Delete)), 0),
+            Key::Up => (Some(special(SpecialKey::Up)), 0),
+            Key::Down => (Some(special(SpecialKey::Down)), 0),
+            Key::Left => (Some(special(SpecialKey::Left)), 0),
+            Key::Right => (Some(special(SpecialKey::Right)), 0),
+            Key::Home => (Some(special(SpecialKey::Home)), 0),
+            Key::End => (Some(special(SpecialKey::End)), 0),
+            Key::PageUp => (Some(special(SpecialKey::PageUp)), 0),
+            Key::PageDown => (Some(special(SpecialKey::PageDown)), 0),
+            Key::Function { number, modifiers } if modifiers & 1 != 0 => (Some((253, 5 + number)), modifiers & !1),
+            Key::Function { number, modifiers } => (Some(special(SpecialKey::F(number))), modifiers),
+            Key::Keypad { code, modifiers } => (SpecialKey::from_code(code as u32).map(special), modifiers),
+            Key::ModifiedNavigation { key, modifiers } => {
+                let simplified = match (key, modifiers) {
+                    (NavigationKey::Up, 1) => Some((253, 4)),
+                    (NavigationKey::Down, 1) => Some((253, 5)),
+                    (NavigationKey::Left, 1) => Some((b'#', b'4')),
+                    (NavigationKey::Right, 1) => Some((b'%', b'i')),
+                    (NavigationKey::Home, 1) => Some((b'#', b'2')),
+                    (NavigationKey::End, 1) => Some((b'*', b'7')),
+                    (NavigationKey::Left, 2) => Some((253, 85)),
+                    (NavigationKey::Right, 2) => Some((253, 86)),
+                    (NavigationKey::Home, 2) => Some((253, 87)),
+                    (NavigationKey::End, 2) => Some((253, 88)),
+                    _ => None,
+                };
+                if let Some((second, third)) = simplified {
+                    bytes.extend([0x80, second, third]);
+                    continue;
+                }
+                let code = match key {
+                    NavigationKey::Up => Some(special(SpecialKey::Up)), NavigationKey::Down => Some(special(SpecialKey::Down)),
+                    NavigationKey::Left => Some(special(SpecialKey::Left)), NavigationKey::Right => Some(special(SpecialKey::Right)),
+                    NavigationKey::Home => Some(special(SpecialKey::Home)), NavigationKey::End => Some(special(SpecialKey::End)),
+                    NavigationKey::PageUp => Some(special(SpecialKey::PageUp)), NavigationKey::PageDown => Some(special(SpecialKey::PageDown)),
+                    _ => None,
+                };
+                (code, modifiers)
+            }
+            _ => return spelling.as_bytes().to_vec(),
+        };
+        if modifiers != 0 {
+            let vim_modifiers = (modifiers & 7) << 1 | (modifiers & 8 != 0) as u8 * 0x80;
+            bytes.extend([0x80, 252, vim_modifiers]);
+        }
+        if let Some((second, third)) = code { bytes.extend([0x80, second, third]); }
+    }
+    bytes
 }
 
 /// The input key for one key of Vim notation. Keys Viem's input vocabulary
@@ -772,7 +869,7 @@ impl CommandInterpreter {
         );
         self.mapping_pending.clear();
         if restore_select { self.selection_behavior = SelectionBehavior::Visual; }
-        Some(MappingReplayPlan { events, restore_select })
+        Some(MappingReplayPlan { events, restore_select, register: self.requested_register })
     }
 
     pub(super) fn handle_mapping(
@@ -805,10 +902,13 @@ impl CommandInterpreter {
             }));
         }
         let old_depth = document.edit_group_depth();
+        let old_register = self.script_register_context;
+        self.script_register_context = plan.register.or(old_register);
         document.begin_edit_group();
         let result = (|| {
             let mut output = CommandOutput::complete();
             for (event, remap) in plan.events {
+                if let Some(register) = self.requested_register { self.script_register_context = Some(register); }
                 let old = self.set_mapping_suppressed(!remap);
                 let next = self.handle(document, event);
                 self.set_mapping_suppressed(old);
@@ -824,6 +924,7 @@ impl CommandInterpreter {
         document.restore_edit_group_depth(old_depth + 1);
         document.end_edit_group();
         self.end_replay_frame();
+        if old_register.is_none() { self.script_register_context = None; }
         if plan.restore_select { self.finish_select_mapping(); }
         result
     }

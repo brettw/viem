@@ -118,7 +118,26 @@ impl CommandInterpreter {
                             let entry = args.get(1).map(Value::to_text).transpose()?.unwrap_or_default();
                             push_history(history, entry, self.vim_options.number("history") as usize); 1.into()
                         }
-                        _ => { history.clear(); 1.into() }
+                        _ => {
+                            let removed = match args.get(1) {
+                                None => { history.clear(); true }
+                                Some(Value::Number(index)) => {
+                                    let index = if *index < 0 { history.len().checked_sub(index.unsigned_abs() as usize) }
+                                        else { (*index as usize).checked_sub(1) };
+                                    if let Some(index) = index.filter(|index| *index < history.len()) { history.remove(index); true } else { false }
+                                }
+                                Some(pattern) => {
+                                    let pattern = pattern.to_bytes()?;
+                                    let mut fuel = 20_000_000;
+                                    let matches = history.iter().map(|entry| crate::vimscript::regex::string_matches(entry.as_bytes(), &pattern, false, &mut fuel))
+                                        .collect::<Result<Vec<_>, _>>()?;
+                                    let mut at = 0;
+                                    history.retain(|_| { let keep = !matches[at]; at += 1; keep });
+                                    matches.into_iter().any(|matched| matched)
+                                }
+                            };
+                            i64::from(removed).into()
+                        }
                     }
                 }
                 "undotree" => self.script_undo_tree(document),

@@ -146,12 +146,21 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
                 return assert_failure(rt, args.get(2), format!("command did not fail: {command}"));
             }
             if let Some(expected) = args.get(1) {
-                let wanted: Vec<String> = match expected {
-                    Value::List(list) => list.snapshot().iter().map(|item| item.to_text()).collect::<Result<_, _>>()?,
-                    other => vec![other.to_text()?],
-                };
-                if let Some(first) = wanted.first() {
-                    if !first.is_empty() && !texts.iter().any(|text| text.contains(first.as_str())) {
+                if let Value::List(list) = expected {
+                    let wanted = list.snapshot();
+                    if wanted.is_empty() || wanted.len() > 2 {
+                        return Err(VimError::new(856, "assert_fails() second argument must be a string or a list with one or two strings").into());
+                    }
+                    for (index, pattern) in wanted.iter().enumerate() {
+                        let pattern = pattern.to_vstr()?;
+                        let actual = if index == 0 { &texts[0] } else { texts.last().unwrap() };
+                        if !crate::vimscript::regex::string_matches(actual.as_bytes(), pattern.as_bytes(), false, &mut rt.fuel)? {
+                            return assert_failure(rt, args.get(2), format!("Expected {} but got {}", expected.string_repr(), Value::str(actual).string_repr()));
+                        }
+                    }
+                } else {
+                    let wanted = expected.to_text()?;
+                    if !texts[0].contains(&wanted) {
                         return assert_failure(rt, args.get(2), format!("Expected {} but got {}", expected.string_repr(), Value::str(&texts[0]).string_repr()));
                     }
                 }
@@ -230,7 +239,7 @@ fn execute(rt: &mut Runtime, host: &mut dyn ScriptHost, args: &[Value]) -> EvalR
     Ok(Value::String(capture.text.into()))
 }
 
-fn function(rt: &mut Runtime, host: &mut dyn ScriptHost, args: &[Value], strict: bool) -> EvalResult<Value> {
+fn function(rt: &mut Runtime, host: &mut dyn ScriptHost, args: &[Value], capture: bool) -> EvalResult<Value> {
     let (mut bound_args, mut bound_dict) = (Vec::new(), None);
     for extra in &args[1..] {
         match extra {
@@ -249,13 +258,17 @@ fn function(rt: &mut Runtime, host: &mut dyn ScriptHost, args: &[Value], strict:
             let exists = rt.state.function(canonical.as_bytes()).is_some()
                 || (crate::vimscript::exec::is_builtin_name(name.as_bytes()) && (super::is_implemented(&name.to_str_lossy()) || host.has_function(&name.to_str_lossy()) || super::is_vim_builtin(&name.to_str_lossy())))
                 || name.as_bytes().contains(&b'#');
-            if !exists || (strict && rt.state.function(canonical.as_bytes()).is_none()) {
+            if !exists || (capture && rt.state.function(canonical.as_bytes()).is_none()) {
                 return Err(Fail::Error(VimError::new(700, format!("Unknown function: {}", name.to_str_lossy()))));
             }
             Funcref::named(canonical)
         }
         _ => return Err(Fail::Error(VimError::new(129, "Function name required"))),
     };
+    let base = if capture && base.specialization().is_none() {
+        let function = rt.state.function(base.name().as_bytes()).ok_or_else(|| VimError::new(700, format!("Unknown function: {}", base.name().to_str_lossy())))?;
+        base.specialized(function)
+    } else { base };
     if bound_args.is_empty() && bound_dict.is_none() {
         return Ok(Value::Funcref(base));
     }

@@ -8,6 +8,7 @@
 //! `cargo test --test all hard_line_reflow::`.
 
 mod application_theme;
+mod vimscript_register_compatibility;
 mod audit_rich_boundaries;
 mod formatting_presentation_work;
 mod formatting_actions;
@@ -230,9 +231,11 @@ mod list_item_paragraph_integration;
 mod list_paragraph_indent;
 mod vimscript_core;
 mod vimscript_positions;
+mod vimscript_strings_files;
 
 mod vimscript_abbreviations;
 mod vimscript_events;
+mod vimscript_event_compat;
 
 mod vimscript_options;
 

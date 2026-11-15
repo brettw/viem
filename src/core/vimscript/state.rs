@@ -30,6 +30,7 @@ pub struct StateInner {
     commands: Mutex<BTreeMap<String, Arc<UserCommand>>>,
     autocmds: Mutex<super::autocmd::AutocmdTable>,
     messages: Mutex<VecDeque<String>>,
+    redirect: Mutex<Option<super::exec::Redirect>>,
 }
 
 #[derive(Default)]
@@ -42,6 +43,7 @@ struct Counters {
 #[derive(Clone, Debug)]
 pub struct ScriptEntry {
     pub name: String,
+    identity: std::path::PathBuf,
     pub vars: Dict,
     pub vim9: bool,
     pub imports: BTreeMap<VStr, String>,
@@ -85,6 +87,24 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
+fn script_identity(name: &str) -> std::path::PathBuf {
+    use std::path::{Component, Path, PathBuf};
+    if name.starts_with('<') { return PathBuf::from(name); }
+    let path = Path::new(name);
+    let absolute = if path.is_absolute() { path.to_owned() }
+        else { std::env::current_dir().unwrap_or_default().join(path) };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {},
+            Component::ParentDir if matches!(normalized.components().next_back(), Some(Component::Normal(_))) => { normalized.pop(); },
+            Component::ParentDir if normalized.has_root() => {},
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
+}
+
 impl ScriptState {
     pub fn new() -> Self {
         let state = Self(Arc::new(StateInner {
@@ -101,12 +121,19 @@ impl ScriptState {
             commands: Mutex::new(BTreeMap::new()),
             autocmds: Mutex::new(Default::default()),
             messages: Mutex::new(VecDeque::new()),
+            redirect: Mutex::new(None),
         }));
         super::vvars::initialize(&state.0.vim_vars);
         state
     }
     pub fn inner(&self) -> &StateInner {
         &self.0
+    }
+    pub(crate) fn take_redirect(&self) -> Option<super::exec::Redirect> {
+        lock(&self.0.redirect).take()
+    }
+    pub(crate) fn set_redirect(&self, redirect: Option<super::exec::Redirect>) {
+        *lock(&self.0.redirect) = redirect;
     }
     pub fn ptr_eq(&self, other: &ScriptState) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
@@ -149,11 +176,15 @@ impl ScriptState {
 
     /// The script ID for `name`, creating an entry on first use. IDs start at 1.
     pub fn script_id(&self, name: &str) -> usize {
+        // Resolve lexical aliases before taking the registry lock. Preserve
+        // the supplied name for diagnostics; identity does not depend on ./
+        // or whether the host supplied an absolute path.
+        let identity = script_identity(name);
         let mut scripts = lock(&self.0.scripts);
-        if let Some(index) = scripts.iter().position(|script| script.name == name) {
+        if let Some(index) = scripts.iter().position(|script| script.identity == identity) {
             return index + 1;
         }
-        scripts.push(ScriptEntry { name: name.to_string(), vars: Dict::new(), vim9: false, imports: BTreeMap::new(), types: BTreeMap::new(), loaded: false, loading: false });
+        scripts.push(ScriptEntry { name: name.to_string(), identity, vars: Dict::new(), vim9: false, imports: BTreeMap::new(), types: BTreeMap::new(), loaded: false, loading: false });
         scripts.len()
     }
     /// A fresh script context that never matches a file, e.g. for the

@@ -37,3 +37,5 @@ pub use value::{Dict, Funcref, List, VStr, Value};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod function_compatibility_tests;

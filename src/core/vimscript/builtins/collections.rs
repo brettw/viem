@@ -146,15 +146,7 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
             let items = list.snapshot();
             let start = if start < 0 { (start + items.len() as i64).max(0) } else { start } as usize;
             for (index, item) in items.iter().enumerate().skip(start) {
-                let keep = match &args[1] {
-                    Value::String(expression) => {
-                        rt.state.set_vvar("key", (index as i64).into());
-                        rt.state.set_vvar("val", item.clone());
-                        let sid = rt.current_sid();
-                        rt.eval_expression(host, expression.as_bytes(), sid)?.to_bool()?
-                    }
-                    callback => call_callback(rt, host, callback, vec![(index as i64).into(), item.clone()])?.to_bool()?,
-                };
+                let keep = apply_callback(rt, host, &args[1], (index as i64).into(), item.clone())?.to_bool()?;
                 if keep {
                     return Ok(Value::Number(index as i64));
                 }

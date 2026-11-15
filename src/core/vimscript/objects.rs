@@ -218,6 +218,18 @@ pub(crate) fn construct(
     args: Vec<Value>,
     specialized: Option<Arc<super::state::UserFunction>>,
 ) -> EvalResult<Value> {
+    construct_value(rt, host, class, constructor, args, specialized, None)
+}
+
+fn construct_value(
+    rt: &mut Runtime,
+    host: &mut dyn ScriptHost,
+    class: Arc<Class>,
+    constructor: &str,
+    args: Vec<Value>,
+    specialized: Option<Arc<super::state::UserFunction>>,
+    enum_identity: Option<(&str, usize)>,
+) -> EvalResult<Value> {
     if class.interface || class.abstract_class {
         return Err(
             VimError::new(1325, "Cannot instantiate an abstract class or interface").into(),
@@ -254,6 +266,10 @@ pub(crate) fn construct(
             .data()
             .declarations
             .insert(field.name.clone().into(), field.ty.clone());
+    }
+    if let Some((name, ordinal)) = enum_identity {
+        object.fields.insert("name", Value::str(name));
+        object.fields.insert("ordinal", Value::Number(ordinal as i64));
     }
     for field in &class.fields {
         if let Some(expression) = &field.initializer {
@@ -841,13 +857,7 @@ fn build(
                 }
                 pos += 1;
             }
-            let value = rt.call_funcref(host, &constructor, args, None)?;
-            if let Value::Object(object) = &value {
-                object.fields.insert("name", Value::str(&name));
-                object
-                    .fields
-                    .insert("ordinal", Value::Number(values.len() as i64));
-            }
+            let value = construct_value(rt, host, class.clone(), &constructor.name().to_str_lossy(), args, constructor.specialization(), Some((&name, values.len())))?;
             class.statics.insert(name, value.clone());
             values.push(value);
             pos = skip_white(src, pos);

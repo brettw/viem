@@ -537,9 +537,11 @@ impl<P: TextMeasurementProvider> ScriptHost for CoreScriptHost<'_, P> {
             rt.fire_event_now(self, "ColorSchemePre", command.argument.trim())?;
         }
         for text in split_set_command(command) {
+            self.suppress_child_events = command.modifiers.noautocmd || !rt.automatic_events_allowed();
             let visual_range = if command.range.starts_with("'<") { self.visual_range.take() } else { None };
             let argument = if text == command.text { command.argument.clone() } else { text.split_once(' ').map_or(String::new(), |(_, argument)| argument.to_owned()) };
-            self.dispatch(rt, ScriptAction::Command { text, name: command.name, bang: command.bang, argument, sid: command.sid, visual_range })?;
+            let events = crate::command::scripting::command_events(command, &argument);
+            self.dispatch(rt, ScriptAction::Command { text, name: command.name, bang: command.bang, argument, sid: command.sid, lnum: command.lnum, visual_range })?;
             if let Some(yank) = self.commands_mut().pending_yank_event.take() {
                 if !self.suppress_child_events {
                     let previous = rt.state.vvar("event");
@@ -550,12 +552,17 @@ impl<P: TextMeasurementProvider> ScriptHost for CoreScriptHost<'_, P> {
                     fired?;
                 }
             }
+            for (event, matched) in events {
+                if event == "FileType" {
+                    let matched = self.commands().script_option(&self.core.document, "filetype")?.to_text()?;
+                    rt.fire_event_now(self, event, &matched)?;
+                } else {
+                    rt.queue_event_name(event, matched);
+                }
+            }
             if self.suspend.is_some() {
                 break;
             }
-        }
-        for (event, matched) in crate::command::scripting::command_events(command) {
-            rt.queue_event_name(event, matched);
         }
         Ok(())
     }
@@ -565,12 +572,11 @@ impl<P: TextMeasurementProvider> ScriptHost for CoreScriptHost<'_, P> {
     fn set_option(&mut self, rt: &mut Runtime, name: &str, scope: OptionScope, value: &Value) -> EvalResult<()> {
         let text = crate::command::options::set_command_for(self.commands(), &self.core.document, name, scope, value)?;
         let (command_name, argument) = text.split_once(' ').unwrap_or((text.as_str(), ""));
-        let name = crate::vimscript::excmds::lookup(command_name);
-        self.dispatch(rt, ScriptAction::Command { text: text.clone(), name, bang: false, argument: argument.to_owned(), sid: rt.current_sid(), visual_range: None })?;
-        if let Ok(value) = self.commands().script_option(&self.core.document, "filetype") {
-            if text.contains("filetype=") || text.contains("ft=") {
-                rt.queue_event_name("FileType".into(), value.to_text()?);
-            }
+        let command_name = crate::vimscript::excmds::lookup(command_name);
+        self.dispatch(rt, ScriptAction::Command { text: text.clone(), name: command_name, bang: false, argument: argument.to_owned(), sid: rt.current_sid(), lnum: 0, visual_range: None })?;
+        if matches!(name, "filetype" | "ft") {
+            let value = self.commands().script_option(&self.core.document, "filetype")?.to_text()?;
+            rt.fire_event_now(self, "FileType", &value)?;
         }
         Ok(())
     }
@@ -957,6 +963,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             return Ok(ScriptStep::Suspended(ReplayPlan::Mapping(crate::command::mappings::MappingReplayPlan {
                 events: fed,
                 restore_select: false,
+                register: None,
             })));
         }
         Ok(ScriptStep::Finished(None))

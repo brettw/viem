@@ -315,10 +315,7 @@ pub(crate) fn delfunction(rt: &mut Runtime, host: &mut dyn ScriptHost, argument:
         }
         let Some((dict, key)) = last else { return Ok(()) };
         match dict.remove(key.as_bytes()) {
-            Some(Value::Funcref(funcref)) => {
-                eval.rt.state.delete_function(funcref.name().as_bytes());
-                Ok(())
-            }
+            Some(Value::Funcref(_)) => Ok(()),
             Some(other) => {
                 dict.insert(key, other);
                 Err(Fail::Error(VimError::new(130, "Unknown function")))

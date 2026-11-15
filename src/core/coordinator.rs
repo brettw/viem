@@ -7423,6 +7423,8 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
 
         let previous_autocmd_guard = self.firing_autocmds;
+        let previous_macro = self.views[&view_id].commands.executing_macro;
+        let previous_register = self.views[&view_id].commands.script_register_context;
         let run_result = (|| -> Result<(), CoreError> {
             while terminal_status.is_none() && !frames.is_empty() {
                 // Cleanup inputs (notably :normal's implicit Escape) can
@@ -7436,6 +7438,20 @@ impl<P: TextMeasurementProvider> Core<P> {
                     frames.push(replay_frame(nested, &self.views[&view_id].commands));
                 }
                 self.firing_autocmds = previous_autocmd_guard || frames.iter().any(|frame| matches!(frame, ReplayFrame::Script(script) if script.suppress_input_events));
+                let commands = &mut self.views.get_mut(&view_id).expect("replay view").commands;
+                if let Some(register) = commands.script_requested_register().or(commands.script_register_context) {
+                    // An explicit register chosen by a RHS remains current
+                    // when a nested mapping returns to its caller.
+                    for frame in &mut frames {
+                        if let ReplayFrame::Mapping { plan, .. } = frame { plan.register = Some(register); }
+                    }
+                }
+                commands.executing_macro = frames.iter().rev().find_map(|frame| match frame {
+                    ReplayFrame::Macro { plan, .. } => Some(plan.register), _ => None,
+                }).or(previous_macro);
+                commands.script_register_context = frames.iter().rev().find_map(|frame| match frame {
+                    ReplayFrame::Mapping { plan, .. } => plan.register, _ => None,
+                }).or(previous_register);
                 let action = loop {
                     let Some(frame) = frames.last_mut() else {
                         break ReplayAction::PopFrame;
@@ -7804,6 +7820,8 @@ impl<P: TextMeasurementProvider> Core<P> {
         })();
 
         self.firing_autocmds = previous_autocmd_guard;
+        self.views.get_mut(&view_id).expect("replay view").commands.executing_macro = previous_macro;
+        self.views.get_mut(&view_id).expect("replay view").commands.script_register_context = previous_register;
 
         if suspended_for_host && run_result.is_ok() {
             // Never keep a mutable transaction open across a native callback.

@@ -290,7 +290,7 @@ fn current_sfile(rt: &Runtime) -> Option<String> {
 
 /// Expand `~`, environment variables, `%`, `<sfile>` and file modifiers in
 /// a file name argument (`:source`, `expand()`).
-pub fn expand_path(rt: &Runtime, host: &dyn ScriptHost, text: &str) -> EvalResult<String> {
+pub fn expand_path(rt: &mut Runtime, host: &dyn ScriptHost, text: &str) -> EvalResult<String> {
     let mut out = String::new();
     let chars: Vec<char> = text.chars().collect();
     let mut at = 0;
@@ -385,7 +385,7 @@ pub fn expand_path(rt: &Runtime, host: &dyn ScriptHost, text: &str) -> EvalResul
                     }
                 }
             }
-            out.push_str(&apply_modifiers(&base, &modifiers));
+            out.push_str(&apply_modifiers(&base, &modifiers, &mut rt.fuel)?);
             continue;
         }
         out.push(c);
@@ -435,7 +435,7 @@ pub fn expand_pattern(_rt: &Runtime, host: &dyn ScriptHost, pattern: &str) -> St
 }
 
 /// `fnamemodify()` modifiers: `:p :h :t :r :e :~ :. :s?a?b? :gs?a?b? :S`.
-pub fn apply_modifiers(path: &str, modifiers: &str) -> String {
+pub fn apply_modifiers(path: &str, modifiers: &str, fuel: &mut u64) -> Result<String, VimError> {
     let mut result = path.to_string();
     let mut rest = modifiers.to_string();
     while let Some(after) = rest.strip_prefix(':').map(str::to_string) {
@@ -477,10 +477,16 @@ pub fn apply_modifiers(path: &str, modifiers: &str) -> String {
             }
             'e' => {
                 let tail_start = result.rfind(['/', '\\']).map_or(0, |n| n + 1);
-                result = match result[tail_start..].rfind('.') {
-                    Some(dot) if dot > 0 => result[tail_start + dot + 1..].to_string(),
-                    _ => String::new(),
-                };
+                let mut extension = None;
+                let mut before = result.len();
+                loop {
+                    if let Some(dot) = result[tail_start..before].rfind('.').filter(|dot| *dot > 0) {
+                        before = tail_start + dot;
+                        extension = Some(before + 1);
+                    }
+                    if let Some(after) = rest.strip_prefix(":e") { rest = after.to_string(); } else { break; }
+                }
+                result = extension.map_or_else(String::new, |at| result[at..].to_string());
             }
             '~' => {
                 if let Some(home) = home() {
@@ -509,20 +515,47 @@ pub fn apply_modifiers(path: &str, modifiers: &str) -> String {
                         rest = stripped.to_string();
                     }
                 }
-                let mut chars = rest.chars();
-                let Some(delimiter) = chars.next() else { break };
-                let body: String = chars.collect();
-                let mut parts = body.splitn(3, delimiter);
-                let pattern = parts.next().unwrap_or("").to_string();
-                let replacement = parts.next().unwrap_or("").to_string();
-                let remainder = parts.next().unwrap_or("").to_string();
-                result = if global { result.replace(&pattern, &replacement) } else { result.replacen(&pattern, &replacement, 1) };
-                rest = if remainder.starts_with(':') { remainder } else { String::new() };
+                let Some(delimiter) = rest.chars().next() else { break };
+                let (pattern, after_pattern) = modifier_piece(&rest[delimiter.len_utf8()..], delimiter);
+                let (replacement, remainder) = modifier_piece(after_pattern, delimiter);
+                let compiled = super::regex::compile_string(pattern.as_bytes(), false)?;
+                let mut output = String::new();
+                let mut tail = 0;
+                let mut search = 0;
+                while let Some(found) = super::regex::find_at(&compiled, &result, search, fuel)? {
+                    output.push_str(&result[tail..found.start]);
+                    output.push_str(&super::regex::expand_replacement(&replacement, &result, &found));
+                    tail = found.end;
+                    if !global || tail == result.len() { break; }
+                    search = if found.end > found.start { found.end } else { found.end + result[found.end..].chars().next().map_or(1, char::len_utf8) };
+                }
+                output.push_str(&result[tail..]);
+                result = output;
+                rest = if remainder.starts_with(':') { remainder.to_string() } else { String::new() };
             }
             _ => {}
         }
     }
-    result
+    Ok(result)
+}
+
+fn modifier_piece(source: &str, delimiter: char) -> (String, &str) {
+    let mut output = String::new();
+    let mut chars = source.char_indices().peekable();
+    while let Some((at, ch)) = chars.next() {
+        if ch == delimiter { return (output, &source[at + ch.len_utf8()..]); }
+        if ch == '\\' {
+            if let Some(&(_, next)) = chars.peek() {
+                if next == delimiter { output.push(next); chars.next(); continue; }
+                output.push(ch);
+                output.push(next);
+                chars.next();
+                continue;
+            }
+        }
+        output.push(ch);
+    }
+    (output, "")
 }
 
 fn normalize_path(path: &str) -> String {
@@ -550,6 +583,10 @@ fn normalize_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn apply_modifiers(path: &str, modifiers: &str) -> String {
+        super::apply_modifiers(path, modifiers, &mut 1_000_000).unwrap()
+    }
 
     #[test]
     fn continuation_lines_join_and_comments_drop() {
@@ -585,6 +622,9 @@ mod tests {
         assert_eq!(apply_modifiers("/a/b/c.tar.gz", ":r:r"), "/a/b/c");
         assert_eq!(apply_modifiers("c.txt", ":h"), ".");
         assert_eq!(apply_modifiers("/a/b/c.txt", ":s?b?x?"), "/a/x/c.txt");
-        assert_eq!(apply_modifiers("/a/b/c.txt", ":gs?/?\\\\?"), "\\\\a\\\\b\\\\c.txt");
+        assert_eq!(apply_modifiers("/a/b/c.txt", ":gs?/?\\\\?"), "\\a\\b\\c.txt");
+        assert_eq!(apply_modifiers("one.tar.gz", ":e:e"), "tar.gz");
+        assert_eq!(apply_modifiers("one.tar.gz", ":e:e:e"), "tar.gz");
+        assert_eq!(apply_modifiers("logs/rec12", r":s?\d\+?X?"), "logs/recX");
     }
 }

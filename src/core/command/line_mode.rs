@@ -913,7 +913,11 @@ impl CommandInterpreter {
         count: usize,
         register: Option<char>,
     ) -> Result<CommandOutput, DocumentError> {
-        self.apply_mode_line_operator_repeated(document, operator, shape, count, register, 1)
+        let output = self.apply_mode_line_operator_repeated(document, operator, shape, count, register, 1)?;
+        if operator == Operator::Yank && shape == LineShape::End {
+            if let Some(event) = self.pending_yank_event.as_mut() { event.inclusive = true; }
+        }
+        Ok(output)
     }
     pub(super) fn apply_physical_address_operator(
         &mut self,

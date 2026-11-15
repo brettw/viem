@@ -1,6 +1,6 @@
 //! Environment, file and time builtins. File access is read-only and
 //! bounded; scripts cannot write files, delete them or run processes.
-use super::{arity, number, opt_bool, opt_number, text, vstr};
+use super::{arity, call_callback, number, opt_bool, opt_number, text, vstr};
 use crate::vimscript::error::{EvalResult, Fail, VimError};
 use crate::vimscript::exec::{Runtime, ScriptHost};
 use crate::vimscript::value::{Dict, VStr, Value};
@@ -126,7 +126,7 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
             let path = text(args, 0)?;
             let modifiers = text(args, 1)?;
             let path = if path.starts_with('~') { crate::vimscript::source::expand_path(rt, host, &path)? } else { path };
-            Ok(Value::String(crate::vimscript::source::apply_modifiers(&path, &modifiers).into()))
+            Ok(Value::String(crate::vimscript::source::apply_modifiers(&path, &modifiers, &mut rt.fuel)?.into()))
         }),
         "simplify" => arity(name, args, 1, 1).and_then(|()| Ok(Value::String(simplify(&text(args, 0)?).into()))),
         "resolve" => arity(name, args, 1, 1).and_then(|()| {
@@ -153,19 +153,39 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
                 return Err(Fail::Error(VimError::plain(format!("{path}: file too large for {name}()"))));
             }
             if name == "readblob" {
+                let offset = opt_number(args, 1, 0)?;
+                let length = opt_number(args, 2, -1)?;
+                let start = if offset < 0 { (bytes.len() as i64).saturating_add(offset).max(0) as usize } else { (offset as usize).min(bytes.len()) };
+                let end = if length == -1 { bytes.len() } else { start.saturating_add(length.max(0) as usize).min(bytes.len()) };
+                bytes = bytes[start..end].to_vec();
                 return Ok(Value::Blob(crate::vimscript::value::Blob::new(bytes)));
             }
-            let binary = matches!(args.get(1), Some(Value::String(flags)) if flags.as_bytes().contains(&b'b'));
+            let flags = args.get(1).map(|value| value.to_text()).transpose()?.unwrap_or_default();
+            if flags == "B" { return Ok(Value::Blob(crate::vimscript::value::Blob::new(bytes))); }
+            let binary = flags == "b";
             let limit = opt_number(args, 2, i64::MAX)?;
             let mut lines: Vec<Value> = Vec::new();
-            let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+            let bytes = bytes.as_slice();
             let mut parts: Vec<&[u8]> = bytes.split(|b| *b == b'\n').collect();
-            if !binary && bytes.ends_with(b"\n") {
+            if !binary && (bytes.is_empty() || bytes.ends_with(b"\n")) {
                 parts.pop();
             }
-            for part in parts {
-                let part = if binary { part } else { part.strip_suffix(b"\r").unwrap_or(part) };
-                lines.push(Value::String(part.to_vec().into()));
+            let part_count = parts.len();
+            for (index, part) in parts.into_iter().enumerate() {
+                // CRs are stripped only before a physical newline, not EOF.
+                let terminated = index + 1 < part_count || bytes.ends_with(b"\n");
+                let mut part = part;
+                if !binary && terminated {
+                    while let Some(stripped) = part.strip_suffix(b"\r") { part = stripped; }
+                }
+                let mut line = Vec::with_capacity(part.len());
+                let mut at = 0;
+                while at < part.len() {
+                    if !binary && part[at..].starts_with(b"\xEF\xBB\xBF") { at += 3; continue; }
+                    line.push(if part[at] == 0 { b'\n' } else { part[at] });
+                    at += 1;
+                }
+                lines.push(Value::String(line.into()));
             }
             if limit >= 0 && (limit as usize) < lines.len() {
                 lines.truncate(limit as usize);
@@ -185,7 +205,25 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
                 .take(MAX_GLOB_RESULTS)
                 .collect();
             names.sort();
-            Ok(Value::list(names.into_iter().map(Value::from).collect()))
+            let mut filtered = Vec::new();
+            for name in names {
+                let value = Value::from(name);
+                if let Some(callback) = args.get(1) {
+                    let saved = rt.state.vvar("val");
+                    rt.state.set_vvar("val", value.clone());
+                    let result = match callback {
+                        Value::String(expression) if expression.is_empty() => Ok(Value::Number(1)),
+                        Value::String(expression) => { let sid = rt.current_sid(); rt.eval_expression(host, expression.as_bytes(), sid) },
+                        other => call_callback(rt, host, other, vec![value.clone()]),
+                    };
+                    rt.state.set_vvar("val", saved);
+                    let result = result?.to_number()?;
+                    if result < 0 { break; }
+                    if result == 0 { continue; }
+                }
+                filtered.push(value);
+            }
+            Ok(Value::list(filtered))
         }),
         "getcwd" => arity(name, args, 0, 2).map(|()| Value::String(std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default().into())),
         "haslocaldir" => arity(name, args, 0, 2).map(|()| Value::Number(0)),

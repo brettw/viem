@@ -1283,6 +1283,8 @@ pub struct CommandInterpreter {
     mappings: mappings::KeyMappings,
     mapping_pending: Vec<Key>,
     pub(crate) pending_yank_event: Option<scripting::YankEvent>,
+    pub(crate) script_register_context: Option<char>,
+    pub(crate) executing_macro: Option<char>,
     mapping_suppressed: bool,
     mode: Mode,
     selection_behavior: SelectionBehavior,
@@ -1509,6 +1511,8 @@ impl CommandInterpreter {
             mappings: Default::default(),
             mapping_pending: Vec::new(),
             pending_yank_event: None,
+            script_register_context: None,
+            executing_macro: None,
             mapping_suppressed: false,
             mode: Mode::Normal,
             table_cells: None,
@@ -3716,16 +3720,19 @@ impl CommandInterpreter {
         }
         self.clipboard_copy_as_seen = false;
         self.write_unnamed_clipboards(requested, &value, true);
+        let effect = self.registers.yank(requested, value.clone());
+        // Uppercase register yanks append before TextYankPost observes them.
+        let value = self.registers.get('"').unwrap_or(&value);
         let text = if value.kind == RegisterKind::Linewise { value.text.strip_suffix('\n').unwrap_or(&value.text) } else { &value.text };
         self.pending_yank_event = (requested != Some('_')).then(|| scripting::YankEvent {
             contents: text.split('\n').map(str::to_owned).collect(),
             register: requested.map(|name| name.to_string()).unwrap_or_default(),
             kind: match value.kind { RegisterKind::Linewise => "V".into(), RegisterKind::Characterwise => "v".into(),
                 RegisterKind::Blockwise => format!("\u{16}{}", value.block_width()), },
-            inclusive: true,
+            inclusive: self.mode == Mode::VisualLine
+                || matches!(self.mode, Mode::VisualCharacter | Mode::VisualBlock) && !self.selection_exclusive,
             visual: matches!(self.mode, Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock),
         });
-        let effect = self.registers.yank(requested, value);
         self.collect_register_write(effect);
     }
 
@@ -7080,7 +7087,8 @@ impl CommandInterpreter {
                         register_rows.get(index).map(|payload| {
                             let selected = &resolved.rows[index];
                             let suffix = selected.ranges.last().is_some_and(|range| range.end < line_end(&lines, range.end));
-                            let payload = if native && suffix { native_block_row_with_padding(&register_rows, payload) }
+                            let payload = if register.explicit_block_width().is_some() && suffix { script_block_row_with_padding(&register, payload, count) }
+                                else if native && suffix { native_block_row_with_padding(&register_rows, payload) }
                                 else { payload.clone() };
                             if native {
                                 native_block_target = Some(selected.ranges.first().map_or(selected.visual_left.point.text_offset, |range| range.start));
@@ -7490,7 +7498,9 @@ impl CommandInterpreter {
             };
             insertion_boundaries.push(at);
             if !row_payload.is_empty() {
-                let row_payload = if native && at < line_end(&lines, at) {
+                let row_payload = if register.explicit_block_width().is_some() && at < line_end(&lines, at) {
+                    script_block_row_with_padding(&register, row_payload, count)
+                } else if native && at < line_end(&lines, at) {
                     native_block_row_with_padding(&register_rows, row_payload)
                 } else { row_payload.clone() };
                 plans.push(PlannedFormattedEdit::literal(at..at, row_payload));
@@ -9862,6 +9872,12 @@ impl CommandInterpreter {
     ) -> Result<CommandOutput, DocumentError> {
         let deletion_class =
             deletion_class_for_target(&document.hard_line_snapshot(), &extent, &target);
+        let inclusive = extent.kind != MotionKind::Linewise && match &target {
+            RepeatTarget::Motion(motion) => matches!(motion, OperatorMotion::LineEnd | OperatorMotion::LastNonBlank
+                | OperatorMotion::WordEnd(_) | OperatorMotion::WordEndBackward(_) | OperatorMotion::MatchPair | OperatorMotion::SearchMatch(_)),
+            RepeatTarget::TextObject(_) | RepeatTarget::Find(_) => true,
+            _ => false,
+        };
         let before = document.revision();
         let output = self.apply_operator_with_application_count(
             document,
@@ -9871,6 +9887,9 @@ impl CommandInterpreter {
             deletion_class,
             application_count,
         )?;
+        if operator == Operator::Yank {
+            if let Some(event) = self.pending_yank_event.as_mut() { event.inclusive = inclusive; }
+        }
         if document.revision() != before && !self.replaying && operator != Operator::Yank {
             let command = OperatorRepeat {
                 operator,
@@ -14939,6 +14958,7 @@ impl CommandInterpreter {
             return Ok(CommandOutput::complete());
         }
         self.compound_replay_depth += 1;
+        let previous_macro = self.executing_macro.replace(name);
         document.begin_edit_group();
         let mut output = CommandOutput::complete();
         let mut failure_status = None;
@@ -14977,6 +14997,7 @@ impl CommandInterpreter {
         }
         document.end_edit_group();
         self.compound_replay_depth -= 1;
+        self.executing_macro = previous_macro;
         if let Some(status) = failure_status {
             output.status = status;
         }
@@ -16698,10 +16719,30 @@ fn checked_block_register_rows(
     count: usize,
 ) -> Result<Vec<String>, TextRepetitionError> {
     debug_assert_eq!(input.kind, RegisterKind::Blockwise);
+    // Script-defined block widths can exceed the bytes in their rows. Bound
+    // the complete padded result before allocating any individual row.
+    let mut total = 0usize;
+    for row in input.text.split('\n') {
+        let padding = input.explicit_block_width().unwrap_or(0).saturating_sub(registers::block_cells(row));
+        total = row.len().checked_add(padding).and_then(|bytes| bytes.checked_mul(count))
+            .and_then(|bytes| total.checked_add(bytes)).filter(|bytes| *bytes <= 64 * 1024 * 1024)
+            .ok_or_else(|| TextRepetitionError::new(count))?;
+    }
     input
         .text
         .split('\n')
-        .map(|row| checked_text_repetition(row, count))
+        .map(|row| {
+            let Some(width) = input.explicit_block_width() else { return checked_text_repetition(row, count); };
+            if count == 1 { return Ok(row.to_owned()); }
+            let padding = width.saturating_sub(registers::block_cells(row));
+            // Validate the complete padded allocation, including a final copy
+            // that may need padding when inserted before surviving text.
+            let spaces = checked_text_repetition(" ", padding)?;
+            let padded = format!("{row}{spaces}");
+            let mut repeated = checked_text_repetition(&padded, count)?;
+            if padding > 0 { repeated.truncate(repeated.len() - padding); }
+            Ok(repeated)
+        })
         .collect()
 }
 
@@ -16712,6 +16753,14 @@ fn register_lines(value: &RegisterValue) -> Option<RegisterValue> {
     let mut breaks = value.hard_break_offsets().to_vec();
     breaks.pop();
     RegisterValue::try_new(value.text[..end].to_owned(), value.kind, breaks).ok()
+}
+
+fn script_block_row_with_padding(input: &RegisterValue, row: &str, count: usize) -> String {
+    let width = input.explicit_block_width().unwrap_or(0).saturating_mul(count);
+    let padding = width.saturating_sub(registers::block_cells(row));
+    let mut result = row.to_owned();
+    result.extend(std::iter::repeat_n(' ', padding));
+    result
 }
 
 fn linewise_register_at_eof(

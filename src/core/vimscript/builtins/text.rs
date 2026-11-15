@@ -4,7 +4,6 @@ use crate::vimscript::error::{EvalResult, Fail, VimError};
 use crate::vimscript::exec::{OptionScope, Runtime, ScriptHost};
 use crate::vimscript::regex;
 use crate::vimscript::value::{Blob, VStr, Value};
-use unicode_segmentation::UnicodeSegmentation;
 
 pub(super) const NAMES: &[&str] = &[
     "strlen", "strchars", "strcharlen", "strwidth", "strdisplaywidth", "strpart", "strcharpart",
@@ -185,7 +184,8 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
             let text = source.to_str_lossy();
             let units: Vec<usize> = if utf16 {
                 let mut offsets = Vec::new();
-                for (offset, c) in text.char_indices() {
+                for offset in char_unit_offsets(&text, name == "byteidx") {
+                    let c = text[offset..].chars().next().unwrap();
                     offsets.push(offset);
                     if c.len_utf16() == 2 {
                         offsets.push(offset);
@@ -234,7 +234,13 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
             }
             Ok(Value::Number(if byte == source.len() { offsets.len() as i64 } else { -1 }))
         }),
-        "strutf16len" => arity(name, args, 1, 2).and_then(|()| Ok(Value::Number(text(args, 0)?.encode_utf16().count() as i64))),
+        "strutf16len" => arity(name, args, 1, 2).and_then(|()| {
+            let source = text(args, 0)?;
+            let count_composing = opt_bool(args, 1, false)?;
+            let count = source.chars().enumerate().filter(|(index, ch)| *index == 0 || count_composing || !is_composing(*ch))
+                .map(|(_, ch)| ch.len_utf16()).sum::<usize>();
+            Ok(Value::Number(count as i64))
+        }),
         "iconv" => arity(name, args, 3, 3).and_then(|()| iconv(args)),
         "keytrans" => arity(name, args, 1, 1).and_then(|()| {
             let source = text(args, 0)?;
@@ -373,23 +379,8 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
             let source = text(args, 0)?;
             base64_decode(&source).map(|bytes| Value::Blob(Blob::new(bytes))).ok_or_else(|| Fail::Error(VimError::new(475, format!("Invalid argument: {source}"))))
         }),
-        "blob2str" => arity(name, args, 1, 2).and_then(|()| match &args[0] {
-            Value::Blob(blob) => Ok(Value::list(blob.bytes().split(|b| *b == b'\n').map(|line| Value::String(line.to_vec().into())).collect())),
-            _ => Err(Fail::Error(VimError::new(1238, "Blob required for argument 1"))),
-        }),
-        "str2blob" => arity(name, args, 1, 2).and_then(|()| match &args[0] {
-            Value::List(list) => {
-                let mut bytes = Vec::new();
-                for (index, item) in list.snapshot().iter().enumerate() {
-                    if index > 0 {
-                        bytes.push(b'\n');
-                    }
-                    bytes.extend(item.to_bytes()?);
-                }
-                Ok(Value::Blob(Blob::new(bytes)))
-            }
-            _ => Err(Fail::Error(VimError::new(1211, "List required for argument 1"))),
-        }),
+        "blob2str" => arity(name, args, 1, 2).and_then(|()| blob2str(args)),
+        "str2blob" => arity(name, args, 1, 2).and_then(|()| str2blob(args)),
         _ => return None,
     })
 }
@@ -406,19 +397,98 @@ fn float_arg(value: &Value) -> EvalResult<f64> {
 /// their base character.
 pub(crate) fn char_units(source: &VStr, combine: bool) -> Vec<String> {
     let text = source.to_str_lossy();
-    if combine {
-        text.graphemes(true).map(str::to_string).collect()
-    } else {
-        text.chars().map(|c| c.to_string()).collect()
+    let mut units: Vec<String> = Vec::new();
+    for ch in text.chars() {
+        if combine && !units.is_empty() && is_composing(ch) { units.last_mut().unwrap().push(ch); }
+        else { units.push(ch.to_string()); }
     }
+    units
 }
 
 fn char_unit_offsets(text: &str, combine: bool) -> Vec<usize> {
-    if combine {
-        text.grapheme_indices(true).map(|(offset, _)| offset).collect()
-    } else {
-        text.char_indices().map(|(offset, _)| offset).collect()
+    let mut offsets = Vec::new();
+    for (at, ch) in text.char_indices() {
+        if offsets.is_empty() || !combine || !is_composing(ch) { offsets.push(at); }
     }
+    offsets
+}
+
+// Vim groups nonspacing/enclosing composing marks with the preceding scalar.
+// Extended grapheme boundaries also join flags, Hangul and ZWJ emoji, which
+// these scripting APIs deliberately count separately.
+fn is_composing(ch: char) -> bool {
+    static MARK: std::sync::OnceLock<::regex::Regex> = std::sync::OnceLock::new();
+    let mut utf8 = [0; 4];
+    MARK.get_or_init(|| ::regex::Regex::new(r"^[\p{Mn}\p{Me}]$").unwrap()).is_match(ch.encode_utf8(&mut utf8))
+}
+
+fn blob_encoding(args: &[Value]) -> EvalResult<String> {
+    let encoding = match args.get(1) {
+        None | Some(Value::Null) => None,
+        Some(Value::Dict(options)) => options.get(b"encoding"),
+        _ => return Err(VimError::new(1206, "Dictionary required for argument 2").into()),
+    };
+    let name = encoding.map(|value| value.to_text()).transpose()?.unwrap_or_default();
+    Ok(if name.is_empty() { "utf-8".into() } else { name })
+}
+
+fn convert_blob_bytes(bytes: &[u8], encoding: &str, to_blob: bool) -> EvalResult<Vec<u8>> {
+    let invalid = || Fail::Error(VimError::new(if to_blob { 1516 } else { 1515 },
+        format!("Unable to convert {} '{encoding}' encoding", if to_blob { "to" } else { "from" })));
+    let name = encoding.to_ascii_lowercase().replace(['-', '_'], "");
+    if name == "none" { return Ok(bytes.to_vec()); }
+    if name == "utf8" {
+        if !to_blob { std::str::from_utf8(bytes).map_err(|_| invalid())?; }
+        return Ok(bytes.to_vec());
+    }
+    if matches!(name.as_str(), "latin1" | "iso88591") {
+        return if to_blob {
+            std::str::from_utf8(bytes).map_err(|_| invalid())?.chars()
+                .map(|ch| u8::try_from(ch as u32).map_err(|_| invalid())).collect()
+        } else {
+            Ok(bytes.iter().map(|byte| *byte as char).collect::<String>().into_bytes())
+        };
+    }
+    let (little_endian, ucs2) = match name.as_str() {
+        "utf16le" => (true, false), "utf16" | "utf16be" => (false, false),
+        "ucs2le" => (true, true), "ucs2" | "ucs2be" => (false, true),
+        _ => return Err(invalid()),
+    };
+    if to_blob {
+        let source = std::str::from_utf8(bytes).map_err(|_| invalid())?;
+        if ucs2 && source.chars().any(|ch| ch as u32 > 0xffff) { return Err(invalid()); }
+        Ok(source.encode_utf16().flat_map(|unit| if little_endian { unit.to_le_bytes() } else { unit.to_be_bytes() }).collect())
+    } else {
+        if bytes.len() % 2 != 0 { return Err(invalid()); }
+        let units: Vec<u16> = bytes.chunks_exact(2).map(|pair| {
+            if little_endian { u16::from_le_bytes([pair[0], pair[1]]) } else { u16::from_be_bytes([pair[0], pair[1]]) }
+        }).collect();
+        if ucs2 && units.iter().any(|unit| (0xd800..=0xdfff).contains(unit)) { return Err(invalid()); }
+        Ok(String::from_utf16(&units).map_err(|_| invalid())?.into_bytes())
+    }
+}
+
+fn blob2str(args: &[Value]) -> EvalResult<Value> {
+    let Value::Blob(blob) = &args[0] else { return Err(VimError::new(1238, "Blob required for argument 1").into()) };
+    let encoding = blob_encoding(args)?;
+    let bytes = convert_blob_bytes(&blob.bytes(), &encoding, false)?;
+    if bytes.is_empty() { return Ok(Value::list(Vec::new())); }
+    Ok(Value::list(bytes.split(|byte| *byte == b'\n').map(|line| {
+        Value::String(line.iter().map(|byte| if *byte == 0 { b'\n' } else { *byte }).collect::<Vec<_>>().into())
+    }).collect()))
+}
+
+fn str2blob(args: &[Value]) -> EvalResult<Value> {
+    let Value::List(list) = &args[0] else { return Err(VimError::new(1211, "List required for argument 1").into()) };
+    let encoding = blob_encoding(args)?;
+    let mut bytes = Vec::new();
+    for (index, item) in list.snapshot().iter().enumerate() {
+        if !matches!(item, Value::String(_) | Value::NullTyped(_)) { continue; }
+        if index > 0 { bytes.push(b'\n'); }
+        bytes.extend(item.to_bytes()?.into_iter().map(|byte| if byte == b'\n' { 0 } else { byte }));
+        if bytes.len() > super::MAX_STRING_BYTES { return Err(Fail::Interrupt("str2blob() result too large".into())); }
+    }
+    Ok(Value::Blob(Blob::new(convert_blob_bytes(&bytes, &encoding, true)?)))
 }
 
 /// Display cells with tabs expanded from `column`.
@@ -480,33 +550,36 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 
 fn strpart(args: &[Value]) -> EvalResult<Value> {
     let source = vstr(args, 0)?;
-    let chars = opt_bool(args, 3, false)?;
+    // Vim's strpart() selects character lengths when the fourth argument is
+    // present (including zero); the start still counts bytes.
+    let chars = args.get(3).is_some();
     let mut start = number(args, 1)?;
-    if chars {
-        let units = char_units(&source, false);
-        let mut len = match args.get(2) {
-            Some(value) => value.to_number()?,
-            None => units.len() as i64,
-        };
-        if start < 0 {
-            len += start;
-            start = 0;
-        }
-        let start = (start as usize).min(units.len());
-        let end = (start + len.max(0) as usize).min(units.len());
-        return Ok(Value::String(units[start..end].concat().into()));
-    }
     let bytes = source.as_bytes();
     let mut len = match args.get(2) {
         Some(value) => value.to_number()?,
-        None => bytes.len() as i64 - start.max(0),
+        None => (bytes.len() as i64).saturating_sub(start),
     };
     if start < 0 {
-        len += start;
+        len = len.saturating_add(start);
         start = 0;
     }
     let start = (start as usize).min(bytes.len());
-    let end = (start as i64 + len.max(0)).min(bytes.len() as i64) as usize;
+    len = len.max(0).min((bytes.len() - start) as i64);
+    let end = if chars {
+        // The start is always a byte offset; only the length counts characters.
+        let mut at = start;
+        for _ in 0..len {
+            if at == bytes.len() { break; }
+            let size = (1..=4).find_map(|size| std::str::from_utf8(bytes.get(at..at + size)?).ok()
+                .and_then(|text| text.chars().next().filter(|ch| ch.len_utf8() == size).map(|_| size))).unwrap_or(1);
+            at += size;
+            while at < bytes.len() {
+                let ch = (1..=4).find_map(|size| std::str::from_utf8(bytes.get(at..at + size)?).ok().and_then(|text| text.chars().next()));
+                match ch { Some(ch) if is_composing(ch) => at += ch.len_utf8(), _ => break }
+            }
+        }
+        at
+    } else { start + len as usize };
     Ok(Value::String(bytes[start..end.max(start)].to_vec().into()))
 }
 
@@ -655,7 +728,10 @@ fn substitute(rt: &mut Runtime, host: &mut dyn ScriptHost, args: &[Value]) -> Ev
         let replacement = match &args[2] {
             Value::Funcref(_) => {
                 let groups: Vec<Value> = found.groups.iter().map(|group| Value::String(group.clone().map_or_else(VStr::empty, |range| text[range].into()))).collect();
-                call_callback(rt, host, &args[2], vec![Value::list(groups)])?.to_text()?
+                rt.submatches.push(groups.clone());
+                let value = call_callback(rt, host, &args[2], vec![Value::list(groups)]);
+                rt.submatches.pop();
+                value?.to_text()?
             }
             other => {
                 let sub = other.to_text()?;
@@ -694,7 +770,7 @@ fn match_function(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args:
         let items = list.snapshot();
         let mut index = opt_number(args, 2, 0)?;
         if index < 0 {
-            index = 0;
+            index = (items.len() as i64).saturating_add(index).max(0);
         }
         let mut remaining = count;
         for (position, item) in items.iter().enumerate().skip(index as usize) {
@@ -706,7 +782,7 @@ fn match_function(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args:
                 }
                 return Ok(match name {
                     "match" => Value::Number(position as i64),
-                    "matchend" => Value::Number(found.end as i64),
+                    "matchend" => Value::Number(position as i64),
                     "matchstr" => item.clone(),
                     "matchstrpos" => Value::list(vec![Value::String(text[found.start..found.end].into()), (position as i64).into(), (found.start as i64).into(), (found.end as i64).into()]),
                     _ => groups_list(&text, &found),
@@ -744,7 +820,7 @@ fn match_function(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args:
                 _ => groups_list(&text, &found),
             });
         }
-        at = if found.end > found.start { found.end } else { found.end + text[found.end..].chars().next().map_or(1, char::len_utf8) };
+        at = found.start + text[found.start..].chars().next().map_or(1, char::len_utf8);
         if at > text.len() {
             return Ok(no_match(name, false));
         }

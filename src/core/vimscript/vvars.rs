@@ -16,6 +16,17 @@ pub fn writable(name: &str) -> bool {
     WRITABLE.contains(&name)
 }
 
+/// Predefined variables keep their declared type, including in legacy scripts.
+pub(crate) fn assignment(name: &str, current: &Value, value: Value) -> Result<Value, super::VimError> {
+    match current {
+        Value::String(_) => Ok(Value::String(value.to_vstr()?)),
+        Value::Number(_) => Ok(Value::Number(value.to_number()?)),
+        Value::List(_) if matches!(value, Value::List(_)) => Ok(value),
+        Value::Dict(_) if matches!(value, Value::Dict(_)) => Ok(value),
+        _ => Err(super::VimError::new(963, format!("Setting v:{name} to value with wrong type"))),
+    }
+}
+
 pub fn initialize(vars: &Dict) {
     let entries: Vec<(&str, Value)> = vec![
         ("true", Value::Bool(true)),

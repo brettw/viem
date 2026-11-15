@@ -292,6 +292,7 @@ impl List {
     }
     pub fn check_writable(&self) -> Result<(), VimError> {
         if self.data().null {return Err(VimError::new(1130, "Cannot add to null list"));}
+        if self.data().lock == Lock::Fixed {return Err(VimError::new(742, "Cannot change value of a:000"));}
         if self.data().lock.is_locked() {
             Err(VimError::new(741, "Value is locked"))
         } else {
@@ -301,6 +302,7 @@ impl List {
     /// Locked check for a builtin's argument, e.g. "add() argument".
     pub fn check_argument(&self, function: &str) -> Result<(), VimError> {
         if self.data().null {return Err(VimError::new(1130, "Cannot add to null list"));}
+        if self.data().lock == Lock::Fixed {return Err(VimError::new(742, "Cannot change value of a:000"));}
         if self.data().lock.is_locked() {
             Err(VimError::new(741, format!("Value is locked: {function}() argument")))
         } else {
@@ -501,6 +503,10 @@ impl Funcref {
         let mut ty = super::compiler::signature(&function);
         if let (Some(class), super::types::Type::Func {result, ..}) = (&data.constructor, &mut ty) {
             **result = super::types::Type::Named(class.type_name());
+        }
+        if let super::types::Type::Func { args, optional, .. } = &mut ty {
+            args.drain(..data.args.len().min(args.len()));
+            *optional = (*optional).min(args.len());
         }
         data.ty = Some(ty); data.specialization = Some(function); Self(Arc::new(data))
     }

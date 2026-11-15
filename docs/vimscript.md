@@ -122,6 +122,8 @@ imports, compilation without body effects, editor transactions, resource limits,
 reload identity and teardown. These are targeted regressions, not an exhaustive
 execution of Vim's upstream language suite; passing them is not proof of 100%
 behavioral or diagnostic parity. The host restrictions below remain deliberate.
+Function-reference identity comparisons (`is`/`isnot`) still compare names;
+distinguishing separately captured references remains a compatibility gap.
 
 ## Builtins and host operations
 
@@ -224,6 +226,8 @@ shares those limits across its directories. Generated ranges, repeated lists and
 flattened lists are limited to one million items; string/blob repetition and
 `printf()` output to 64 MiB. `printf()` width/precision fields are limited to one
 million, and flattening rejects cycles or more than 256 active list levels.
+Redirection captures at most 64 MiB across commands; exhausting that budget
+stops capture and retains the register's last complete published value.
 Individual script regex input strings are limited to 256 KiB. Patterns are
 limited to 16 KiB and compiled programs to 1 MiB. String literals use a compact
 VM boundary instruction to distinguish following composing marks, sharing one
@@ -231,7 +235,8 @@ Unicode mark table rather than storing it per literal. A 512-character ASCII
 literal measured 119,608 compiled-program bytes on macOS; the regression test
 caps it at 256 bytes per character. JSON decoding shares the string/item limits,
 charges its input against script fuel, and limits nesting to 100 levels.
-Core command replay has its own finite budget. Recursive mappings and abbreviations cannot run indefinitely.
+Core command replay has its own finite budget. Recursive mappings and
+abbreviations cannot run indefinitely.
 
 Vim9 type syntax and validation have a maximum depth of 100. Type validation
 visits at most 1,000,001 nodes per operation and memoizes shared containers;
