@@ -21,3 +21,11 @@ E743: Variable nested too deep for (un)lock
 line 66:
 E743: Variable nested too deep for (un)lock
 2 ok
+list<list<any>> dict<dict<any>> list<list<any>> list<any>
+[2, 0] Vim(let):E979: Blob index out of range: 0 0z010203
+[0, 99] Vim(let):E979: Blob index out of range: 99 0z010203
+[1, 1] 0z02 0z0103
+[0, -1] 0z010203 0z
+[-2, -1] 0z0203 0z01
+[0, 3] Vim(let):E979: Blob index out of range: 3 0z010203
+[0, -4] Vim(let):E979: Blob index out of range: -1 0z010203

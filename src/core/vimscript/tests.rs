@@ -298,6 +298,26 @@ fn builtin_generated_container_limits_and_extreme_ranges() {
 }
 
 #[test]
+fn typename_rejects_excessive_nesting_without_overflowing() {
+    use super::value::List;
+    let mut rt = Runtime::new(ScriptState::new());
+    let mut host = MemoryHost::new();
+    let mut levels = vec![List::new(vec![7.into()])];
+    for _ in 0..1100 {
+        levels.push(List::new(vec![Value::List(levels.last().unwrap().clone())]));
+    }
+    let deepest = Value::List(levels.last().unwrap().clone());
+    assert!(matches!(super::builtins::call(&mut rt, &mut host, "typename", vec![deepest]).unwrap(), Err(Fail::Interrupt(_))));
+    let accepted = Value::List(levels[998].clone());
+    let name = super::builtins::call(&mut rt, &mut host, "typename", vec![accepted]).unwrap().unwrap();
+    assert_eq!(name.to_text().unwrap(), format!("{}number{}", "list<".repeat(999), ">".repeat(999)));
+    // Unlink the chain so dropping it does not recurse once per level.
+    for list in &levels {
+        list.data().items.clear();
+    }
+}
+
+#[test]
 fn flatten_limits_reject_cycles_and_depth_without_mutation() {
     use super::value::List;
     let mut rt = Runtime::new(ScriptState::new());

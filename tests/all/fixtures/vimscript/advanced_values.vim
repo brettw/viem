@@ -66,3 +66,21 @@ lockvar! cycle
 unlockvar! cycle
 call add(cycle, 'ok')
 echo len(cycle) cycle[1]
+
+let self_list = []
+call add(self_list, self_list)
+let self_dict = {}
+let self_dict.self = self_dict
+let shared = [1]
+let mixed_cycle = [1]
+call add(mixed_cycle, mixed_cycle)
+echo typename(self_list) typename(self_dict) typename([shared, shared]) typename(mixed_cycle)
+for blob_range in [[2, 0], [0, 99], [1, 1], [0, -1], [-2, -1], [0, 3], [0, -4]]
+  let blob = 0z010203
+  try
+    let removed = call('remove', [blob] + blob_range)
+    echo string(blob_range) string(removed) string(blob)
+  catch
+    echo string(blob_range) v:exception string(blob)
+  endtry
+endfor

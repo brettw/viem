@@ -432,47 +432,101 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
         }.into()))),
         "garbagecollect" => arity(name, args, 0, 1).map(|()| Value::Number(0)),
         "type" => arity(name, args, 1, 1).map(|()| Value::Number(args[0].type_number())),
-        "typename" => arity(name, args, 1, 1).map(|()| Value::String(typename(&args[0]).into())),
+        "typename" => arity(name, args, 1, 1).and_then(|()| typename(&args[0]).map(|name| Value::String(name.into()))),
         _ => return None,
     })
 }
 
-fn typename(value: &Value) -> String {
-    match value {
-        Value::Tuple(_) => super::super::types::Type::infer(value).to_string(),
-        Value::Module(_) => "module".into(),
-        Value::TypeAlias(alias) => format!("typealias<{}>", alias.ty),
-        Value::Void => "void".into(),
-        Value::NullTyped(t) | Value::Type(t) => t.to_string(),
-        Value::Class(c) => format!("class<{}>", c.name),
-        Value::Object(o) => format!("object<{}>", o.class.name),
-        Value::Number(_) => "number".into(),
-        Value::String(_) => "string".into(),
-        Value::Float(_) => "float".into(),
-        Value::Bool(_) => "bool".into(),
-        Value::None | Value::Null => "special".into(),
-        Value::Blob(_) => "blob".into(),
-        Value::Funcref(_) => "func".into(),
-        Value::List(list) => {
-            let items = list.snapshot();
-            let mut kinds: Vec<String> = items.iter().map(typename).collect();
-            kinds.dedup();
-            match kinds.as_slice() {
-                [] => "list<any>".into(),
-                [one] => format!("list<{one}>"),
-                _ => "list<any>".into(),
-            }
+/// Nesting accepted by `typename()`; deeper acyclic values fail instead of
+/// exhausting the native stack.
+const MAX_TYPENAME_DEPTH: usize = 1000;
+
+/// An inferred `typename()` type. Containers stay structured so member types
+/// can be merged like Vim's `common_type()`.
+#[derive(Clone, PartialEq)]
+enum InferredType {
+    Named(String),
+    List(Box<InferredType>),
+    Dict(Box<InferredType>),
+    /// The member type of an empty container, which yields to any other type.
+    Unknown,
+}
+
+impl InferredType {
+    fn any() -> Self {
+        Self::Named("any".into())
+    }
+
+    fn common(self, other: Self) -> Self {
+        match (self, other) {
+            (a, b) if a == b => a,
+            (Self::Unknown, other) | (other, Self::Unknown) => other,
+            (Self::List(a), Self::List(b)) => Self::List(Box::new(a.common(*b))),
+            (Self::Dict(a), Self::Dict(b)) => Self::Dict(Box::new(a.common(*b))),
+            _ => Self::any(),
         }
-        Value::Dict(dict) => {
-            let mut kinds: Vec<String> = dict.snapshot().iter().map(|(_, value)| typename(value)).collect();
-            kinds.dedup();
-            match kinds.as_slice() {
-                [] => "dict<any>".into(),
-                [one] => format!("dict<{one}>"),
-                _ => "dict<any>".into(),
+    }
+
+    fn write(&self, out: &mut String) {
+        match self {
+            Self::Named(name) => out.push_str(name),
+            Self::Unknown => out.push_str("any"),
+            Self::List(member) | Self::Dict(member) => {
+                out.push_str(if matches!(self, Self::List(_)) { "list<" } else { "dict<" });
+                member.write(out);
+                out.push('>');
             }
         }
     }
+}
+
+fn typename(value: &Value) -> EvalResult<String> {
+    let mut out = String::new();
+    infer_typename(value, 0, &mut std::collections::HashSet::new())?.write(&mut out);
+    Ok(out)
+}
+
+/// Like Vim's `typval2type()`, a List or Dictionary seen earlier in the same
+/// query (a cycle or a shared member) contributes `list<any>` or `dict<any>`.
+fn infer_typename(value: &Value, depth: usize, seen: &mut std::collections::HashSet<usize>) -> EvalResult<InferredType> {
+    if depth >= MAX_TYPENAME_DEPTH {
+        return Err(Fail::Interrupt("typename() nesting limit exceeded".into()));
+    }
+    let members = |items: Vec<Value>, seen: &mut std::collections::HashSet<usize>| -> EvalResult<InferredType> {
+        let mut common = InferredType::Unknown;
+        for item in &items {
+            common = common.common(infer_typename(item, depth + 1, seen)?);
+        }
+        Ok(common)
+    };
+    Ok(match value {
+        Value::List(list) => {
+            let member = if seen.insert(list.id()) { members(list.snapshot(), seen)? } else { InferredType::any() };
+            InferredType::List(Box::new(member))
+        }
+        Value::Dict(dict) => {
+            let member = if seen.insert(dict.id()) {
+                members(dict.snapshot().into_iter().map(|(_, item)| item).collect(), seen)?
+            } else {
+                InferredType::any()
+            };
+            InferredType::Dict(Box::new(member))
+        }
+        Value::Tuple(_) => InferredType::Named(super::super::types::Type::infer(value).to_string()),
+        Value::Module(_) => InferredType::Named("module".into()),
+        Value::TypeAlias(alias) => InferredType::Named(format!("typealias<{}>", alias.ty)),
+        Value::NullTyped(t) | Value::Type(t) => InferredType::Named(t.to_string()),
+        Value::Class(c) => InferredType::Named(format!("class<{}>", c.name)),
+        Value::Object(o) => InferredType::Named(format!("object<{}>", o.class.name)),
+        Value::Void => InferredType::Named("void".into()),
+        Value::Number(_) => InferredType::Named("number".into()),
+        Value::String(_) => InferredType::Named("string".into()),
+        Value::Float(_) => InferredType::Named("float".into()),
+        Value::Bool(_) => InferredType::Named("bool".into()),
+        Value::None | Value::Null => InferredType::Named("special".into()),
+        Value::Blob(_) => InferredType::Named("blob".into()),
+        Value::Funcref(_) => InferredType::Named("func".into()),
+    })
 }
 
 fn slice_bounds(start: i64, end: Option<&Value>, len: usize) -> EvalResult<(usize, usize)> {
@@ -574,7 +628,10 @@ fn remove(args: &[Value]) -> EvalResult<Value> {
                     if end < 0 {
                         end += len;
                     }
-                    let removed: Vec<u8> = blob.data().bytes.drain(start as usize..=(end.min(len - 1)) as usize).collect();
+                    if end < start || end >= len {
+                        return Err(Fail::Error(VimError::new(979, format!("Blob index out of range: {end}"))));
+                    }
+                    let removed: Vec<u8> = blob.data().bytes.drain(start as usize..=end as usize).collect();
                     Ok(Value::Blob(Blob::new(removed)))
                 }
             }

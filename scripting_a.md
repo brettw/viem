@@ -8,29 +8,6 @@ There are 27 reproducer files: 25 safe probes and two isolated crash probes. **A
 
 Each snippet below is a separate script. Unless specified otherwise, line-oriented probes initialize their own content. P1 denotes crashes or silent content/state changes requiring early attention; P2 denotes other reproducible compatibility failures. The findings are ordered by impact, not by implementation sequence.
 
-**1. [P1] `typename()` aborts the process on cyclic values**
-
-```vim
-let L = []
-call add(L, L)
-echo typename(L)
-```
-
-Vim prints `list<list<any>>`. Viem overflows the native stack and aborts with `SIGABRT`. `typename()` recursively visits List and Dictionary contents without cycle detection or a depth budget. The List case was confirmed in an isolated process; the Dictionary branch has the same unbounded recursion in code.
-
-Location: [collections.rs:458](src/core/vimscript/builtins/collections.rs#L458), Dictionary branch at line 467. Evidence: [reproducer](target/vimscript-audit/cases/crash_typename.vim), [crash log](target/vimscript-audit/crash-typename.log).
-
-**2. [P1] Invalid Blob removal ranges panic or mutate instead of failing**
-
-```vim
-let B = 0z010203
-echo remove(B, 2, 0)
-```
-
-Vim reports E979. Viem panics with `slice index starts at 2 but ends at 1`. Separately, `remove(B, 0, 99)` reports E979 and preserves `B` in Vim, but removes the entire Blob in Viem. The implementation validates the starting index but clamps the ending index and passes reversed ranges to `Vec::drain`.
-
-Location: [collections.rs:577](src/core/vimscript/builtins/collections.rs#L577). Evidence: [panic reproducer](target/vimscript-audit/cases/crash_blob_range.vim), [crash log](target/vimscript-audit/crash-blob-range.log), [non-crashing range probe](target/vimscript-audit/cases/legacy_blob_range_validation.vim).
-
 **3. [P1] `getline()` drops literal carriage returns in Unix files**
 
 ```vim
