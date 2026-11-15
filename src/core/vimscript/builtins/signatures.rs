@@ -458,3 +458,15 @@ mod tests {
         }
     }
 }
+
+pub(super) fn arity(name: &str) -> Option<(usize, usize)> {
+    find(name).map(|signature| (signature.min, signature.max))
+}
+
+pub(super) fn description(name: &str, bound: usize) -> Option<String> {
+    let signature = find(name)?;
+    let max = if signature.max == usize::MAX { signature.min } else { signature.max };
+    let mut arguments = (bound..max).map(|i| if i < signature.min { "[unknown]" } else { "?[unknown]" }).collect::<Vec<_>>();
+    if signature.max == usize::MAX { arguments.push("..."); }
+    Some(format!("func({}): {}", arguments.join(", "), signature.result.resolve(&[])))
+}

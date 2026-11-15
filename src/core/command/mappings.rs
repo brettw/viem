@@ -170,7 +170,7 @@ pub(crate) fn parse_map_keys(text: &str) -> Vec<Key> {
             }
         }
         let code = character as u32;
-        if (crate::vimscript::keys::SPECIAL_BASE..crate::vimscript::keys::SPECIAL_BASE + 0x2000).contains(&code) {
+        if character == crate::vimscript::keys::BACK_TAB || (crate::vimscript::keys::SPECIAL_BASE..crate::vimscript::keys::SPECIAL_BASE + 0x2000).contains(&code) {
             // Key codes from "\<...>" strings, with any modifier prefix.
             let mut length = character.len_utf8();
             if code >= crate::vimscript::keys::MODIFIER_BASE {
@@ -1100,6 +1100,12 @@ mod tests {
         assert!(parse_key_notation("<F38>").is_err());
         assert!(parse_key_notation("<Unknown>").is_err());
         assert_eq!(parse_map_keys("<Unknown>"), "<Unknown>".chars().map(Key::Char).collect::<Vec<_>>());
+    }
+    #[test]
+    fn shifted_tab_string_mapping_replays_the_same_key() {
+        let (mut core, view) = setup("abc", "execute 'nmap ' .. \"\\<S-Tab>\" .. ' l'");
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::BackTab))).unwrap();
+        assert_eq!(core.command_state(view).unwrap().cursor(), 1);
     }
     #[test]
     fn visual_mapping_and_macro_recording_share_semantic_replay() {

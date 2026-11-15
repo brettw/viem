@@ -56,17 +56,35 @@ fn bracket_end(source: &str, start: usize) -> Option<usize> {
 }
 
 thread_local! {
-    static CACHE: std::cell::RefCell<HashMap<(Vec<u8>, bool), Arc<VimPattern>>> = std::cell::RefCell::new(HashMap::new());
+    static CACHE: std::cell::RefCell<HashMap<(Vec<u8>, bool, bool), Arc<VimPattern>>> = std::cell::RefCell::new(HashMap::new());
 }
 
 pub fn compile(pattern: &[u8], ignore_case: bool) -> Result<Arc<VimPattern>, VimError> {
-    let key = (pattern.to_vec(), ignore_case);
+    compile_context(pattern, ignore_case, false)
+}
+pub fn compile_string(pattern: &[u8], ignore_case: bool) -> Result<Arc<VimPattern>, VimError> { compile_context(pattern, ignore_case, true) }
+fn compile_context(pattern: &[u8], ignore_case: bool, string_context: bool) -> Result<Arc<VimPattern>, VimError> {
+    let key = (pattern.to_vec(), ignore_case, string_context);
     if let Some(found) = CACHE.with(|cache| cache.borrow().get(&key).cloned()) {
         return Ok(found);
     }
     let source = String::from_utf8_lossy(pattern);
-    let compiled = VimPattern::compile(&source, ignore_case, VimRegexLimits::default())
-        .map_err(|error| VimError::new(383, format!("Invalid search string: {source} ({error})")))?;
+    let compiler = if string_context { VimPattern::compile_for_string } else { VimPattern::compile };
+    let compiled = compiler(&source, ignore_case, VimRegexLimits::default()).map_err(|error| {
+        let code = match error.as_str() {
+            "unclosed Vim group" => 54,
+            "unmatched Vim group close" => 55,
+            "invalid Vim postfix assertion" => 59,
+            "nested Vim repetition" => 61,
+            "Vim repetition has no preceding atom" | "Vim assertion has no preceding atom" => 64,
+            "Vim backreference names an absent capture" => 65,
+            "unsupported Vim percent atom: unknown atom" => 71,
+            "unterminated repetition" | "unsupported repetition" => 554,
+            _ if error.contains("range") => 944,
+            _ => 383,
+        };
+        VimError::new(code, format!("Invalid search string: {source} ({error})"))
+    })?;
     let compiled = Arc::new(compiled);
     CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -120,7 +138,7 @@ pub fn find_at(pattern: &VimPattern, text: &str, start: usize, fuel: &mut u64) -
 }
 
 pub fn string_matches(text: &[u8], pattern: &[u8], ignore_case: bool, fuel: &mut u64) -> Result<bool, VimError> {
-    let compiled = compile(pattern, ignore_case)?;
+    let compiled = compile_string(pattern, ignore_case)?;
     let text = String::from_utf8_lossy(text);
     Ok(find_at(&compiled, &text, 0, fuel)?.is_some())
 }

@@ -1222,7 +1222,9 @@ pub fn values_equal(left: &Value, right: &Value, ignore_case: bool, depth: usize
     if depth > 100 {
         return Ok(false);
     }
+    if !matches!(left, Value::NullTyped(_)) && !matches!(right, Value::NullTyped(_)) && left.type_number() != right.type_number() { return Ok(false); }
     Ok(match (left, right) {
+        (Value::None, Value::Null) | (Value::Null, Value::None) => false,
         (Value::NullTyped(a), Value::NullTyped(b)) => a == b,
         (Value::NullTyped(t), Value::String(s)) | (Value::String(s), Value::NullTyped(t)) if **t == super::types::Type::String => s.is_empty(),
         (Value::NullTyped(ty), Value::Tuple(t)) | (Value::Tuple(t), Value::NullTyped(ty)) if matches!(ty.as_ref(), super::types::Type::Tuple(..)) => t.is_empty(),
@@ -1375,6 +1377,7 @@ pub fn compare_values(
             let equal = values_equal(left, right, ignore_case, 0)?;
             Ok(if op == Equal { equal } else { !equal })
         }
+        (Value::None, Value::Null) | (Value::Null, Value::None) if matches!(op, Equal | NotEqual) => Ok(op == NotEqual),
         (Value::Float(_), _) | (_, Value::Float(_)) => {
             if matches!(op, Match | NoMatch) {
                 return compare_strings(left, right, op, ignore_case, regex);
@@ -1478,4 +1481,28 @@ mod tests {
         assert_eq!(Value::List(recursive.clone()).echo_string(), "[[...]]");
         Value::List(recursive).clear_recursive(&mut Default::default());
     }
+}
+
+/// Message rendering is separate from String values, which retain raw bytes.
+pub(super) fn echo_display(mut bytes: &[u8]) -> String {
+    let mut out = String::new();
+    while !bytes.is_empty() {
+        let (valid, invalid) = match std::str::from_utf8(bytes) {
+            Ok(s) => (s, 0),
+            Err(e) => (std::str::from_utf8(&bytes[..e.valid_up_to()]).unwrap(), e.error_len().unwrap_or(bytes.len() - e.valid_up_to())),
+        };
+        for c in valid.chars() {
+            match c {
+                '\n' | '\t' => out.push(c),
+                '\0'..='\u{1f}' => { out.push('^'); out.push((c as u8 + 64) as char); }
+                '\u{7f}' => out.push_str("^?"),
+                '\u{80}'..='\u{9f}' => out.push_str(&format!("<{:02x}>", c as u32)),
+                _ => out.push(c),
+            }
+        }
+        let end = valid.len() + invalid;
+        for b in &bytes[valid.len()..end] { out.push_str(&format!("<{b:02x}>")); }
+        bytes = &bytes[end..];
+    }
+    out
 }

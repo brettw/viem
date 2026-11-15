@@ -450,11 +450,17 @@ fn glob_walk(rt: &mut Runtime, base: &str, components: &[&str], results: &mut Ve
 }
 
 fn glob2regpat(glob: &str) -> String {
-    let mut out = String::from("^");
     let mut chars = glob.chars().peekable();
+    let leading_star = chars.peek() == Some(&'*');
+    while chars.peek() == Some(&'*') { chars.next(); }
+    let mut out = if leading_star { String::new() } else { String::from("^") };
+    let mut trailing_star = leading_star;
     while let Some(c) = chars.next() {
+        trailing_star = c == '*';
         match c {
-            '*' => out.push_str(".*"),
+            '*' => {
+                if !out.ends_with(".*") { out.push_str(".*"); }
+            },
             '?' => out.push('.'),
             '.' | '~' => {
                 out.push('\\');
@@ -472,7 +478,10 @@ fn glob2regpat(glob: &str) -> String {
             other => out.push(other),
         }
     }
-    out.push('$');
+    if out.is_empty() && leading_star { return ".*".into(); }
+    if trailing_star {
+        if out.ends_with(".*") { out.truncate(out.len() - 2); }
+    } else { out.push('$'); }
     out
 }
 
@@ -628,6 +637,6 @@ mod tests {
     fn simplify_and_glob_patterns() {
         assert_eq!(simplify("/a/./b/../c"), "/a/c");
         assert_eq!(simplify("a/../../b"), "../b");
-        assert_eq!(glob2regpat("*.txt"), "^.*\\.txt$");
+        assert_eq!(glob2regpat("*.txt"), "\\.txt$");
     }
 }

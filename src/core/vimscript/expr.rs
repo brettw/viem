@@ -883,6 +883,7 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
                 let key = self.eval1()?;
                 if self.evaluate {
                     match &key {
+                        Value::Float(f) if !self.rt.vim9() => crate::vimscript::value::format_float(*f).into(),
                         Value::Float(_) => return Err(Fail::Error(VimError::new(806, "Using a Float as a String"))),
                         Value::Type(_) if self.analyzing() => format!("<key{}>", dict.len()).into(),
                         other => other.to_vstr()?,

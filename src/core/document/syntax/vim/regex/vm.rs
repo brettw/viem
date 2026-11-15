@@ -28,6 +28,7 @@ pub(super) enum PositionKind {
 }
 #[derive(Clone, Debug)]
 pub(super) enum Special {
+    NotComposing,
     Assertion(AssertionKind),
     Backreference(usize),
     ControlClass {
@@ -42,6 +43,7 @@ pub(super) enum Special {
 #[derive(Clone, Debug)]
 enum Instruction {
     Accept,
+    NotComposing(usize),
     Character(Vec<(u32, u32)>, usize),
     ControlClass(Vec<(u32, u32)>, bool, usize),
     Look(Look, usize),
@@ -191,6 +193,13 @@ impl Program {
                     } else if let Some(result) = self.return_frame(c, Some(thread), byte) {
                         return result;
                     }
+                }
+                Instruction::NotComposing(next) => {
+                    *inspected_end = (*inspected_end).max(thread.position.saturating_add(4).min(len));
+                    if scalar(thread.position, byte).is_none_or(|(ch, _)| !super::translate::is_composing(ch)) {
+                        thread.ip = *next;
+                        frame.current = Some(thread);
+                    } else { c.retained -= 1; }
                 }
                 Instruction::Character(ranges, next) => {
                     *inspected_end =
@@ -740,6 +749,7 @@ impl Compiler<'_> {
                         .parse::<usize>()
                         .map_err(|_| "invalid Vim instruction identity")?;
                     match self.specials.get(id).ok_or("missing Vim instruction")? {
+                        Special::NotComposing => self.emit(Instruction::NotComposing(next)),
                         Special::Assertion(kind) => {
                             let kind = *kind;
                             let maximum_bytes = extent(&capture.sub, self.specials).1;
@@ -861,7 +871,7 @@ fn extent(hir: &Hir, specials: &[Special]) -> (usize, Option<usize>) {
                     Special::Assertion(AssertionKind::Atomic) => extent(&capture.sub, specials),
                     Special::Assertion(_) => (0, Some(0)),
                     Special::Backreference(_) => (0, None),
-                    Special::Position { .. } => (0, Some(0)),
+                    Special::Position { .. } | Special::NotComposing => (0, Some(0)),
                     Special::ControlClass { .. } => (1, Some(4)),
                 }
             } else {

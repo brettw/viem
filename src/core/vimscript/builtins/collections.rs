@@ -1,5 +1,5 @@
 //! List, Dictionary and Blob builtins.
-use super::{arity, call_callback, callback_failed, number, opt_bool, opt_number, text, vstr};
+use super::{arity, call_callback, callback_failed, number, opt_bool, opt_number, vstr};
 use crate::vimscript::error::{EvalResult, Fail, VimError};
 use crate::vimscript::exec::{Runtime, ScriptHost};
 use crate::vimscript::value::{compare_bytes, values_equal, Blob, Dict, List, Lock, VStr, Value};
@@ -110,7 +110,7 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
                 Ok(args[0].clone())
             }
             Value::String(text) => Ok(Value::String(super::text::char_units(text, true).into_iter().rev().collect::<String>().into())),
-            _ => Ok(Value::Number(0)),
+            _ => Err(Fail::Error(VimError::new(1253, "String, List or Blob required"))),
         }),
         "index" => arity(name, args, 2, 4).and_then(|()| {
             let ignore_case = opt_bool(args, 3, false)?;
@@ -325,7 +325,7 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
             _ => Err(Fail::Error(VimError::new(1206, "Dictionary required for argument 1"))),
         }),
         "get" => arity(name, args, 2, 3).and_then(|()| {
-            let default = args.get(2).cloned().unwrap_or(Value::Number(0));
+            let default = args.get(2).cloned().unwrap_or(Value::Number(if matches!(args[0], Value::Blob(_)) { -1 } else { 0 }));
             match &args[0] {
                 Value::List(list) => {
                     let len = list.len() as i64;
@@ -353,13 +353,13 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
                         "args" => Value::list(funcref.args().to_vec()),
                         "arity" => {
                             let function = rt.state.function(funcref.name().as_bytes());
-                            let (required, optional, varargs) = function.map_or((0, 0, false), |f| {
+                            let (required, optional, varargs) = function.map_or_else(|| super::signatures::arity(&funcref.name().to_str_lossy()).map_or((0, 0, false), |(min, max)| (min, max.saturating_sub(min), max == usize::MAX)), |f| {
                                 let required = f.params.iter().filter(|p| p.default.is_none()).count();
                                 (required, f.params.len() - required, f.varargs)
                             });
                             Value::Dict(Dict::from_pairs([
-                                ("required".into(), (required as i64).into()),
-                                ("optional".into(), (optional as i64).into()),
+                                ("required".into(), (required.saturating_sub(funcref.args().len()) as i64).into()),
+                                ("optional".into(), (optional.saturating_sub(funcref.args().len().saturating_sub(required)) as i64).into()),
                                 ("varargs".into(), Value::Bool(varargs)),
                             ]))
                         }
@@ -396,7 +396,16 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
             }
             Ok(Value::String(out.into()))
         }),
-        "str2list" => arity(name, args, 1, 2).and_then(|()| Ok(Value::list(text(args, 0)?.chars().map(|c| Value::Number(c as i64)).collect()))),
+        "str2list" => arity(name, args, 1, 2).and_then(|()| {
+            let source = vstr(args, 0)?; let mut bytes = source.as_bytes(); let mut items = Vec::new();
+            while !bytes.is_empty() {
+                let len = std::str::from_utf8(bytes).map_or_else(|e| e.valid_up_to(), |s| s.len());
+                items.extend(std::str::from_utf8(&bytes[..len]).unwrap().chars().map(|c| Value::Number(c as i64)));
+                bytes = &bytes[len..];
+                if let Some((&byte, rest)) = bytes.split_first() { items.push(Value::Number(byte as i64)); bytes = rest; }
+            }
+            Ok(Value::list(items))
+        }),
         "list2blob" => arity(name, args, 1, 1).and_then(|()| {
             let Value::List(list) = &args[0] else { return Err(list_required(0)) };
             let mut bytes = Vec::new();
@@ -435,7 +444,7 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
         }.into()))),
         "garbagecollect" => arity(name, args, 0, 1).map(|()| Value::Number(0)),
         "type" => arity(name, args, 1, 1).map(|()| Value::Number(args[0].type_number())),
-        "typename" => arity(name, args, 1, 1).and_then(|()| typename(&args[0]).map(|name| Value::String(name.into()))),
+        "typename" => arity(name, args, 1, 1).and_then(|()| typename(rt, &args[0]).map(|name| Value::String(name.into()))),
         _ => return None,
     })
 }
@@ -483,22 +492,22 @@ impl InferredType {
     }
 }
 
-fn typename(value: &Value) -> EvalResult<String> {
+fn typename(rt: &Runtime, value: &Value) -> EvalResult<String> {
     let mut out = String::new();
-    infer_typename(value, 0, &mut std::collections::HashSet::new())?.write(&mut out);
+    infer_typename(rt, value, 0, &mut std::collections::HashSet::new())?.write(&mut out);
     Ok(out)
 }
 
 /// Like Vim's `typval2type()`, a List or Dictionary seen earlier in the same
 /// query (a cycle or a shared member) contributes `list<any>` or `dict<any>`.
-fn infer_typename(value: &Value, depth: usize, seen: &mut std::collections::HashSet<usize>) -> EvalResult<InferredType> {
+fn infer_typename(rt: &Runtime, value: &Value, depth: usize, seen: &mut std::collections::HashSet<usize>) -> EvalResult<InferredType> {
     if depth >= MAX_TYPENAME_DEPTH {
         return Err(Fail::Interrupt("typename() nesting limit exceeded".into()));
     }
     let members = |items: Vec<Value>, seen: &mut std::collections::HashSet<usize>| -> EvalResult<InferredType> {
         let mut common = InferredType::Unknown;
         for item in &items {
-            common = common.common(infer_typename(item, depth + 1, seen)?);
+            common = common.common(infer_typename(rt, item, depth + 1, seen)?);
         }
         Ok(common)
     };
@@ -528,8 +537,35 @@ fn infer_typename(value: &Value, depth: usize, seen: &mut std::collections::Hash
         Value::Bool(_) => InferredType::Named("bool".into()),
         Value::None | Value::Null => InferredType::Named("special".into()),
         Value::Blob(_) => InferredType::Named("blob".into()),
-        Value::Funcref(_) => InferredType::Named("func".into()),
+        Value::Funcref(f) => InferredType::Named(funcref_typename(rt, f)),
     })
+}
+
+fn funcref_typename(rt: &Runtime, reference: &crate::vimscript::value::Funcref) -> String {
+    if let Some(ty) = reference.declared_type().filter(|ty| *ty != crate::vimscript::types::Type::Any) { return function_type_name(&ty); }
+    if let Some(function) = rt.state.function(reference.name().as_bytes()) {
+        if function.signature.is_none() { return "func(...): any".into(); }
+        let mut ty = crate::vimscript::compiler::signature(&function);
+        if let crate::vimscript::types::Type::Func { args, optional, .. } = &mut ty {
+            let bound = reference.args().len().min(args.len());
+            args.drain(..bound);
+            *optional = (*optional).min(args.len());
+        }
+        return function_type_name(&ty);
+    }
+    if !reference.args().is_empty() { return "func".into(); }
+    super::signatures::description(&reference.name().to_str_lossy(), reference.args().len()).unwrap_or_else(|| "func".into())
+}
+
+fn function_type_name(ty: &crate::vimscript::types::Type) -> String {
+    use crate::vimscript::types::Type;
+    let Type::Func { args, optional, rest, result } = ty else { return ty.to_string(); };
+    let required = args.len().saturating_sub(*optional);
+    let mut parameters = args.iter().enumerate().map(|(i, ty)| format!("{}{ty}", if i < required { "" } else { "?" })).collect::<Vec<_>>();
+    if let Some(rest) = rest { parameters.push(if **rest == Type::Any { "...".into() } else { format!("...{rest}") }); }
+    let mut out = format!("func({})", parameters.join(", "));
+    if **result != Type::Void { out.push_str(&format!(": {result}")); }
+    out
 }
 
 fn slice_bounds(start: i64, end: Option<&Value>, len: usize) -> EvalResult<(usize, usize)> {
@@ -876,6 +912,7 @@ fn sort_uniq(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args: &[Va
         String { ignore_case: bool },
         Numeric,
         NumericStrings,
+        Locale,
         Float,
     }
     let mut callback = None;
@@ -886,7 +923,7 @@ fn sort_uniq(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args: &[Va
         Some(Value::String(text)) => match text.as_bytes() {
             b"" => How::String { ignore_case: false },
             b"i" => How::String { ignore_case: true },
-            b"l" => How::String { ignore_case: false },
+            b"l" => How::Locale,
             b"n" => How::Numeric,
             b"N" => How::NumericStrings,
             b"f" => How::Float,
@@ -901,11 +938,16 @@ fn sort_uniq(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args: &[Va
         }
         Some(_) => return Err(Fail::Error(VimError::new(474, "Invalid argument"))),
     };
+    let numeric_failure = if matches!(how, How::NumericStrings) { items.iter().find_map(|(_, item)| item.to_number().err()) } else { None };
     let self_dict = match args.get(2) {
         Some(Value::Dict(dict)) => Some(dict.clone()),
         Some(_) => return Err(Fail::Error(VimError::new(715, "Dictionary required"))),
         None => None,
     };
+    let locale = matches!(how, How::Locale).then(|| {
+        let name = ["LC_ALL", "LC_COLLATE", "LANG"].iter().filter_map(|name| host.getenv(name)).find(|s| !s.is_empty()).unwrap_or_else(|| "C".into());
+        crate::vimscript::locale::Collation::new(&name)
+    });
     let mut failure: Option<Fail> = None;
     let mut compare = |rt: &mut Runtime, host: &mut dyn ScriptHost, a: &Value, b: &Value| -> std::cmp::Ordering {
         if failure.is_some() {
@@ -930,12 +972,10 @@ fn sort_uniq(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args: &[Va
         }
         match how {
             How::String { ignore_case } => {
-                let text = |value: &Value| match value {
-                    Value::String(text) => text.as_bytes().to_vec(),
-                    other => other.string_bytes(),
-                };
+                let text = |value: &Value| value.string_bytes();
                 compare_bytes(&text(a), &text(b), ignore_case)
             }
+            How::Locale => locale.as_ref().unwrap().compare(&a.string_bytes(), &b.string_bytes()),
             How::Numeric => {
                 let number = |value: &Value| match value {
                     Value::Number(n) => *n,
@@ -997,6 +1037,7 @@ fn sort_uniq(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args: &[Va
         list.data().items.arrange(unique);
     }
     let _ = Lock::Unlocked;
+    if let Some(error) = numeric_failure { return Err(error.into()); }
     Ok(args[0].clone())
 }
 
@@ -1006,12 +1047,12 @@ fn split(rt: &mut Runtime, args: &[Value]) -> EvalResult<Value> {
     let keep_empty = opt_bool(args, 2, false)?;
     let pattern = match args.get(1) {
         Some(value) => value.to_vstr()?,
-        None => VStr::from("\\s\\+"),
+        None => VStr::from("[\\x01-\\x20]\\+"),
     };
     if pattern.is_empty() {
-        return Ok(Value::list(text.chars().map(|c| Value::String(c.to_string().into())).collect()));
+        return Ok(Value::list(if text.is_empty() && !keep_empty { Vec::new() } else { vec![Value::String(source)] }));
     }
-    let compiled = crate::vimscript::regex::compile(pattern.as_bytes(), false)?;
+    let compiled = crate::vimscript::regex::compile_string(pattern.as_bytes(), false)?;
     // Vim's f_split(): an empty piece is kept only between items, and an
     // empty match never matches twice at the same position.
     let mut items: Vec<Value> = Vec::new();

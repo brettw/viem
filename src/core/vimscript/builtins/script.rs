@@ -20,7 +20,7 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
             let feature = text(args, 0)?;
             Ok(Value::Number(has(host, &feature) as i64))
         }),
-        "function" | "funcref" => arity(name, args, 1, 3).and_then(|()| function(rt, host, args)),
+        "function" | "funcref" => arity(name, args, 1, 3).and_then(|()| function(rt, host, args, name == "funcref")),
         "call" => arity(name, args, 2, 3).and_then(|()| {
             let Value::List(list) = &args[1] else {
                 return Err(Fail::Error(VimError::new(1211, "List required for argument 2")));
@@ -230,7 +230,7 @@ fn execute(rt: &mut Runtime, host: &mut dyn ScriptHost, args: &[Value]) -> EvalR
     Ok(Value::String(capture.text.into()))
 }
 
-fn function(rt: &mut Runtime, host: &mut dyn ScriptHost, args: &[Value]) -> EvalResult<Value> {
+fn function(rt: &mut Runtime, host: &mut dyn ScriptHost, args: &[Value], strict: bool) -> EvalResult<Value> {
     let (mut bound_args, mut bound_dict) = (Vec::new(), None);
     for extra in &args[1..] {
         match extra {
@@ -249,7 +249,7 @@ fn function(rt: &mut Runtime, host: &mut dyn ScriptHost, args: &[Value]) -> Eval
             let exists = rt.state.function(canonical.as_bytes()).is_some()
                 || (crate::vimscript::exec::is_builtin_name(name.as_bytes()) && (super::is_implemented(&name.to_str_lossy()) || host.has_function(&name.to_str_lossy()) || super::is_vim_builtin(&name.to_str_lossy())))
                 || name.as_bytes().contains(&b'#');
-            if !exists {
+            if !exists || (strict && rt.state.function(canonical.as_bytes()).is_none()) {
                 return Err(Fail::Error(VimError::new(700, format!("Unknown function: {}", name.to_str_lossy()))));
             }
             Funcref::named(canonical)

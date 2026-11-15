@@ -36,6 +36,12 @@ pub(super) struct Translation {
 /// Synthetic named captures carry non-regular instructions into the VM compiler;
 /// they never consume text or become user-visible capture registers.
 pub(super) fn translate(source: &str, keyword: &super::VimKeyword) -> Result<Translation, String> {
+    translate_context(source, keyword, false)
+}
+pub(super) fn translate_context(source: &str, keyword: &super::VimKeyword, string_context: bool) -> Result<Translation, String> {
+    translate_inner(source, keyword, string_context, false)
+}
+fn translate_inner(source: &str, keyword: &super::VimKeyword, string_context: bool, ignore_composing: bool) -> Result<Translation, String> {
     let chars: Vec<char> = source.chars().collect();
     let mut t = Translation::default();
     let mut i = 0;
@@ -43,6 +49,7 @@ pub(super) fn translate(source: &str, keyword: &super::VimKeyword) -> Result<Tra
     let mut branch_start = true;
     let mut initial_anchor = false;
     let mut atom = None;
+    let mut repeated = false;
     let mut branch_index = 0;
     let mut registers = Vec::new();
     let mut groups = Vec::new();
@@ -52,7 +59,7 @@ pub(super) fn translate(source: &str, keyword: &super::VimKeyword) -> Result<Tra
         i += 1;
         let escaped = c == '\\';
         let c = if escaped {
-            let c = *chars.get(i).ok_or("trailing Vim escape")?;
+            let Some(&c) = chars.get(i) else { t.regex.push_str("\\\\"); break; };
             i += 1;
             c
         } else {
@@ -71,7 +78,10 @@ pub(super) fn translate(source: &str, keyword: &super::VimKeyword) -> Result<Tra
             continue;
         }
         let operator = magic.special(c, escaped);
+        if ignore_composing && !escaped && !operator && is_composing(c) { continue; }
+        if ignore_composing && !escaped && !operator && atom.is_some() { t.regex.push_str("\\p{M}*"); }
         if operator && matches!(c, '(' | ')' | '|') {
+            repeated = false;
             initial_anchor = false;
             match c {
                 '(' => {
@@ -135,6 +145,8 @@ pub(super) fn translate(source: &str, keyword: &super::VimKeyword) -> Result<Tra
             if atom.is_none() {
                 return Err("Vim repetition has no preceding atom".into());
             }
+            if repeated { return Err("nested Vim repetition".into()); }
+            repeated = true;
             if c == '{' {
                 let (spec, end) = super::repetition(&chars, i)?;
                 t.regex.push_str(&spec);
@@ -243,6 +255,8 @@ pub(super) fn translate(source: &str, keyword: &super::VimKeyword) -> Result<Tra
             }
         } else if operator && c == '%' {
             match chars.get(i) {
+                Some('C') if string_context => { t.regex.push_str("\\p{M}*"); i += 1; }
+                Some('V' | '#') if string_context && chars.get(i + 1) != Some(&'=') => { t.regex.push_str("[a&&[^a]]"); i += 1; }
                 Some('[') => {
                     i += 1;
                     let mut count = 0;
@@ -382,6 +396,9 @@ pub(super) fn translate(source: &str, keyword: &super::VimKeyword) -> Result<Tra
             // gradient as \\gradient. Pin the literal set instead of accepting
             // unsupported state-dependent atoms such as \\Z and \\z.
             t.regex.push(c);
+        } else if escaped && c == 'Z' && string_context {
+            if !ignore_composing { return translate_inner(source, keyword, string_context, true); }
+            continue;
         } else if escaped && c.is_alphanumeric() {
             return Err(format!("unsupported Vim escape: \\{c}"));
         } else if operator && c == '~' {
@@ -398,6 +415,22 @@ pub(super) fn translate(source: &str, keyword: &super::VimKeyword) -> Result<Tra
             }
             t.multiline |= c == '\n';
         }
+        if string_context && operator && c == '.' {
+            let body = t.regex.split_off(start);
+            t.regex.push_str(&format!("(?:{body}\\p{{M}}*)"));
+        } else if string_context && !ignore_composing
+            && ((!operator && !escaped) || (escaped && !c.is_alphanumeric() && !operator))
+            && !(chars.get(i) == Some(&'\\') && chars.get(i + 1) == Some(&'%') && chars.get(i + 2) == Some(&'C'))
+            && !chars.get(i).is_some_and(|c| is_composing(*c))
+        {
+            // Keep this as one zero-width VM instruction. Repeating the full
+            // Unicode mark class at every literal would inflate long patterns.
+            let id = t.specials.len();
+            t.specials.push(Special::NotComposing);
+            let body = t.regex.split_off(start);
+            t.regex.push_str(&format!("(?:{body}(?P<vimspecial{id}>))"));
+        }
+        repeated = false;
         atom = Some(start);
         initial_anchor = operator && c == '^' && branch_start;
         branch_start = c == '\n' || escaped && c == 'n';
@@ -626,7 +659,9 @@ fn class(
             && chars.get(*i + 2) == Some(&'=')
             && chars.get(*i + 3) == Some(&']')
         {
-            return Err("Vim equivalence classes are outside the native profile".into());
+            out.push_str(equivalence(chars[*i + 1]).unwrap_or(""));
+            if equivalence(chars[*i + 1]).is_none() { out.push_str(&regex::escape(&chars[*i + 1].to_string())); }
+            *i += 4;
         } else if c == '[' && valid_posix_class(chars, *i) {
             out.push_str("[:");
             *i += 1;
@@ -647,6 +682,8 @@ fn class(
                     | "ident"
                     | "keyword"
                     | "fname"
+                    | "alpha"
+                    | "alnum"
                     | "lower"
                     | "upper"
                     | "print"
@@ -663,6 +700,8 @@ fn class(
                     "keyword" => &keyword_class,
                     "fname" => character_class('f').unwrap(),
                     "print" => character_class('p').unwrap(),
+                    "alpha" => "A-Za-z\\x{c0}-\\x{d6}\\x{d8}-\\x{f6}\\x{f8}-\\x{ff}",
+                    "alnum" => "0-9A-Za-z\\x{c0}-\\x{d6}\\x{d8}-\\x{f6}\\x{f8}-\\x{ff}",
                     "lower" => "\\p{Lowercase}",
                     "upper" => "\\p{Uppercase}",
                     _ => unreachable!(),
@@ -771,4 +810,74 @@ fn valid_posix_class(chars: &[char], at: usize) -> bool {
             | "keyword"
             | "fname"
     )
+}
+
+pub(super) fn is_composing(c: char) -> bool {
+    static MARKS: std::sync::OnceLock<regex_syntax::hir::ClassUnicode> = std::sync::OnceLock::new();
+    let class = MARKS.get_or_init(|| {
+        let hir = regex_syntax::Parser::new().parse(r"\p{M}").expect("Unicode mark class");
+        match hir.kind() { regex_syntax::hir::HirKind::Class(regex_syntax::hir::Class::Unicode(class)) => class.clone(), _ => unreachable!() }
+    });
+    let ranges = class.ranges();
+    let end = ranges.partition_point(|range| range.start() <= c);
+    end != 0 && c <= ranges[end - 1].end()
+}
+
+// Equivalence sets recorded from the pinned Vim oracle (Latin and extended Latin).
+fn equivalence(c: char) -> Option<&'static str> {
+    const SETS: &[&str] = &[
+        "AÀÁÂÃÄÅĀĂĄǍǞǠǺȂȦȺḀẠẢẤẦẨẪẬẮẰẲẴẶ",
+        "BƁɃḂḄḆ",
+        "CÇĆĈĊČƇȻḈ",
+        "DĎĐƊḊḌḎḐḒ",
+        "EÈÉÊËĒĔĖĘĚȄȆȨɆḔḖḘḚḜẸẺẼẾỀỂỄỆ",
+        "FƑḞ",
+        "GĜĞĠĢƓǤǦǴḠ",
+        "HĤĦȞḢḤḦḨḪ",
+        "IÌÍÎÏĨĪĬĮİƗǏȈȊḬḮỈỊ",
+        "JĴɈ",
+        "KĶƘǨḰḲḴ",
+        "LĹĻĽĿŁȽḶḸḺḼ",
+        "MḾṀṂ",
+        "NÑŃŅŇǸṄṆṈṊ",
+        "OÒÓÔÕÖØŌŎŐƟƠǑǪǬǾȌȎȪȬȮȰṌṎṐṒỌỎỐỒỔỖỘỚỜỞỠỢ",
+        "PƤṔṖ",
+        "QɊ",
+        "RŔŖŘȐȒɌṘṚṜṞ",
+        "SŚŜŞŠȘṠṢṤṦṨ",
+        "TŢŤŦƬƮȚȾṪṬṮṰ",
+        "UÙÚÛÜŨŪŬŮŰŲƯǓǕǗǙǛȔȖɄṲṴṶṸṺỤỦỨỪỬỮỰ",
+        "VƲṼṾ",
+        "WŴẀẂẄẆẈ",
+        "XẊẌ",
+        "YÝŶŸƳȲɎẎỲỴỶỸ",
+        "ZŹŻŽƵẐẒẔ",
+        "aàáâãäåāăąǎǟǡǻȁȃȧḁẚạảấầẩẫậắằẳẵặ",
+        "bƀɓḃḅḇ",
+        "cçćĉċčƈȼḉ",
+        "dďđɗḋḍḏḑḓ",
+        "eèéêëēĕėęěȅȇȩɇḕḗḙḛḝẹẻẽếềểễệ",
+        "fƒḟ",
+        "gĝğġģǥǧǵɠḡ",
+        "hĥħȟḣḥḧḩḫẖ",
+        "iìíîïĩīĭįǐȉȋɨḭḯỉị",
+        "jĵǰɉ",
+        "kķƙǩḱḳḵ",
+        "lĺļľŀłƚḷḹḻḽ",
+        "mḿṁṃ",
+        "nñńņňŉǹṅṇṉṋ",
+        "oòóôõöøōŏőơǒǫǭǿȍȏȫȭȯȱɵṍṏṑṓọỏốồổỗộớờởỡợ",
+        "pƥṕṗ",
+        "qɋʠ",
+        "rŕŗřȑȓɍɽṙṛṝṟ",
+        "sśŝşšșȿṡṣṥṧṩ",
+        "tţťŧƫƭțʈṫṭṯṱẗ",
+        "uùúûüũūŭůűųưǔǖǘǚǜȕȗʉṳṵṷṹṻụủứừửữự",
+        "vʋṽṿ",
+        "wŵẁẃẅẇẉẘ",
+        "xẋẍ",
+        "yýÿŷƴȳɏẏẙỳỵỷỹ",
+        "zźżžƶẑẓẕ",
+    ];
+    SETS.iter().copied().find(|set| set.contains(c))
 }

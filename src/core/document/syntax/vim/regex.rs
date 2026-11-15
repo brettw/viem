@@ -40,6 +40,7 @@ impl Default for VimRegexLimits {
 pub struct VimPattern {
     keyword: VimKeyword,
     ignore_case: bool,
+    string_context: bool,
     pub(super) start_anchor: Option<regex_syntax::hir::Look>,
     nfa: Option<Arc<NFA>>,
     advanced: Option<Arc<vm::Program>>,
@@ -123,17 +124,24 @@ impl VimPattern {
         limits: VimRegexLimits,
         keyword: &VimKeyword,
     ) -> Result<Self, String> {
+        Self::compile_context(source, ignore_case, limits, keyword, false)
+    }
+    pub fn compile_for_string(source: &str, ignore_case: bool, limits: VimRegexLimits) -> Result<Self, String> {
+        Self::compile_context(source, ignore_case, limits, &VimKeyword::default(), true)
+    }
+    fn compile_context(source: &str, ignore_case: bool, limits: VimRegexLimits, keyword: &VimKeyword, string_context: bool) -> Result<Self, String> {
         if source.len() > limits.pattern_bytes {
             return Err("pattern byte budget exceeded".into());
         }
-        let translation = translate::translate(source, keyword)?;
+        let translation = translate::translate_context(source, keyword, string_context)?;
         let translated = &translation.regex;
         let ignore_case = translation.case.unwrap_or(ignore_case);
         if translation.groups * 2 + 2 > SLOTS {
             return Err("capture slot budget exceeded".into());
         }
         let hir = regex_syntax::ParserBuilder::new()
-            .multi_line(true)
+            .multi_line(!string_context)
+            .dot_matches_new_line(string_context)
             .case_insensitive(ignore_case)
             .build()
             .parse(translated)
@@ -209,6 +217,7 @@ impl VimPattern {
             .contains(regex_syntax::hir::Look::EndLF);
         Ok(Self {
             keyword: keyword.clone(),
+            string_context,
             ignore_case,
             start_anchor,
             nfa,
@@ -233,7 +242,7 @@ impl VimPattern {
         if &self.keyword == keyword {
             Ok(self.clone())
         } else {
-            Self::compile_with_keyword(&self.source, self.ignore_case, limits, keyword)
+            Self::compile_context(&self.source, self.ignore_case, limits, keyword, self.string_context)
         }
     }
     /// Capture indexes of `\1`..`\9`: the user's `\(...\)` groups in order.
@@ -690,7 +699,10 @@ fn repetition(chars: &[char], mut i: usize) -> Result<(String, usize), String> {
         spec.pop();
     }
     let lazy = spec.starts_with('-');
-    let spec = spec.strip_prefix('-').unwrap_or(&spec);
+    let mut spec = spec.strip_prefix('-').unwrap_or(&spec).to_string();
+    if let Some((min, max)) = spec.split_once(',') {
+        if let (Ok(min), Ok(max)) = (min.parse::<u64>(), max.parse::<u64>()) { if min > max { spec = format!("{max},{min}"); } }
+    }
     if !spec.chars().all(|c| c.is_ascii_digit() || c == ',') {
         return Err("unsupported repetition".into());
     }

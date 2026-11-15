@@ -12,6 +12,9 @@ pub const CONTROL: u8 = 2;
 pub const ALT: u8 = 4;
 pub const COMMAND: u8 = 8;
 
+// BackTab has a compact three-byte representation, like Vim's special key.
+pub const BACK_TAB: char = '\u{e000}';
+
 pub const SPECIAL_BASE: u32 = 0xF0000;
 pub const MODIFIER_BASE: u32 = 0xF1F00;
 
@@ -331,6 +334,7 @@ pub fn notation_bytes(name: &str) -> Option<Vec<u8>> {
         None => (false, name),
     };
     let notation = parse_notation(name)?;
+    if notation.key == NotationKey::Char('\t') && notation.modifiers == SHIFT { return Some(BACK_TAB.to_string().into_bytes()); }
     let mut out = String::new();
     match notation.key {
         NotationKey::Char(c) => {
@@ -383,6 +387,7 @@ pub fn decode(text: &str) -> Vec<Notation> {
     let mut keys = Vec::new();
     let mut modifiers = 0u8;
     for c in text.chars() {
+        if c == BACK_TAB { keys.push(Notation { key: NotationKey::Char('\t'), modifiers: SHIFT | modifiers }); modifiers = 0; continue; }
         let code = c as u32;
         if (MODIFIER_BASE..MODIFIER_BASE + 16).contains(&code) {
             modifiers = (code - MODIFIER_BASE) as u8;
@@ -408,6 +413,7 @@ pub fn render(keys: &[Notation]) -> String {
         let prefix = modifier_prefix(key.modifiers);
         match key.key {
             NotationKey::Special(special) => out.push_str(&format!("<{prefix}{}>", special.name())),
+            NotationKey::Char('\t') if key.modifiers != 0 => out.push_str(&format!("<{prefix}Tab>")),
             NotationKey::Char(c) if key.modifiers != 0 => out.push_str(&format!("<{prefix}{c}>")),
             NotationKey::Char(c) => match c {
                 '\r' => out.push_str("<CR>"),

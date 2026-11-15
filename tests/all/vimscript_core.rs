@@ -528,3 +528,11 @@ fn setline_and_append_keep_empty_lines_at_an_unterminated_end() {
     ex(&mut core, view, "%d _ | call setline(1, 'z') | call append(1, ['', 'b'])");
     assert_eq!(core.document().source_bytes(), b"z\n\nb");
 }
+
+#[test]
+fn command_exists_uses_editor_host_capabilities() {
+    let (mut core, view) = editor("abc");
+    let outcome = ex(&mut core, view, "echo exists(':2match') exists(':3match')");
+    assert_eq!(status(&outcome), CommandStatus::Complete);
+    assert_eq!(messages(&outcome), ["2 2"]);
+}

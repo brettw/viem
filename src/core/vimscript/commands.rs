@@ -1951,7 +1951,7 @@ fn cmd_echo(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], at: usize, 
         };
         if matches!(value, Value::Void) {return error(next_after_failure(src, end), VimError::new(1031, "Cannot use void value"));}
         let text = match super::objects::display(rt, host, &value, false) {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Ok(bytes) => super::value::echo_display(&bytes),
             Err(fail) => return outcome(next_after_failure(src, end), Err(fail)),
         };
         if incremental {

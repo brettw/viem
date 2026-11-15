@@ -153,7 +153,8 @@ Default magic, nomagic, very magic, very nomagic, and in-pattern mode changes ar
 postfix lookaround, bounded lookbehind, atomic matches, backreferences, and
 conjunctions. Abbreviation atoms, multiline character classes, and document
 start/end assertions, numeric character atoms, filename/printable classes,
-and supported POSIX classes are also supported. Numeric absolute-line (`\%Nl`)
+and supported POSIX classes are also supported, including Latin equivalence
+collections such as `[[=e=]]`. Numeric absolute-line (`\%Nl`)
 and byte-column (`\%Nc`) assertions, including `<` and `>` comparisons, query the
 immutable source tree in logarithmic time. Line assertions conservatively
 invalidate from the beginning after edits. Byte columns count UTF-8 bytes,
@@ -169,7 +170,9 @@ Numeric character escapes for 0 and 10 follow Vim's buffer/string distinction:
 they match NUL in source buffers and LF in string predicates; `\n` matches a
 source hard-line boundary. Numeric collection ranges preserve the same rule.
 Cursor, mark, Visual-selection, current virtual-column, composing-character (`\Z`/`\%C`),
-and substitution-dependent atoms are diagnosed. `setlocal iskeyword` and syntax's
+and substitution-dependent atoms are diagnosed in buffer patterns. The scripting
+string context accepts `\Z` and `\%C`, and makes cursor and Visual assertions
+fail when no editor position is available; it does not change syntax patterns. `setlocal iskeyword` and syntax's
 independent `iskeyword` override control keyword classes and boundaries. The final
 setup environment applies to all declarations, including dynamically expanded
 external-delimiter patterns. Clearing syntax's override restores the buffer option. Pattern matching uses UTF-8; it never

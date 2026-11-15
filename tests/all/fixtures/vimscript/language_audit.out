@@ -1,0 +1,136 @@
+
+regex-dot 'a
+b'
+regex-anchor -1
+regex-start 2
+regex-alpha 'é'
+regex-equivalent 'èéêëē'
+regex-composing 'é'
+regex-any-composing 'é'
+regex-ignore-composing 'e'
+regex-visual-string ''
+regex-cursor-string ''
+regex-reversed 'aa'
+regex-star-error
+regex-star-error E61
+regex-group-error
+regex-group-error E54
+regex-class-error ''
+regex-repeat-error
+regex-repeat-error E554
+split-empty ['abc']
+split-default ['a', 'b', 'c', 'd']
+sort-mixed ['a', 'z', 1, 2]
+sort-locale ['a', 'z', 1, 2]
+sort-number-float
+sort-number-float E805
+json-trailing [1, 2]
+json-nan nan
+json-infinity inf
+json-unknown-escape 'x'
+json-duplicate
+json-duplicate E938
+json-negative-zero 0
+js-keys-quotes {'x': 'ok'}
+js-elisions [v:none, 1, v:none]
+json-funcref
+json-funcref E1161
+printf-byte-width '  é|<c3>|  日|'
+printf-positional '   7'
+printf-percent '    %'
+printf-zero-string '00x'
+printf-trailing 'x'
+printf-funcref 'len'
+printf-char-zero 'a'
+printf-char-string 'a'
+printf-char-large 'a'
+printf-general '1.000|1.2000000000'
+toupper-sharp-s 'ß'
+abs-string 3
+list-compare 0
+special-compare 0
+float-dict-key {'1.5': 'x'}
+funcref-builtin
+funcref-builtin E700
+blob-get -1
+funcref-arity {'optional': 0, 'required': 1, 'varargs': v:false}
+funcref-typename 'func([unknown]): number'
+shift-tab-length 3
+nr2char-negative '<ff>'
+utf16-past-end -1
+charclass-cjk 19968
+iconv-latin1 [233, 191, 63]
+glob-pattern '\.txt$'
+filename-leading-dash '\-'
+shell-special-newline '''a\
+b'''
+float-hex 16.0
+string-tab-width 3
+submatch-outside []
+matchstr-list 'afoo'
+reverse-number
+reverse-number E1253
+control-chars ^A^V
+regex-literal-composing ''
+regex-class-composing 'e'
+regex-composing-empty 'e'
+regex-composing-alone ''
+regex-alpha-other 'éø'
+regex-anchor-count -1
+regex-quant-error
+regex-quant-error E64
+iconv-replacements [191, 191, 191, 63]
+regex-close-error
+regex-close-error E55
+regex-range-error
+regex-range-error E944
+regex-backref-error
+regex-backref-error E65
+float-hex-fraction -6.0
+submatch-newlines '[''a
+b'']'
+funcref-typename-optional 'func([unknown], ?[unknown], ?[unknown], ?[unknown], ?[unknown], ?[unknown], ?[unknown], ?[unknown], ?[unknown], ?[unknown], ?[unknown], ?[unknown], ?[unknown], ?[unknown], ?[unknown], ?[unknown], ?[unknown], ?[unknown], ?[unknown]): string'
+printf-general-exponent '1.000e10|1.000E-10'
+sort-representation ['''a', 'b', 'z']
+sort-locale-representation ['''a', 'b', 'z']
+printf-zero-percent '0000%'
+printf-positional-precision '    1.2'
+utf16-end [3, -1, 1]
+regex-ignore-between 'éx'
+regex-literal-mark ''
+regex-dot-repeat 'éx'
+js-trailing-hole [1, v:none]
+json-object-trailing {'a': 1}
+json-surrogate '😀'
+json-string-quote
+json-string-quote E491
+json-invalid-number 1
+json-trailing-data
+json-trailing-data E488
+json-object-duplicate-escape
+json-object-duplicate-escape E938
+sort-error-result [1.5, 2, 3]
+funcref-typename-legacy 'func(...): any'
+funcref-arity-partial {'optional': 0, 'required': 0, 'varargs': v:false}
+key-shift-tab-roundtrip '<S-Tab>'
+regex-invalid-repeat
+regex-invalid-repeat E554
+regex-invalid-percent
+regex-invalid-percent E71
+regex-invalid-assertion
+regex-invalid-assertion E59
+regex-assertion-no-atom
+regex-assertion-no-atom E64
+regex-trailing-slash ''
+regex-literal-z ''
+nested-special-compare 0
+numeric-compare 1
+split-empty-value [[], ['']]
+nr2char-negative-other [254]
+strwidth-controls 4
+regex-equivalence-accent 'eéè'
+json-error-preserves ['unchanged']
+funcref-typename-typed 'func(number, ?string): number'
+funcref-typename-typed-partial 'func(?string): number'
+funcref-typename-builtin-partial 'func'
+glob-pattern-edges ['.*', '\.txt$', '^file', 'name', '^$']

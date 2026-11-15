@@ -15,6 +15,8 @@ pub mod excmds;
 pub(crate) mod expr;
 mod function_cmd;
 pub mod keys;
+mod json;
+mod locale;
 mod let_cmd;
 mod printf;
 pub(crate) mod regex;

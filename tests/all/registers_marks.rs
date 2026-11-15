@@ -372,7 +372,7 @@ fn setreg_types_and_inference_match_vim() {
     for (call, expected) in [
         ("setreg('a', 'qq')", "v"),
         ("setreg('a', 'qq', 'l')", "V"),
-        ("setreg('a', \"x\\nyyy\", 'b')", "\u{16}3"),
+        ("setreg('a', \"x\\nyyy\", 'b')", "^V3"),
     ] {
         ex(&mut core, view, &format!("call {call}"));
         assert_eq!(messages(&ex(&mut core, view, "echo getregtype('a')")), [expected], "{call}");
@@ -475,10 +475,10 @@ fn block_register_widths_match_vim_and_round_trip() {
         ("call setreg('a', 'x', 'b5') | call setreg('a', 'y', 'ab')", "1"),
     ] {
         ex(&mut core, view, setup);
-        assert_eq!(messages(&ex(&mut core, view, "echo getregtype('a')")), [format!("\u{16}{width}")], "{setup}");
+        assert_eq!(messages(&ex(&mut core, view, "echo getregtype('a')")), [format!("^V{width}")], "{setup}");
     }
     ex(&mut core, view, "call setreg('a', ['x', 'yy'], 'b5') | call setreg('b', getreg('a', 1, 1), getregtype('a'))");
-    assert_eq!(messages(&ex(&mut core, view, "echo getregtype('b') getreg('b', 1, 1)")), ["\u{16}5 ['x', 'yy']"]);
+    assert_eq!(messages(&ex(&mut core, view, "echo getregtype('b') getreg('b', 1, 1)")), ["^V5 ['x', 'yy']"]);
 }
 
 #[test]
@@ -487,7 +487,7 @@ fn getreginfo_and_setreg_dictionaries_round_trip_registers() {
     let echo = |core: &mut Editor, line: &str| messages(&ex(core, view, line));
     assert_eq!(echo(&mut core, "echo exists('*getreginfo') getreginfo('z')"), ["1 {}"]);
     ex(&mut core, view, "call setreg('a', ['x', 'yy'], 'b5')");
-    assert_eq!(echo(&mut core, "echo string(getreginfo('a'))"), ["{'isunnamed': v:false, 'regcontents': ['x', 'yy'], 'regtype': '\u{16}5'}"]);
+    assert_eq!(echo(&mut core, "echo string(getreginfo('a'))"), ["{'isunnamed': v:false, 'regcontents': ['x', 'yy'], 'regtype': '^V5'}"]);
     // Saving and restoring keeps the contents, type and width exactly.
     ex(&mut core, view, "let g:saved = getreginfo('a') | call setreg('a', 'junk') | call setreg('a', g:saved)");
     assert_eq!(echo(&mut core, "echo getreginfo('a') == g:saved"), ["1"]);

@@ -213,8 +213,14 @@ shares those limits across its directories. Generated ranges, repeated lists and
 flattened lists are limited to one million items; string/blob repetition and
 `printf()` output to 64 MiB. `printf()` width/precision fields are limited to one
 million, and flattening rejects cycles or more than 256 active list levels.
-Individual script regex text is limited to 256 KiB. Core command replay has its
-own finite budget. Recursive mappings and abbreviations cannot run indefinitely.
+Individual script regex input strings are limited to 256 KiB. Patterns are
+limited to 16 KiB and compiled programs to 1 MiB. String literals use a compact
+VM boundary instruction to distinguish following composing marks, sharing one
+Unicode mark table rather than storing it per literal. A 512-character ASCII
+literal measured 119,608 compiled-program bytes on macOS; the regression test
+caps it at 256 bytes per character. JSON decoding shares the string/item limits,
+charges its input against script fuel, and limits nesting to 100 levels.
+Core command replay has its own finite budget. Recursive mappings and abbreviations cannot run indefinitely.
 
 Vim9 type syntax and validation have a maximum depth of 100. Type validation
 visits at most 1,000,001 nodes per operation and memoizes shared containers;
@@ -553,7 +559,23 @@ refactoring rather than substituting more familiar language semantics.
 - `substitute()` follows `do_string_sub`: an empty match repeated at the
   previous empty match position copies one character; matching stops once a
   match reaches the end (`substitute("aaa","a*","x","g")` is "x").
-- `split()` follows `f_split` (empty pieces only between items).
+- `split()` follows `f_split` (empty pieces only between items). An empty
+  separator retains the whole string; the default separates ASCII whitespace,
+  including newlines.
+- String regexes have string-relative anchors and let `.` consume a newline.
+  Dot includes following composing marks; literal matching distinguishes them
+  unless `\Z` is present. `\%C` accepts composing marks; cursor and Visual
+  assertions fail without editor context. Buffer searches retain buffer rules.
+- JSON decoding accepts Vim's trailing commas, non-finite numbers and permissive
+  escapes, rejects duplicate keys, and keeps integer `-0` a Number. JavaScript
+  decoding also accepts unquoted keys, single quotes and array elisions.
+- `printf()` counts bytes for `%s` and display cells for `%S`; explicit `%g`
+  precision retains trailing zeros. Character conversion takes the low byte,
+  including a NUL that terminates the result.
+- Locale sorting uses the host's `LC_ALL`, `LC_COLLATE` or `LANG` without changing
+  process locale state. An unavailable locale falls back to C ordering.
+- `exists(':2match')` reflects the host's command capabilities. The editor
+  recognizes it; the in-memory language-test host does not expose it.
 - A builtin's callback error (e.g. `map(l, function('F'))` with E118) is
   reported, the builtin stops and still returns its value; the command
   continues (`builtins::callback_failed`). Inside `:try` it propagates.

@@ -3,7 +3,7 @@ use super::{arity, call_callback, number, opt_bool, opt_number, text, vstr};
 use crate::vimscript::error::{EvalResult, Fail, VimError};
 use crate::vimscript::exec::{OptionScope, Runtime, ScriptHost};
 use crate::vimscript::regex;
-use crate::vimscript::value::{Blob, Dict, VStr, Value};
+use crate::vimscript::value::{Blob, VStr, Value};
 use unicode_segmentation::UnicodeSegmentation;
 
 pub(super) const NAMES: &[&str] = &[
@@ -26,7 +26,7 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
             Ok(Value::Number(char_units(&vstr(args, 0)?, skip).len() as i64))
         }),
         "strcharlen" => arity(name, args, 1, 1).and_then(|()| Ok(Value::Number(char_units(&vstr(args, 0)?, true).len() as i64))),
-        "strwidth" => arity(name, args, 1, 1).and_then(|()| Ok(Value::Number(display_width(&text(args, 0)?, 0, 8) as i64))),
+        "strwidth" => arity(name, args, 1, 1).and_then(|()| Ok(Value::Number(text(args, 0)?.chars().map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(1)).sum::<usize>() as i64))),
         "strdisplaywidth" => arity(name, args, 1, 2).and_then(|()| {
             let tabstop = host.get_option("tabstop", OptionScope::Both).ok().and_then(|v| v.to_number().ok()).unwrap_or(8).max(1);
             let column = opt_number(args, 1, 0)?.max(0) as usize;
@@ -87,7 +87,7 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
         }),
         "strtrans" => arity(name, args, 1, 1).and_then(|()| Ok(Value::String(strtrans(vstr(args, 0)?.as_bytes()).into()))),
         "tolower" => arity(name, args, 1, 1).and_then(|()| Ok(Value::String(text(args, 0)?.to_lowercase().into()))),
-        "toupper" => arity(name, args, 1, 1).and_then(|()| Ok(Value::String(text(args, 0)?.to_uppercase().into()))),
+        "toupper" => arity(name, args, 1, 1).and_then(|()| Ok(Value::String(text(args, 0)?.chars().map(|c| { let mut upper = c.to_uppercase(); let first = upper.next().unwrap(); if upper.next().is_some() { c } else { first } }).collect::<String>().into()))),
         "tr" => arity(name, args, 3, 3).and_then(|()| {
             let (source, from, to) = (text(args, 0)?, text(args, 1)?, text(args, 2)?);
             let from: Vec<char> = from.chars().collect();
@@ -133,7 +133,7 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
                 format!("'{}'", source.replace('\'', "'\\''"))
             };
             if special {
-                escaped = escaped.replace('!', "\\!").replace('%', "\\%").replace('#', "\\#");
+                escaped = escaped.replace('!', "\\!").replace('%', "\\%").replace('#', "\\#").replace('\n', "\\\n");
             }
             Ok(Value::String(escaped.into()))
         }),
@@ -144,7 +144,7 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
                 if " \t\n*?[{`$\\%#'\"|!<".contains(c) || (index == 0 && (c == '+' || c == '>')) {
                     out.push('\\');
                 }
-                if index == 0 && c == '-' && source.len() > 1 {
+                if index == 0 && c == '-' {
                     out.push_str("\\");
                 }
                 out.push(c);
@@ -162,7 +162,8 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
         }
         "nr2char" => arity(name, args, 1, 2).and_then(|()| {
             let code = number(args, 0)?;
-            if code <= 0 {
+            if code < 0 { return Ok(Value::String(vec![code as u8].into())); }
+            if code == 0 {
                 return Ok(Value::str(""));
             }
             Ok(Value::String(char::from_u32(code as u32).map(|c| c.to_string()).unwrap_or_default().into()))
@@ -255,6 +256,7 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
                 return Err(Fail::Error(VimError::new(935, format!("Invalid submatch number: {index}"))));
             }
             let want_list = opt_bool(args, 1, false)?;
+            if want_list && rt.submatches.is_empty() { return Ok(Value::list(Vec::new())); }
             let value = rt.submatches.last().and_then(|groups| groups.get(index as usize).cloned()).unwrap_or_else(|| Value::str(""));
             Ok(if want_list { Value::list(vec![value]) } else { value })
         }),
@@ -263,6 +265,8 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
             let Some(c) = source.chars().next() else { return Ok(Value::Number(0)) };
             Ok(Value::Number(if c.is_whitespace() {
                 0
+            } else if ('\u{4e00}'..='\u{9fff}').contains(&c) {
+                0x4e00
             } else if c.is_alphanumeric() || c == '_' {
                 2
             } else if (c as u32) >= 0x1F300 && (c as u32) <= 0x1FAFF {
@@ -278,16 +282,12 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
         }),
         "json_decode" | "js_decode" => arity(name, args, 1, 1).and_then(|()| {
             let source = text(args, 0)?;
-            if source.trim().is_empty() {
-                return Ok(Value::None);
-            }
-            let parsed: serde_json::Value = serde_json::from_str(&source).map_err(|_| Fail::Error(VimError::new(491, format!("JSON decode error at '{source}'"))))?;
-            Ok(json_to_value(parsed))
+            rt.charge(source.len() as u64)?;
+            crate::vimscript::json::decode(&source, name == "js_decode")
         }),
         "sha256" => arity(name, args, 1, 1).and_then(|()| Ok(Value::String(sha256_hex(vstr(args, 0)?.as_bytes()).into()))),
         "abs" => arity(name, args, 1, 1).and_then(|()| match &args[0] {
             Value::Float(value) => Ok(Value::Float(value.abs())),
-            Value::String(_) => Err(Fail::Error(VimError::new(808, "Number or Float required"))),
             other => Ok(Value::Number(other.to_number()?.wrapping_abs())),
         }),
         "ceil" | "floor" | "round" | "trunc" | "sqrt" | "exp" | "log" | "log10" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan"
@@ -547,6 +547,24 @@ pub(crate) fn parse_float_prefix(text: &str) -> f64 {
             return value;
         }
     }
+    let unsigned = text.strip_prefix(['+', '-']).unwrap_or(text);
+    if let Some(hex) = unsigned.strip_prefix("0x").or_else(|| unsigned.strip_prefix("0X")) {
+        let mut value = 0.0; let mut factor = 1.0; let mut fractional = false; let mut digits = 0; let mut consumed = 0;
+        for c in hex.chars() {
+            if c == '.' && !fractional { fractional = true; consumed += 1; continue; }
+            let Some(digit) = c.to_digit(16) else { break; };
+            if fractional { factor /= 16.0; value += digit as f64 * factor; } else { value = value * 16.0 + digit as f64; }
+            digits += 1; consumed += 1;
+        }
+        if digits > 0 {
+            let rest = &hex[consumed..];
+            if let Some(exponent) = rest.strip_prefix(['p', 'P']) {
+                let end = exponent.char_indices().take_while(|(i,c)| c.is_ascii_digit() || *i == 0 && matches!(c, '+' | '-')).last().map_or(0, |(i,c)| i + c.len_utf8());
+                if let Ok(n) = exponent[..end].parse::<i32>() { value *= 2.0f64.powi(n); }
+            }
+            return if text.starts_with('-') { -value } else { value };
+        }
+    }
     let bytes = text.as_bytes();
     let mut end = 0;
     if matches!(bytes.first(), Some(b'+' | b'-')) {
@@ -598,9 +616,9 @@ fn iconv(args: &[Value]) -> EvalResult<Value> {
         let mut out = Vec::new();
         for c in text.chars() {
             if (c as u32) > 0xff {
-                return Ok(Value::str(""));
-            }
-            out.push(c as u8);
+                out.push(0xbf);
+                if unicode_width::UnicodeWidthChar::width(c).unwrap_or(1) > 1 { out.push(b'?'); }
+            } else { out.push(c as u8); }
         }
         return Ok(Value::String(out.into()));
     }
@@ -613,7 +631,7 @@ fn substitute(rt: &mut Runtime, host: &mut dyn ScriptHost, args: &[Value]) -> Ev
     let flags = text(args, 3)?;
     let global = flags.contains('g');
     let text = source.to_str_lossy().into_owned();
-    let pattern = regex::compile(pattern.as_bytes(), false)?;
+    let pattern = regex::compile_string(pattern.as_bytes(), false)?;
     let mut out = String::new();
     // Vim's do_string_sub(): an empty match is skipped when it repeats at
     // the position of the previous empty match, and matching stops once a
@@ -670,7 +688,7 @@ fn substitute(rt: &mut Runtime, host: &mut dyn ScriptHost, args: &[Value]) -> Ev
 
 fn match_function(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args: &[Value]) -> EvalResult<Value> {
     let _ = host;
-    let pattern = regex::compile(vstr(args, 1)?.as_bytes(), host.ignorecase())?;
+    let pattern = regex::compile_string(vstr(args, 1)?.as_bytes(), host.ignorecase())?;
     let count = opt_number(args, 3, 1)?.max(1);
     if let Value::List(list) = &args[0] {
         let items = list.snapshot();
@@ -689,7 +707,7 @@ fn match_function(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args:
                 return Ok(match name {
                     "match" => Value::Number(position as i64),
                     "matchend" => Value::Number(found.end as i64),
-                    "matchstr" => Value::String(text[found.start..found.end].into()),
+                    "matchstr" => item.clone(),
                     "matchstrpos" => Value::list(vec![Value::String(text[found.start..found.end].into()), (position as i64).into(), (found.start as i64).into(), (found.end as i64).into()]),
                     _ => groups_list(&text, &found),
                 });
@@ -705,12 +723,17 @@ fn match_function(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args:
     if start as usize > text.len() {
         return Ok(no_match(name, false));
     }
-    let mut at = start as usize;
+    let mut offset = if args.len() < 4 { start as usize } else { 0 };
+    while offset < text.len() && !text.is_char_boundary(offset) { offset += 1; }
+    let subject = &text[offset..];
+    let mut at = (start as usize).max(offset);
     let mut remaining = count;
     loop {
-        let Some(found) = regex::find_at(&pattern, &text, at, &mut rt.fuel)? else {
+        let Some(mut found) = regex::find_at(&pattern, subject, at - offset, &mut rt.fuel)? else {
             return Ok(no_match(name, false));
         };
+        found.start += offset; found.end += offset;
+        for group in found.groups.iter_mut().flatten() { group.start += offset; group.end += offset; }
         remaining -= 1;
         if remaining == 0 {
             return Ok(match name {
@@ -809,24 +832,12 @@ fn json_encode(value: &Value, out: &mut String, js: bool, depth: usize) -> EvalR
             }
             out.push(']');
         }
-        Value::TypeAlias(_) | Value::Void | Value::Funcref(_) | Value::Class(_) | Value::Object(_) | Value::Module(_) | Value::Type(_) => return Err(Fail::Error(VimError::new(474, "Invalid argument"))),
+        Value::Funcref(_) => return Err(Fail::Error(VimError::new(1161, "Cannot json encode a func"))),
+        Value::TypeAlias(_) | Value::Void | Value::Class(_) | Value::Object(_) | Value::Module(_) | Value::Type(_) => return Err(Fail::Error(VimError::new(474, "Invalid argument"))),
     }
     Ok(())
 }
 
-fn json_to_value(value: serde_json::Value) -> Value {
-    match value {
-        serde_json::Value::Null => Value::Null,
-        serde_json::Value::Bool(value) => Value::Bool(value),
-        serde_json::Value::Number(number) => match number.as_i64() {
-            Some(value) => Value::Number(value),
-            None => Value::Float(number.as_f64().unwrap_or(0.0)),
-        },
-        serde_json::Value::String(text) => Value::String(text.into()),
-        serde_json::Value::Array(items) => Value::list(items.into_iter().map(json_to_value).collect()),
-        serde_json::Value::Object(map) => Value::Dict(Dict::from_pairs(map.into_iter().map(|(key, value)| (VStr::from(key), json_to_value(value))))),
-    }
-}
 
 thread_local! {
     static RAND: std::cell::Cell<Option<[u32; 4]>> = const { std::cell::Cell::new(None) };

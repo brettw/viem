@@ -998,3 +998,35 @@ fn newline_star_repeats_the_atom_before_a_line_start_anchor() {
     assert_eq!(find(r"a\n*^b", "a\n\nb", 3), Some(0..4));
     assert_eq!(find(r"a\n*^b", "ab", 3), None);
 }
+
+#[test]
+fn string_and_buffer_contexts_keep_distinct_newline_rules() {
+    let limits = VimRegexLimits::default();
+    let buffer = VimPattern::compile("^b", false, limits).unwrap();
+    let string = VimPattern::compile_for_string("^b", false, limits).unwrap();
+    assert_eq!(find_pattern(&buffer, "a\nb", 1), Some(2..3));
+    assert!(string.find_text_with_control("a\nb", 0, &mut 10000, &mut || false).unwrap().is_none());
+    let buffer = VimPattern::compile(".*", false, limits).unwrap();
+    let string = VimPattern::compile_for_string(".*", false, limits).unwrap();
+    assert_eq!(find_pattern(&buffer, "a\nb", 1), Some(0..1));
+    let found = string.find_text_with_control("a\nb", 0, &mut 10000, &mut || false).unwrap().unwrap();
+    assert_eq!(found.start..found.end, 0..3);
+}
+
+#[test]
+fn string_compilation_preserves_its_context_when_keywords_change() {
+    let limits = VimRegexLimits::default();
+    let string = VimPattern::compile_for_string(".*", false, limits).unwrap();
+    let rebound = string.rebind_keyword(&VimKeyword::parse("a-z").unwrap(), limits).unwrap();
+    let found = rebound.find_text_with_control("a\nb", 0, &mut 10000, &mut || false).unwrap().unwrap();
+    assert_eq!(found.start..found.end, 0..3);
+}
+
+#[test]
+fn string_literal_programs_share_the_unicode_mark_table() {
+    let pattern = VimPattern::compile_for_string(&"a".repeat(512), false, VimRegexLimits::default()).unwrap();
+    assert!(pattern.memory_usage() < 512 * 256, "{} bytes", pattern.memory_usage());
+    let found = pattern.find_text_with_control(&"a".repeat(512), 0, &mut 10000, &mut || false).unwrap().unwrap();
+    assert_eq!(found.start..found.end, 0..512);
+    eprintln!("512-character string literal: {} program bytes", pattern.memory_usage());
+}

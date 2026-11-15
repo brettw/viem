@@ -91,7 +91,8 @@ pub fn format(spec: &[u8], args: &[Value]) -> EvalResult<Vec<u8>> {
         let mut width: Option<usize> = None;
         if spec.get(at) == Some(&b'*') {
             at += 1;
-            let value = take(None, &mut next_arg)?.to_number()?;
+            let selector = star_position(spec, &mut at);
+            let value = take(selector, &mut next_arg)?.to_number()?;
             if value < 0 {
                 left = true;
             }
@@ -110,7 +111,8 @@ pub fn format(spec: &[u8], args: &[Value]) -> EvalResult<Vec<u8>> {
             at += 1;
             if spec.get(at) == Some(&b'*') {
                 at += 1;
-                let value = take(None, &mut next_arg)?.to_number()?;
+                let selector = star_position(spec, &mut at);
+            let value = take(selector, &mut next_arg)?.to_number()?;
                 precision = if value >= 0 { Some(field_size(value as u64)?) } else { None };
             } else {
                 let start = at;
@@ -125,7 +127,6 @@ pub fn format(spec: &[u8], args: &[Value]) -> EvalResult<Vec<u8>> {
             at += 1;
         }
         let Some(&conversion) = spec.get(at) else {
-            append_output(&mut out, b"%")?;
             break;
         };
         at += 1;
@@ -167,6 +168,7 @@ pub fn format(spec: &[u8], args: &[Value]) -> EvalResult<Vec<u8>> {
                 let sign = if negative { "-" } else if plus && matches!(conversion, b'd' | b'i') { "+" } else if space && matches!(conversion, b'd' | b'i') { " " } else { "" };
                 pad_number(sign, prefix, &digits, width, left, zero && precision.is_none())
             }
+            b'%' => pad(vec![b'%'], width, left, zero),
             b'c' => {
                 // Vim converts the Number to a single byte.
                 let value = take(position, &mut next_arg)?.to_number()?;
@@ -176,33 +178,26 @@ pub fn format(spec: &[u8], args: &[Value]) -> EvalResult<Vec<u8>> {
                 let value = take(position, &mut next_arg)?;
                 let mut text = match &value {
                     Value::String(text) => text.as_bytes().to_vec(),
-                    Value::List(_) | Value::Dict(_) | Value::Funcref(_) | Value::Blob(_) => value.string_bytes(),
+                    Value::Funcref(f) => f.name().as_bytes().to_vec(),
+                    Value::List(_) | Value::Dict(_) | Value::Blob(_) => value.string_bytes(),
                     other => other.to_bytes()?,
                 };
                 if text.len() > MAX_STRING_BYTES {
                     return Err(too_large());
                 }
                 if let Some(precision) = precision {
-                    // %s counts bytes, %S characters (both truncate to whole characters).
-                    let mut end = 0;
-                    let mut count = 0;
-                    let as_text = String::from_utf8_lossy(&text).into_owned();
-                    for (index, c) in as_text.char_indices() {
-                        let size = if conversion == b'S' { 1 } else { c.len_utf8() };
-                        if count + size > precision {
-                            break;
+                    if conversion == b's' { text.truncate(precision); } else {
+                        let mut cells = 0; let mut end = 0;
+                        for (index, c) in String::from_utf8_lossy(&text).char_indices() {
+                            let size = unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+                            if cells + size > precision { break; }
+                            cells += size; end = index + c.len_utf8();
                         }
-                        count += size;
-                        end = index + c.len_utf8();
+                        text.truncate(end);
                     }
-                    text = as_text.as_bytes()[..end].to_vec();
                 }
                 let display = |text: &[u8]| -> usize {
-                    if conversion == b'S' {
-                        String::from_utf8_lossy(text).chars().count()
-                    } else {
-                        unicode_width::UnicodeWidthStr::width(String::from_utf8_lossy(text).as_ref())
-                    }
+                    if conversion == b'S' { unicode_width::UnicodeWidthStr::width(String::from_utf8_lossy(text).as_ref()) } else { text.len() }
                 };
                 let actual = display(&text);
                 match width {
@@ -210,7 +205,7 @@ pub fn format(spec: &[u8], args: &[Value]) -> EvalResult<Vec<u8>> {
                         if text.len().saturating_add(width - actual) > MAX_STRING_BYTES {
                             return Err(too_large());
                         }
-                        let padding = vec![b' '; width - actual];
+                        let padding = vec![if zero && !left { b'0' } else { b' ' }; width - actual];
                         if left {
                             let mut text = text;
                             text.extend(padding);
@@ -230,6 +225,7 @@ pub fn format(spec: &[u8], args: &[Value]) -> EvalResult<Vec<u8>> {
                     Value::String(_) => return Err(Fail::Error(VimError::new(892, "Using a String as a Float"))),
                     other => other.to_float()?,
                 };
+                let explicit_precision = precision.is_some();
                 let precision = precision.unwrap_or(6);
                 let upper = conversion.is_ascii_uppercase();
                 let mut text = if float.is_nan() || float.is_infinite() {
@@ -240,6 +236,8 @@ pub fn format(spec: &[u8], args: &[Value]) -> EvalResult<Vec<u8>> {
                         b'e' | b'E' => c_exponent(float, precision, upper),
                         // Vim's own %g, as :echo uses: fixed notation for
                         // 0.001 <= |f| < 1e7, trailing zeroes removed.
+                        _ if explicit_precision && (float == 0.0 || (0.001..1e7).contains(&float.abs())) => format!("{float:.precision$}"),
+                        _ if explicit_precision => { let text = format!("{float:.precision$e}"); if upper { text.to_uppercase() } else { text } },
                         _ => format_float_precision(float, precision, upper),
                     }
                 };
@@ -265,6 +263,7 @@ pub fn format(spec: &[u8], args: &[Value]) -> EvalResult<Vec<u8>> {
     if next_arg < args.len() && !spec.contains(&b'$') {
         return Err(Fail::Error(VimError::new(767, "Too many arguments for printf()")));
     }
+    if let Some(nul) = out.iter().position(|b| *b == 0) { out.truncate(nul); }
     Ok(out)
 }
 
@@ -354,4 +353,13 @@ mod tests {
         assert_eq!(fmt("%2$s %1$s", vec!["a".into(), "b".into()]), "b a");
         assert_eq!(fmt("100%%", vec![]), "100%");
     }
+}
+
+fn star_position(spec: &[u8], at: &mut usize) -> Option<usize> {
+    let start = *at;
+    while spec.get(*at).is_some_and(u8::is_ascii_digit) { *at += 1; }
+    if *at > start && spec.get(*at) == Some(&b'$') {
+        let n = std::str::from_utf8(&spec[start..*at]).ok()?.parse::<usize>().ok()?;
+        *at += 1; Some(n.saturating_sub(1))
+    } else { *at = start; None }
 }
