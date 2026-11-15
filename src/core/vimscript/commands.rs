@@ -436,12 +436,28 @@ fn trim(bytes: &[u8]) -> &[u8] {
     &bytes[start..end]
 }
 
+/// Where a Vim9 `#` comment starts for the command at `col`. As in Vim, a
+/// command that takes the rest of the line as its argument has no comment,
+/// and `:substitute` looks for one only after its pattern and replacement.
+fn vim9_command_comment_end(src: &[u8], col: usize) -> usize {
+    let generic = super::source::vim9_comment_end_from(src, col);
+    let Ok(Some(header)) = parse_header(src, col) else { return generic };
+    let Some(full) = std::str::from_utf8(&header.name).ok().and_then(super::excmds::lookup) else { return generic };
+    if full == "syntax" || super::excmds::sees_bar(full) {
+        return src.len();
+    }
+    match full {
+        "substitute" | "smagic" | "snomagic" => super::source::vim9_comment_end_from(src, substitute_pattern_end(src, header.arg)),
+        _ => generic,
+    }
+}
+
 /// Execute (or, when `executing` is false, skip over) the command at `col`.
 pub(crate) fn execute_command(rt: &mut Runtime, host: &mut dyn ScriptHost, line: &VStr, col: usize, executing: bool) -> CommandOutcome {
     if let Some(result) = super::vim9::execute(rt, host, line, col, executing) { return result; }
     let normalized;
     let line = if rt.vim9() {
-        normalized = VStr::from(&line.as_bytes()[..super::source::vim9_comment_end(line.as_bytes())]);
+        normalized = VStr::from(&line.as_bytes()[..vim9_command_comment_end(line.as_bytes(), col)]);
         &normalized
     } else {line};
     let src = line.as_bytes();
@@ -779,25 +795,35 @@ fn syntax_argument(src: &[u8], start: usize) -> (Vec<u8>, Next) {
     (src[start..].to_vec(), Next::NextLine)
 }
 
-fn substitute_argument(src: &[u8], mut at: usize) -> (Vec<u8>, Next) {
-    let start = at;
-    if let Some(&delimiter) = src.get(at) {
-        if !delimiter.is_ascii_alphanumeric() && !is_white(delimiter) && !matches!(delimiter, b'"' | b'|' | b'\\') {
-            // pattern, replacement
-            for _ in 0..2 {
+/// The end of `:s`'s pattern and replacement starting at `at`: just after the
+/// closing delimiter, the end of the line if it is missing, or `at` when there
+/// is no delimited pattern.
+fn substitute_pattern_end(src: &[u8], start: usize) -> usize {
+    let Some(&delimiter) = src.get(start) else { return start };
+    if delimiter.is_ascii_alphanumeric() || is_white(delimiter) || matches!(delimiter, b'"' | b'|' | b'\\') {
+        return start;
+    }
+    let mut at = start;
+    for _ in 0..2 {
+        at += 1;
+        while at < src.len() && src[at] != delimiter {
+            if src[at] == b'\\' && at + 1 < src.len() {
                 at += 1;
-                while at < src.len() && src[at] != delimiter {
-                    if src[at] == b'\\' && at + 1 < src.len() {
-                        at += 1;
-                    }
-                    at += 1;
-                }
-                if at >= src.len() {
-                    return (src[start..].to_vec(), Next::NextLine);
-                }
             }
             at += 1;
         }
+        if at >= src.len() {
+            return src.len();
+        }
+    }
+    at + 1
+}
+
+fn substitute_argument(src: &[u8], mut at: usize) -> (Vec<u8>, Next) {
+    let start = at;
+    at = substitute_pattern_end(src, at);
+    if at == src.len() && at > start {
+        return (src[start..].to_vec(), Next::NextLine);
     }
     // Flags and count.
     while at < src.len() && b"&cegiInp#lr".contains(&src[at]) {

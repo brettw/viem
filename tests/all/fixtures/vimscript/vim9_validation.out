@@ -16,3 +16,10 @@ alias value rejected
 true true true
 true true true
 null blob rejected
+0 Vim(eval):E1105: Cannot convert list to string
+{} .. 'x' Vim(defcompile):E1105: Cannot convert dict to string
+'x' .. 0z01 Vim(defcompile):E1105: Cannot convert blob to string
+'x' .. function('len') Vim(defcompile):E1105: Cannot convert func to string
+[] .. [] Vim(defcompile):E1105: Cannot convert list to string
+'x' .. (1, 2) Vim(defcompile):E1105: Cannot convert tuple to string
+n1truenullv:none

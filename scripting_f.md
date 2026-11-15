@@ -46,15 +46,6 @@ Some error numbers differ only because the oracle is 9.1 and the target is
 
 ## Registers and marks
 
-- **Appending:** Vim keeps the type of the appended text. Appending
-  characterwise `y` to linewise `x` gives `x\ny` typed `v`; Viem gives
-  `x\ny\n` typed `V`. Appending linewise to characterwise gives `xy\n`; Viem
-  inserts a break. This applies to `let @A`, `setreg('A', …)` and the `a`
-  option.
-- **Unnamed register:** `let @a` and `setreg('a', …)` overwrite `@"` in Viem.
-  Vim leaves `@"` alone. The comment on `setreg_options` in
-  `src/core/command/scripting.rs` says every write updates it, which is the
-  mismatch.
 - **Value forms:**
   - `let @a = ['x', 'y']` should be E730.
   - `setreg('a', [])` should give an empty characterwise register; Viem gives

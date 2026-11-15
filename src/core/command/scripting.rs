@@ -265,9 +265,16 @@ impl CommandInterpreter {
             self.last_expression = Some(value.to_text()?);
             return Ok(());
         }
-        let value = script_register_value(value, kind)?;
-        let name = if append { name.to_ascii_uppercase() } else { name };
-        self.write_script_register(name, value).map_err(|error| VimError::plain(format!("{error:?}")))
+        let append = append || name.is_ascii_uppercase();
+        let name = name.to_ascii_lowercase();
+        let result = if append {
+            let combined = script_append_value(self.registers.get(name), value, kind)?;
+            self.append_script_register(name, combined)
+        } else {
+            let value = script_register_value(value, kind)?;
+            self.write_script_register(name, value)
+        };
+        result.map_err(|error| VimError::plain(format!("{error:?}")))
     }
 
     pub(crate) fn script_ignorecase(&self) -> bool {
@@ -747,7 +754,7 @@ fn append_source_lines(document: &mut Document, after: usize, lines: &[String], 
 
 /// `setreg()` options: `a` appends and `c`/`v`, `l`/`V` or `b`/CTRL-V (with
 /// an optional width, which block registers derive from their rows) choose the
-/// type. `u` is accepted; every write already updates the unnamed register.
+/// type. `u` is accepted and, as in Vim, leaves the unnamed register alone.
 fn setreg_options(options: &str) -> Result<(bool, Option<RegisterKind>), VimError> {
     let mut append = false;
     let mut kind = None;
@@ -777,26 +784,7 @@ fn script_register_value(value: &Value, kind: Option<RegisterKind>) -> Result<Re
         Value::List(list) => {
             let lines: Vec<String> = list.snapshot().iter().map(|item| item.to_text()).collect::<Result<_, _>>()?;
             let kind = kind.unwrap_or(RegisterKind::Linewise);
-            if kind == RegisterKind::Blockwise {
-                if lines.iter().any(|line| line.contains('\n')) {
-                    return Err(VimError::plain("E475: Invalid argument: a block row cannot contain a line feed"));
-                }
-                return RegisterValue::try_new(lines.join("\n"), kind, Vec::new()).map_err(invalid);
-            }
-            let mut text = String::new();
-            let mut breaks = Vec::new();
-            for (index, line) in lines.iter().enumerate() {
-                if index > 0 {
-                    breaks.push(text.len());
-                    text.push('\n');
-                }
-                text.push_str(line);
-            }
-            if kind == RegisterKind::Linewise {
-                breaks.push(text.len());
-                text.push('\n');
-            }
-            RegisterValue::try_new(text, kind, breaks).map_err(invalid)
+            register_from_lines(&lines, kind)
         }
         other => {
             let mut text = other.to_text()?;
@@ -814,6 +802,59 @@ fn script_register_value(value: &Value, kind: Option<RegisterKind>) -> Result<Re
             }
         }
     }
+}
+
+/// A register value from its lines. Each line is literal; lines are joined by
+/// semantic breaks, or by row separators in a block.
+fn register_from_lines(lines: &[String], kind: RegisterKind) -> Result<RegisterValue, VimError> {
+    let invalid = |error| VimError::plain(format!("{error:?}"));
+    if kind == RegisterKind::Blockwise {
+        if lines.iter().any(|line| line.contains('\n')) {
+            return Err(VimError::plain("E475: Invalid argument: a block row cannot contain a line feed"));
+        }
+        return RegisterValue::try_new(lines.join("\n"), kind, Vec::new()).map_err(invalid);
+    }
+    let mut text = String::new();
+    let mut breaks = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
+            breaks.push(text.len());
+            text.push('\n');
+        }
+        text.push_str(line);
+    }
+    if kind == RegisterKind::Linewise {
+        breaks.push(text.len());
+        text.push('\n');
+    }
+    RegisterValue::try_new(text, kind, breaks).map_err(invalid)
+}
+
+/// `setreg()` and `:let @R` appending, like Vim's `str_to_reg`: the result
+/// takes the appended value's type, and only a String appended to a
+/// characterwise register continues its last line.
+fn script_append_value(existing: Option<&RegisterValue>, value: &Value, kind: Option<RegisterKind>) -> Result<RegisterValue, VimError> {
+    let kind = script_register_value(value, kind)?.kind;
+    let appended: Vec<String> = match value {
+        Value::List(list) => list.snapshot().iter().map(|item| item.to_text()).collect::<Result<_, _>>()?,
+        other => {
+            let text = other.to_text()?;
+            let mut lines: Vec<String> = text.split('\n').map(str::to_owned).collect();
+            if kind != RegisterKind::Characterwise && text.ends_with('\n') {
+                lines.pop();
+            }
+            lines
+        }
+    };
+    let mut lines = existing.map(register_lines).unwrap_or_default();
+    let mut appended = appended.into_iter();
+    if existing.is_some_and(|existing| existing.kind == RegisterKind::Characterwise) && !matches!(value, Value::List(_)) {
+        if let (Some(last), Some(first)) = (lines.last_mut(), appended.next()) {
+            last.push_str(&first);
+        }
+    }
+    lines.extend(appended);
+    register_from_lines(&lines, kind)
 }
 
 /// A register's lines for `getreg(r, 1, 1)`: split at semantic breaks, or at

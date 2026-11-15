@@ -8,71 +8,6 @@ There are 27 reproducer files: 25 safe probes and two isolated crash probes. **A
 
 Each snippet below is a separate script. Unless specified otherwise, line-oriented probes initialize their own content. P1 denotes crashes or silent content/state changes requiring early attention; P2 denotes other reproducible compatibility failures. The findings are ordered by impact, not by implementation sequence.
 
-**5. [P1] Vim9 comment stripping corrupts Ex command payloads**
-
-```vim
-vim9script
-setline(1, 'old')
-s/old/ #tag/
-echo string(getline(1))
-setline(1, 'old')
-normal! A #tag
-echo string(getline(1))
-```
-
-Vim prints `' #tag'` and `'old #tag'`; Viem prints `''` and `'old'`. The generic Vim9 comment scanner strips a whitespace-preceded `#` before dispatching the command, including inside substitute replacement text and normal-mode keystrokes. Comment parsing must respect each command's payload grammar.
-
-Locations: [source.rs:165](src/core/vimscript/source.rs#L165), dispatch at [commands.rs:444](src/core/vimscript/commands.rs#L444). Evidence: [reproducer](target/vimscript-audit/cases/vim9_payloads.vim).
-
-**6. [P1] Invalid Vim9 concatenation is rejected after function side effects**
-
-```vim
-vim9script
-var effects = 0
-def WrongConcat()
-  effects += 1
-  var text = [] .. 'text'
-enddef
-try
-  WrongConcat()
-catch
-  echo effects
-endtry
-```
-
-Vim prints `0`; Viem prints `1`. Compilation assigns concatenation a String result without checking operand types. Viem enters the function and performs preceding effects before reporting the invalid List operand. The probe confirms variable mutation; preceding document edits are a potential consequence of the same missing validation, not a separately executed probe.
-
-Location: [compiler.rs:285](src/core/vimscript/compiler.rs#L285). Evidence: [reproducer](target/vimscript-audit/cases/vim9_concat_validation.vim).
-
-**7. [P2] Writing a named register overwrites the unnamed register**
-
-```vim
-call setreg('"', 'keep')
-call setreg('a', 'scratch')
-echo getreg('"')
-let @b = 'temp'
-echo getreg('"')
-```
-
-Vim prints `keep` twice; Viem prints `scratch`, then `temp`. `write_script()` unconditionally stores the new value in the unnamed slot, contrary to the comment claiming Vim equivalence. This breaks scripts that use a named scratch register while preserving the user's paste contents.
-
-Location: [registers.rs:627](src/core/command/registers.rs#L627). Evidence: [reproducer](target/vimscript-audit/cases/register_unnamed.vim).
-
-**8. [P2] `setreg()` append and explicit type handling are incomplete**
-
-```vim
-call setreg('1', 'old', 'c')
-call setreg('1', 'new', 'ac')
-echo getreg('1')
-call setreg('a', 'old', 'l')
-call setreg('a', 'new', 'ac')
-echo getregtype('a')
-```
-
-Vim prints `oldnew` and `v`; Viem prints `new` and `V`. Append is implemented by uppercasing the register name, which cannot request append for numeric registers. The shared append helper also preserves a linewise type when the explicit `c` option should select characterwise output.
-
-Locations: [command/scripting.rs:269](src/core/command/scripting.rs#L269), [registers.rs:674](src/core/command/registers.rs#L674). Evidence: [reproducer](target/vimscript-audit/cases/register_append.vim).
-
 **9. [P2] An empty List creates a register line instead of clearing its contents**
 
 ```vim
@@ -265,6 +200,18 @@ Vim prints `2 3 13`, then `2 2 13`, and writes `a LF b CR x LF CR`. In a Mac-for
 Line values need the file-format mapping both ways: in Mac format, source LF becomes CR in a value, and CR in a value becomes source LF; LF in a value still means NUL in every format.
 
 Locations: `script_line_value()` and `script_line_source()` in [command/scripting.rs](src/core/command/scripting.rs), used by `script_line_text()` and by `lines_argument()` in [coordinator/scripting.rs](src/core/coordinator/scripting.rs). Evidence: Vim was probed with `scripts/vimscript-oracle.sh`; Viem with a temporary `Core` test using `FileFormat::Mac`, since removed.
+
+**23. [P2] Vim9 concatenation splits a Float literal on its right side**
+
+```vim
+vim9script
+echo 'a' .. 2.5
+echo 'a' .. 2.5e1
+```
+
+Vim prints `a2.5` and `a25.0`; Viem prints `a2`, then reports `E15: Invalid expression: ".5"` and stops the script. Legacy script deliberately reads a number after `.` or `..` as an integer, so `'a' . 2.5` is `a25` in both editors. Vim9 drops that rule, but Viem's expression parser disables Float literals on the right of every concatenation regardless of dialect. `1 .. 2.5` fails the same way, while a Float held in a variable (`'a' .. n`) concatenates correctly.
+
+Location: the `want_string` check before Float literal parsing in [expr.rs](src/core/vimscript/expr.rs), reached from concatenation in `eval6`. Evidence: both editors were probed with the script above.
 
 **Additional confirmed gaps already covered by documented limitations**
 

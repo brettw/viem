@@ -365,7 +365,7 @@ fn setreg_types_and_inference_match_vim() {
     }
     ex(&mut core, view, "call setreg('a', 'qq', 'l')");
     ex(&mut core, view, "call setreg('a', 'rr', 'a')");
-    assert_eq!(register(&core, view, 'a'), ("qq\nrr\n".to_owned(), Linewise, vec![2, 5]));
+    assert_eq!(register(&core, view, 'a'), ("qq\nrr".to_owned(), Characterwise, vec![2]));
     for (call, expected) in [
         ("setreg('a', 'qq')", "v"),
         ("setreg('a', 'qq', 'l')", "V"),
@@ -376,6 +376,45 @@ fn setreg_types_and_inference_match_vim() {
     }
     ex(&mut core, view, "call setreg('a', [\"x\\ny\", 'z'])");
     assert_eq!(messages(&ex(&mut core, view, "echo len(getreg('a', 1, 1)) getreg('a', 1, 1)[0] ==# \"x\\ny\"")), ["2 1"]);
+}
+
+#[test]
+fn script_register_appends_take_the_appended_type() {
+    use viem_core::command::RegisterKind::{Characterwise, Linewise};
+    let (mut core, view) = editor("one");
+    for (name, first, append, text, kind, breaks) in [
+        ('a', "setreg('a', 'old', 'l')", "setreg('a', 'new', 'a')", "old\nnew", Characterwise, vec![3]),
+        ('a', "setreg('a', 'old', 'l')", "setreg('A', 'new')", "old\nnew", Characterwise, vec![3]),
+        ('a', "setreg('a', 'old', 'l')", "let @A = 'new'", "old\nnew", Characterwise, vec![3]),
+        // A String continues a characterwise register's last line.
+        ('a', "setreg('a', 'old', 'c')", "let @A = \"new\\n\"", "oldnew\n", Linewise, vec![6]),
+        ('a', "setreg('a', 'old', 'c')", "setreg('a', \"new\\n\", 'ac')", "oldnew\n", Characterwise, vec![6]),
+        // List items are always new lines.
+        ('a', "setreg('a', 'old', 'c')", "setreg('a', ['n1', 'n2'], 'a')", "old\nn1\nn2\n", Linewise, vec![3, 6, 9]),
+        ('a', "setreg('a', 'old', 'c')", "setreg('a', [], 'a')", "old\n", Linewise, vec![3]),
+        ('a', "setreg('a', 'old', 'l')", "setreg('a', 'new', 'al')", "old\nnew\n", Linewise, vec![3, 7]),
+        // The `a` option appends to registers without an uppercase name.
+        ('1', "setreg('1', 'old', 'c')", "setreg('1', 'new', 'ac')", "oldnew", Characterwise, vec![]),
+    ] {
+        ex(&mut core, view, &format!("call {first}"));
+        let call = if append.starts_with("let") { append.to_owned() } else { format!("call {append}") };
+        ex(&mut core, view, &call);
+        assert_eq!(register(&core, view, name), (text.to_owned(), kind, breaks), "{first} then {append}");
+    }
+}
+
+#[test]
+fn script_register_writes_leave_the_unnamed_register_alone() {
+    let (mut core, view) = editor("one");
+    ex(&mut core, view, "call setreg('\"', 'keep')");
+    for write in ["call setreg('a', 'scratch')", "let @b = 'temp'", "call setreg('c', 'cc', 'a')", "call setreg('d', 'dee', 'u')"] {
+        ex(&mut core, view, write);
+        assert_eq!(messages(&ex(&mut core, view, "echo getreg('\"')")), ["keep"], "{write}");
+    }
+    keys(&mut core, view, "p");
+    assert_eq!(core.document().text(), "okeepne");
+    ex(&mut core, view, "let @\" = 'direct'");
+    assert_eq!(messages(&ex(&mut core, view, "echo getreg('\"') getreg('0') getreg('d')")), ["direct direct dee"]);
 }
 
 #[test]

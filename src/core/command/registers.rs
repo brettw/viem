@@ -624,19 +624,38 @@ impl Registers {
         }
     }
 
-    /// `:let @r = value` and `setreg()`: write register `r` and make the
-    /// unnamed register refer to it, as Vim's `write_reg_contents` does.
+    /// `:let @r = value` and `setreg()`. As in Vim's `write_reg_contents`,
+    /// writing another register leaves the unnamed register alone.
     pub(crate) fn write_script(&mut self, name: char, value: RegisterValue) -> RegisterWriteEffect {
-        if name == '_' {
+        match name {
+            '_' => RegisterWriteEffect::default(),
+            '"' => {
+                self.store('0', StoredRegister::text(value.clone()));
+                self.store('"', StoredRegister::text(value));
+                RegisterWriteEffect::default()
+            }
+            _ => self.write_explicit(Some(name), &value).1,
+        }
+    }
+
+    /// A script append to register `name`, whose combined value the caller
+    /// built with `setreg()`'s rules. A recorded macro keeps its key events
+    /// and gains the appended text.
+    pub(crate) fn append_script(&mut self, name: char, combined: RegisterValue) -> RegisterWriteEffect {
+        let previous = self.bank.values.get(&name).cloned();
+        let replay = previous.as_ref().and_then(|existing| {
+            let events = existing.replay.as_ref()?;
+            combined.text.starts_with(&existing.value.text).then(|| {
+                let mut events = events.clone();
+                events.extend(register_suffix_as_macro_events(&combined, existing.value.text.len()));
+                events
+            })
+        });
+        if replay.is_some() && is_writable(name) {
+            self.store(name, StoredRegister { value: combined, replay });
             return RegisterWriteEffect::default();
         }
-        let requested = (name != '"').then_some(name);
-        let (unnamed, effect) = self.write_explicit(requested, &value);
-        if requested.is_none() {
-            self.store('0', StoredRegister::text(value));
-        }
-        self.store('"', StoredRegister::text(unnamed));
-        effect
+        self.write_script(name, combined)
     }
 
     fn rotate_numbered(&mut self, value: RegisterValue) {

@@ -34,8 +34,11 @@ results do not edit the document. Numbers become text; lists become lines.
 
 `:let @r` and `setreg()` follow Vim's register types. A List is linewise and a
 String is linewise only when it ends in a line feed; `setreg()`'s `c`/`v`,
-`l`/`V` and `b`/CTRL-V options choose a type explicitly, and `a` appends. Every
-line feed in a String separates lines, so it is a semantic hard break, as a
+`l`/`V` and `b`/CTRL-V options choose a type explicitly, and `a` appends. As in
+Vim, an appended register takes the appended value's type, and only a String
+appended to a characterwise register continues its last line; this differs from
+appending with an uppercase register name in Normal mode. Writing any register
+other than `"` leaves the unnamed register unchanged. Every line feed in a String separates lines, so it is a semantic hard break, as a
 yank's line ends are. In a List each item is one line, and a line feed inside an
 item is that line's literal content; `getreg(r, 1, 1)` returns the same items. A
 block row cannot contain a literal line feed. A block register has no stored

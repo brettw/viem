@@ -92,3 +92,28 @@ try
 catch
   echo 'null blob rejected'
 endtry
+var concat_effects = 0
+def WrongConcat()
+  concat_effects += 1
+  var concat_text = [] .. 'text'
+enddef
+try
+  WrongConcat()
+catch
+  echo concat_effects v:exception
+endtry
+var concat_index = 0
+for concat in ["{} .. 'x'", "'x' .. 0z01", "'x' .. function('len')", "[] .. []", "'x' .. (1, 2)"]
+  concat_index += 1
+  try
+    execute "def Concat" .. concat_index .. "()\n  var t = " .. concat .. "\nenddef"
+    execute "defcompile Concat" .. concat_index
+    echo concat 'compiled'
+  catch
+    echo concat v:exception
+  endtry
+endfor
+def SimpleConcat(): string
+  return 'n' .. 1 .. true .. null .. v:none
+enddef
+echo SimpleConcat()

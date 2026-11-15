@@ -283,6 +283,19 @@ pub(crate) fn invoke(rt: &Runtime, ty: &Type, args: &[Value]) -> EvalResult<Valu
 pub(crate) fn binary(left: &Value, right: &Value, op: &str) -> EvalResult<Value> {
     let (a, b) = (Type::infer(left), Type::infer(right));
     if op == ".." {
+        // Vim9 converts only simple values to String; known container and
+        // function operands are rejected before the function runs.
+        for operand in [&a, &b] {
+            let kind = match operand {
+                Type::List(_) => "list",
+                Type::Dict(_) => "dict",
+                Type::Blob => "blob",
+                Type::Tuple(..) => "tuple",
+                Type::Func { .. } => "func",
+                _ => continue,
+            };
+            return Err(VimError::new(1105, format!("Cannot convert {kind} to string")).into());
+        }
         return Ok(Value::type_value(Type::String));
     }
     if op == "+" && a == b && matches!(a, Type::List(_) | Type::Blob | Type::Tuple(..)) {

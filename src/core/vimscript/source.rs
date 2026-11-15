@@ -152,7 +152,13 @@ pub(crate) fn vim9_comment_end(bytes: &[u8]) -> usize {
     let command = bytes.split(u8::is_ascii_whitespace).find(|word|!word.is_empty()).unwrap_or_default();
     // Pattern delimiters and keyword payloads are owned by :syntax's lexer.
     if command.len() >= 2 && b"syntax".starts_with(command) {return bytes.len();}
-    let mut quote = None; let mut at = 0;
+    vim9_comment_end_from(bytes, 0)
+}
+
+/// Where a whitespace-preceded `#` comment starts at or after `from`, outside
+/// quotes that begin there.
+pub(crate) fn vim9_comment_end_from(bytes: &[u8], from: usize) -> usize {
+    let mut quote = None; let mut at = from;
     while at < bytes.len() {
         let byte = bytes[at];
         if let Some(delimiter) = quote {

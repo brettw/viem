@@ -184,6 +184,7 @@ pub(crate) fn execute(
     executing: bool,
 ) -> Option<CommandOutcome> {
     let normalized;
+    let original = line;
     let line = if rt.vim9() {
         normalized =
             VStr::from(&line.as_bytes()[..super::source::vim9_comment_end(line.as_bytes())]);
@@ -253,7 +254,8 @@ pub(crate) fn execute(
         }
         let index = rt.frames.len().checked_sub(1)?;
         rt.frames[index].vim9 = mode;
-        let result = super::commands::execute_command(rt, host, line, arg, executing);
+        // The modified command finds its own comment under its dialect.
+        let result = super::commands::execute_command(rt, host, original, arg, executing);
         if let Some(frame) = rt.frames.get_mut(index) {
             frame.vim9 = previous;
         }
@@ -849,6 +851,8 @@ fn expression_statement(
     if !executing {
         return outcome(Ok(()));
     }
+    // Vim runs a bare Vim9 expression as :eval, which names its exceptions.
+    rt.current_command = "eval".into();
     let mut eval = Eval::new(rt, host, src, at, true);
     let value = eval.eval1();
     let end = skip_white(src, eval.pos);

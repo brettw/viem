@@ -329,3 +329,22 @@ fn line_values_spell_nul_as_lf_without_splitting_lines() {
     keys(&mut core, view, "u");
     assert_eq!(core.document().text(), "a\0b\ntwo\nthree\n");
 }
+
+#[test]
+fn vim9_comments_leave_substitute_and_normal_payloads_intact() {
+    let directory = std::env::temp_dir().join(format!("viem-vim9-payloads-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("payloads.vim");
+    std::fs::write(
+        &path,
+        "vim9script\nsetline(1, 'old')\ns/old/ #tag/\nvar first = getline(1)\nsetline(1, 'old')\nnormal! A #tag\n\
+         var second = getline(1)\ndef F()\n  setline(1, 'x')\n  normal! A #in def\nenddef\nF()\n\
+         echo string(first) string(second) string(getline(1)) # a real comment\n",
+    )
+    .unwrap();
+    let (mut core, view) = editor("before\n");
+    let outcome = ex(&mut core, view, &format!("source {}", path.display()));
+    assert_eq!(status(&outcome), CommandStatus::Complete, "{outcome:?}");
+    assert_eq!(messages(&outcome), vec!["' #tag' 'old #tag' 'x #in def'".to_string()]);
+    std::fs::remove_dir_all(directory).unwrap();
+}
