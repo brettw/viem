@@ -8,59 +8,6 @@ There are 27 reproducer files: 25 safe probes and two isolated crash probes. **A
 
 Each snippet below is a separate script. Unless specified otherwise, line-oriented probes initialize their own content. P1 denotes crashes or silent content/state changes requiring early attention; P2 denotes other reproducible compatibility failures. The findings are ordered by impact, not by implementation sequence.
 
-**9. [P2] An empty List creates a register line instead of clearing its contents**
-
-```vim
-call setreg('a', [])
-echo string(getreg('a')) string(getreg('a', 1, 1)) string(getregtype('a'))
-```
-
-Vim prints `'' [] ''`; Viem returns a newline, `['']`, and `V`. With explicit block type, Vim again returns empty contents/list/type, whereas Viem returns `['']` and a block type of width zero. The List conversion always appends a linewise terminator, even when there are no items.
-
-Location: [command/scripting.rs:777](src/core/command/scripting.rs#L777). Evidence: [reproducer](target/vimscript-audit/cases/register_empty.vim).
-
-**10. [P2] Special registers do not preserve the register API contract**
-
-```vim
-call setreg('/', ['needle'])
-echo string(getreg('/'))
-let @= = '1 + 2'
-echo string(getreg('=', 1, 1))
-echo string(getregtype('/'))
-```
-
-Vim accepts the one-item List for `/`, returns `['1 + 2']` for the expression register's requested List representation, and reports search-register type `v`. Viem rejects the List with E730, returns the expression as a String, and reports an empty search-register type. The special write branches call String conversion directly, and the expression read returns before handling the List flag.
-
-Locations: [command/scripting.rs:260](src/core/command/scripting.rs#L260), [line 475](src/core/command/scripting.rs#L475), [line 500](src/core/command/scripting.rs#L500). Evidence: [reproducer](target/vimscript-audit/cases/register_special.vim).
-
-**11. [P2] Cursor APIs conflate byte, character, virtual, and encoded-source columns**
-
-```vim
-set tabstop=8
-call setline(1, "é\tx")
-call cursor(1, 4)
-echo col('.') charcol('.') virtcol('.') getcharpos('.')[2]
-call setcursorcharpos(1, 3)
-echo col('.')
-```
-
-Vim prints `4 3 9 3`, then `4`; Viem prints `4 4 4 4`, then `3`. `setcharpos()` has the same setter defect. An additional Latin-1 probe with `éxy` and `cursor(1, 3)` prints `3 2 éxy` in Vim but `3 3 éxy` in Viem: the cursor bridge uses encoded source offsets where Vim's internal UTF-8 byte column is required. Scripts navigating Unicode text or tabs can target the wrong character.
-
-Locations: [command/scripting.rs:285](src/core/command/scripting.rs#L285), [line 354](src/core/command/scripting.rs#L354), [line 1125](src/core/command/scripting.rs#L1125), [coordinator/scripting.rs:344](src/core/coordinator/scripting.rs#L344). Evidence: [column probe](target/vimscript-audit/cases/editor_columns.vim), [encoding probe](target/vimscript-audit/cases/editor_encoded_columns.vim).
-
-**12. [P2] `append()` moves the cursor onto different content**
-
-```vim
-call setline(1, ['one', 'two', 'three'])
-call cursor(2, 2)
-call append(0, ['added'])
-echo line('.') col('.') getline('.')
-```
-
-Vim prints `3 2 two`; Viem prints `2 2 one`. The bridge restores the old numeric line and column after insertion rather than retaining the cursor's content position. Subsequent script edits can operate on a different line.
-
-Location: [command/scripting.rs:1158](src/core/command/scripting.rs#L1158). Evidence: [reproducer](target/vimscript-audit/cases/editor_append_cursor.vim).
-
 **13. [P2] `search()` ignores `nowrapscan` and its skip expression**
 
 With lines `one`, `two`, `three`, cursor on line 3, and `set nowrapscan`, `search('one')` returns `0` and leaves the cursor on line 3 in Vim. Viem wraps, returns `1`, and moves to line 1. With lines `one`, `two`, `one` and cursor on line 1, `search('one', 'W', 0, 0, '1')` returns `0` in Vim because every match is skipped; Viem returns `3` and moves there. The implementation sets wrapping solely from the absence of `W` and never evaluates the fifth argument.

@@ -7,6 +7,7 @@ use super::*;
 use super::ex_execute::ExInfoRequest;
 use crate::vimscript::{self, EvalResult, Fail, HostCommand, Message, OptionScope, Runtime, ScriptHost, ScriptState, VimError};
 use crate::vimscript::value::Value;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// One command (or editor action) staged by a running script for the
 /// interpreter's command-line machinery.
@@ -228,6 +229,15 @@ impl CommandInterpreter {
         Err(VimError::new(113, format!("Unknown option: {name}")))
     }
 
+    /// `@r` in an expression. Unlike `getreg('=')`, `@=` reads the expression
+    /// itself rather than its result.
+    pub(crate) fn script_register_variable(&mut self, document: &Document, name: char) -> Result<Value, VimError> {
+        if name == '=' {
+            return Ok(Value::String(self.last_expression.clone().unwrap_or_default().into()));
+        }
+        self.script_register(document, name)
+    }
+
     pub(crate) fn script_register(&mut self, document: &Document, name: char) -> Result<Value, VimError> {
         match name {
             ':' => return Ok(Value::String(self.last_command_line.clone().unwrap_or_default().into())),
@@ -267,7 +277,11 @@ impl CommandInterpreter {
         }
         let append = append || name.is_ascii_uppercase();
         let name = name.to_ascii_lowercase();
-        let result = if append {
+        let empty_list = matches!(value, Value::List(list) if list.len() == 0);
+        let result = if empty_list && !append {
+            // Vim empties the register rather than storing an empty line.
+            self.clear_script_register(name)
+        } else if append {
             let combined = script_append_value(self.registers.get(name), value, kind)?;
             self.append_script_register(name, combined)
         } else {
@@ -288,12 +302,28 @@ impl CommandInterpreter {
             .map_or(1, |line| line.index as i64 + 1)
     }
 
-    /// One-based byte column of the cursor in its physical line.
-    pub(crate) fn script_cursor_column(&self, document: &Document) -> i64 {
+    /// The cursor's physical line and column.
+    fn script_cursor_position(&self, document: &Document) -> Option<(i64, LineColumn)> {
         let at = self.cursor.min(document.projection().text_tree().byte_len());
-        let Ok(line) = document.physical_line_at_text(at) else { return 1 };
+        let line = document.physical_line_at_text(at).ok()?;
         let source = document.projection().source_insertion_point(at, true).unwrap_or(line.source_range.start);
-        (source.saturating_sub(line.source_range.start) as i64) + 1
+        Some((line.index as i64 + 1, LineColumn::at_source(document, &line, source)))
+    }
+
+    /// One-based byte column of the cursor in its physical line, counted in
+    /// UTF-8 as in Vim whatever the file's encoding.
+    pub(crate) fn script_cursor_column(&self, document: &Document) -> i64 {
+        self.script_cursor_position(document).map_or(1, |(_, column)| column.byte())
+    }
+
+    /// The one-based byte column of one-based character `column` on
+    /// physical `line`, for `setcharpos()` and `setcursorcharpos()`.
+    pub(crate) fn script_byte_column_for_character(&self, document: &Document, line: usize, column: usize) -> usize {
+        let count = document.physical_source_line_number_count().max(1);
+        let Ok(physical) = document.physical_line(line.clamp(1, count) - 1) else { return column };
+        let text = physical.content_text();
+        let skipped: usize = text.graphemes(true).take(column.saturating_sub(1)).map(str::len).sum();
+        skipped + 1 + column.saturating_sub(1).saturating_sub(text.graphemes(true).count())
     }
 
     fn script_line_text(&self, document: &Document, line: i64) -> Option<String> {
@@ -333,12 +363,29 @@ impl CommandInterpreter {
         })
     }
 
-    fn script_mark_position(&self, document: &Document, text: &str) -> (i64, i64) {
-        let Some(offset) = text.chars().nth(1).and_then(|name| self.mark_offset(name)) else { return (0, 0) };
-        let Some(source) = document.projection().source_insertion_point(offset, true) else { return (0, 0) };
-        let Ok(line) = document.physical_line_index_at_source(source) else { return (0, 0) };
-        let Ok((_, content)) = document.physical_line_ranges(line) else { return (0, 0) };
-        (line as i64 + 1, (source - content.start) as i64 + 1)
+    fn script_mark_position(&self, document: &Document, text: &str) -> Option<(i64, LineColumn)> {
+        let offset = text.chars().nth(1).and_then(|name| self.mark_offset(name))?;
+        let source = document.projection().source_insertion_point(offset, true)?;
+        let line = document.physical_line(document.physical_line_index_at_source(source).ok()?).ok()?;
+        Some((line.index as i64 + 1, LineColumn::at_source(document, &line, source)))
+    }
+
+    /// The position `col()`, `getpos()` and their relatives read: `.`, `$`
+    /// (the end of the cursor's line) or a mark.
+    fn script_column_position(&self, document: &Document, text: &str) -> Option<(i64, LineColumn)> {
+        match text {
+            "." => self.script_cursor_position(document),
+            "$" => self.script_cursor_position(document).map(|(line, mut column)| {
+                column.offset = column.text.len();
+                (line, column)
+            }),
+            mark if mark.starts_with('\'') => self.script_mark_position(document, mark),
+            _ => None,
+        }
+    }
+
+    fn script_tabstop(&self) -> usize {
+        self.indentation.effective().tabstop.max(1) as usize
     }
 
     fn script_mode(&self) -> &'static str {
@@ -361,12 +408,11 @@ impl CommandInterpreter {
             "col" | "virtcol" | "charcol" => (|| {
                 let Some(position) = args.first() else { return Ok(Value::Number(0)) };
                 let text = position.to_text().unwrap_or_default();
-                Ok(Value::Number(match text.as_str() {
-                    "." => self.script_cursor_column(document),
-                    "$" => self.script_line_text(document, self.script_cursor_line(document)).map_or(1, |line| line.len() as i64 + 1),
-                    mark if mark.starts_with('\'') => self.script_mark_position(document, mark).1,
-                    _ => 0,
-                }))
+                Ok(Value::Number(self.script_column_position(document, &text).map_or(0, |(_, column)| match name {
+                    "col" => column.byte(),
+                    "charcol" => column.character(),
+                    _ => column.virtual_end(self.script_tabstop()),
+                })))
             })(),
             "getline" => (|| {
                 let Some(first) = args.first() else { return Err(Fail::Error(VimError::argument(119, "getline"))) };
@@ -389,18 +435,22 @@ impl CommandInterpreter {
                 }
             })(),
             "getpos" | "getcurpos" | "getcharpos" => (|| {
-                let (line, column) = if name == "getcurpos" || args.first().is_some_and(|value| value.to_text().is_ok_and(|text| text == ".")) {
-                    (self.script_cursor_line(document), self.script_cursor_column(document))
-                } else if let Some(position) = args.first() {
-                    let text = position.to_text()?;
-                    if text.starts_with('\'') { self.script_mark_position(document, &text) }
-                    else { (self.script_position_line(document, position)?, 1) }
-                } else {
-                    (self.script_cursor_line(document), self.script_cursor_column(document))
+                let text = match args.first() {
+                    Some(position) if name != "getcurpos" => position.to_text()?,
+                    _ => ".".into(),
+                };
+                let (line, column) = match self.script_column_position(document, &text) {
+                    Some((line, column)) if text != "$" => {
+                        let number = if name == "getcharpos" { column.character() } else { column.byte() };
+                        (line, number)
+                    }
+                    _ if text.starts_with('\'') => (0, 0),
+                    _ => (self.script_position_line(document, &Value::from(text.as_str()))?, 1),
                 };
                 let mut items = vec![Value::Number(0), line.into(), column.into(), Value::Number(0)];
                 if name == "getcurpos" {
-                    items.push(column.into());
+                    let want = self.script_cursor_position(document).map_or(1, |(_, column)| column.cursor_want(self.script_tabstop()));
+                    items.push(want.into());
                 }
                 Ok(Value::list(items))
             })(),
@@ -479,10 +529,15 @@ impl CommandInterpreter {
             })(),
             "getreg" => (|| {
                 let register = args.first().map(|value| value.to_text()).transpose()?.and_then(|text| text.chars().next()).unwrap_or('"');
-                if register == '=' && args.get(1).is_some_and(|value| value.to_bool().unwrap_or(false)) {
-                    return Ok(Value::from(self.last_expression.clone().unwrap_or_default()));
-                }
                 let as_list = args.get(2).map(|value| value.to_bool()).transpose()?.unwrap_or(false);
+                if register == '=' && args.get(1).is_some_and(|value| value.to_bool().unwrap_or(false)) {
+                    let expression = self.last_expression.clone();
+                    return Ok(if as_list {
+                        Value::list(expression.into_iter().map(Value::from).collect())
+                    } else {
+                        Value::from(expression.unwrap_or_default())
+                    });
+                }
                 if as_list && !matches!(register, ':' | '/' | '%') {
                     // Lines end only at semantic breaks (or block rows); a
                     // literal line feed stays inside its line, as setreg()
@@ -506,6 +561,10 @@ impl CommandInterpreter {
             })(),
             "getregtype" => (|| {
                 let register = args.first().map(|value| value.to_text()).transpose()?.and_then(|text| text.chars().next()).unwrap_or('"');
+                if matches!(register, '%' | '#' | '=' | ':' | '/' | '.' | '_') {
+                    // Vim reports these as characterwise even when empty.
+                    return Ok(Value::str("v"));
+                }
                 Ok(Value::from(match self.read_register_value_for_put(document, register) {
                     Ok(Some(value)) => match value.kind {
                         RegisterKind::Linewise => "V".to_owned(),
@@ -521,6 +580,22 @@ impl CommandInterpreter {
                 let value = args.get(1).cloned().unwrap_or_default();
                 let options = args.get(2).map(|value| value.to_text()).transpose()?.unwrap_or_default();
                 let (append, kind) = setreg_options(&options).map_err(Fail::Error)?;
+                if let (Value::List(list), '/' | '=') = (&value, register) {
+                    // These hold one line: a one-item List sets it and an
+                    // empty List clears it.
+                    let text = match list.snapshot().as_slice() {
+                        [] => None,
+                        [line] => Some(line.to_text()?),
+                        _ => return Err(VimError::new(883, "Search pattern and expression register may not contain two or more lines").into()),
+                    };
+                    if register == '/' {
+                        self.last_search = text.map(|pattern| (SearchDirection::Forward, pattern));
+                        self.search_highlight_suppressed = false;
+                    } else {
+                        self.last_expression = text;
+                    }
+                    return Ok(Value::Number(0));
+                }
                 self.set_script_register_with_type(register, &value, append, kind).map_err(Fail::Error)?;
                 Ok(Value::Number(0))
             })(),
@@ -960,7 +1035,7 @@ impl ScriptHost for InterpreterHost<'_> {
         super::options::option_exists(name, working)
     }
     fn get_register(&mut self, name: char) -> Result<Value, VimError> {
-        self.commands.script_register(self.document, name)
+        self.commands.script_register_variable(self.document, name)
     }
     fn set_register(&mut self, name: char, value: &Value, append: bool) -> Result<(), VimError> {
         self.commands.set_script_register(name, value, append)
@@ -1142,7 +1217,7 @@ impl CommandInterpreter {
                 self.execute_ex_command_with_visual_range(document, &text, visual_range)
             }
             ScriptAction::SetCursor { line, column } => self.script_set_cursor(document, line, column),
-            ScriptAction::SetLines { first, lines } => self.script_edit_lines(document, |document, ending| {
+            ScriptAction::SetLines { first, lines } => self.script_edit_lines(document, None, |document, ending| {
                 let count = document.physical_source_line_number_count();
                 for (index, text) in lines.iter().enumerate() {
                     let line = first - 1 + index;
@@ -1156,7 +1231,8 @@ impl CommandInterpreter {
                 Ok(())
             }),
             ScriptAction::AppendLines { after, lines } => {
-                self.script_edit_lines(document, |document, ending| append_source_lines(document, after, &lines, ending))
+                let inserted = Some((after, lines.len()));
+                self.script_edit_lines(document, inserted, |document, ending| append_source_lines(document, after, &lines, ending))
             }
         }
     }
@@ -1168,11 +1244,13 @@ impl CommandInterpreter {
         let Ok(physical) = document.physical_line(line.clamp(1, count) - 1) else {
             return CommandOutput { status: CommandStatus::Error("E966: Invalid line number".into()), ..CommandOutput::complete() };
         };
-        let mut column = column.saturating_sub(1).min(physical.text.len());
-        while !physical.text.is_char_boundary(column) {
+        // The column counts UTF-8 bytes of the decoded line, as in Vim.
+        let text = physical.content_text();
+        let mut column = column.saturating_sub(1).min(text.len());
+        while !text.is_char_boundary(column) {
             column -= 1;
         }
-        let source = (physical.content_range.start + column).min(physical.content_range.end);
+        let source = (physical.content_range.start + document.encoding().encoded_text_len(&text[..column])).min(physical.content_range.end);
         let Ok(cursor) = document.visible_point_for_source(source, true) else {
             return CommandOutput { status: CommandStatus::Error("cursor position is not editable".into()), ..CommandOutput::complete() };
         };
@@ -1190,13 +1268,16 @@ impl CommandInterpreter {
     }
 
     /// Edit physical source lines, keeping the cursor on its line and
-    /// column as Vim does.
+    /// column as Vim does. `inserted` is `(after, count)` when the edit adds
+    /// `count` lines after line `after`; lines added above the cursor move it
+    /// down with its content.
     fn script_edit_lines(
         &mut self,
         document: &mut Document,
+        inserted: Option<(usize, usize)>,
         edit: impl FnOnce(&mut Document, &str) -> Result<(), DocumentError>,
     ) -> CommandOutput {
-        let line = self.script_cursor_line(document).max(1) as usize;
+        let mut line = self.script_cursor_line(document).max(1) as usize;
         let column = self.script_cursor_column(document).max(1) as usize;
         let before = document.revision();
         let ending = document.file_format().spelling();
@@ -1204,6 +1285,11 @@ impl CommandInterpreter {
             return CommandOutput { status: CommandStatus::Error(error.to_string()), ..CommandOutput::complete() };
         }
         let changed = document.revision() != before;
+        if let Some((after, count)) = inserted.filter(|_| changed) {
+            if after < line {
+                line += count;
+            }
+        }
         let mut output = self.script_set_cursor(document, line, column);
         output.document_changed = changed;
         output.cursor_moved = true;
@@ -1224,6 +1310,59 @@ impl CommandInterpreter {
         let failure = host.last_failure.take();
         fold_script_messages(&mut output, messages, failure);
         output
+    }
+}
+
+/// A position in a physical line as Vim script's column functions see it:
+/// a UTF-8 offset into the decoded line, whatever the file's encoding.
+struct LineColumn {
+    text: String,
+    offset: usize,
+}
+
+impl LineColumn {
+    fn at_source(document: &Document, line: &crate::document::PhysicalSourceLine, source: usize) -> Self {
+        let text = line.content_text().to_owned();
+        let encoding = document.encoding();
+        let mut at = line.content_range.start;
+        let mut offset = text.len();
+        for (index, character) in text.char_indices() {
+            if at >= source {
+                offset = index;
+                break;
+            }
+            at += encoding.scalar_source_width(character);
+        }
+        Self { text, offset }
+    }
+
+    /// `col()`: one-based UTF-8 byte column.
+    fn byte(&self) -> i64 {
+        self.offset as i64 + 1
+    }
+
+    /// `charcol()`: one-based character column, where a composing character
+    /// belongs to its base character.
+    fn character(&self) -> i64 {
+        self.text[..self.offset].graphemes(true).count() as i64 + 1
+    }
+
+    /// `virtcol()`: the last screen cell of the character here, or the cell
+    /// after the end of the line.
+    fn virtual_end(&self, tabstop: usize) -> i64 {
+        let before = vimscript::display_width(&self.text[..self.offset], 0, tabstop);
+        let width = self.text[self.offset..].graphemes(true).next().map_or(1, |character| vimscript::display_width(character, before, tabstop));
+        (before + width.max(1)) as i64
+    }
+
+    /// `getcurpos()`'s `curswant`: Normal mode wants the first cell of a
+    /// character but the last cell of a tab, where the cursor is drawn.
+    fn cursor_want(&self, tabstop: usize) -> i64 {
+        if self.text[self.offset..].starts_with('\t') {
+            self.virtual_end(tabstop)
+        } else {
+            vimscript::display_width(&self.text[..self.offset], 0, tabstop) as i64 + 1
+        }
     }
 }
 

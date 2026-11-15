@@ -9,6 +9,7 @@ mod collections;
 mod script;
 mod system;
 mod text;
+pub(crate) use text::display_width;
 
 // Bound individual generated containers before allocating their contents.
 pub(crate) const MAX_LIST_ITEMS: usize = 1_000_000;

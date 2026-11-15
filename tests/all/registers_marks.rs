@@ -418,6 +418,45 @@ fn script_register_writes_leave_the_unnamed_register_alone() {
 }
 
 #[test]
+fn setreg_with_an_empty_list_empties_the_register() {
+    let (mut core, view) = editor("one");
+    for options in ["''", "'l'", "'c'", "'b'"] {
+        ex(&mut core, view, "call setreg('a', 'x')");
+        ex(&mut core, view, &format!("call setreg('a', [], {options})"));
+        assert_eq!(
+            messages(&ex(&mut core, view, "echo string(getreg('a')) string(getreg('a', 1, 1)) string(getregtype('a'))")),
+            ["'' [] ''"],
+            "{options}"
+        );
+    }
+    // Appending an empty List keeps the contents but takes its linewise type.
+    ex(&mut core, view, "call setreg('a', 'x')");
+    ex(&mut core, view, "call setreg('a', [], 'a')");
+    assert_eq!(messages(&ex(&mut core, view, "echo string(getreg('a', 1, 1)) getregtype('a')")), ["['x'] V"]);
+}
+
+#[test]
+fn search_and_expression_registers_keep_the_register_api() {
+    let (mut core, view) = editor("one");
+    ex(&mut core, view, "call setreg('/', ['needle'])");
+    assert_eq!(messages(&ex(&mut core, view, "echo getreg('/') getregtype('/')")), ["needle v"]);
+    let outcome = ex(&mut core, view, "call setreg('/', ['a', 'b'])");
+    assert!(matches!(outcome.command.as_ref().map(|command| &command.status), Some(CommandStatus::Error(text)) if text.contains("E883")), "{outcome:?}");
+    assert_eq!(messages(&ex(&mut core, view, "echo getreg('/')")), ["needle"]);
+    ex(&mut core, view, "call setreg('/', [])");
+    assert_eq!(messages(&ex(&mut core, view, "echo string(getreg('/'))")), ["''"]);
+
+    ex(&mut core, view, "let @= = '1 + 2'");
+    assert_eq!(
+        messages(&ex(&mut core, view, "echo getreg('=') string(getreg('=', 1, 1)) string(getreg('=', 0, 1)) @= getregtype('=')")),
+        ["3 ['1 + 2'] ['3'] 1 + 2 v"]
+    );
+    ex(&mut core, view, "call setreg('=', ['3 + 4'])");
+    assert_eq!(messages(&ex(&mut core, view, "echo getreg('=', 1) getreg('=')")), ["3 + 4 7"]);
+    assert_eq!(messages(&ex(&mut core, view, "echo getregtype(':') getregtype('.') getregtype('%') string(getregtype('-'))")), ["v v v ''"]);
+}
+
+#[test]
 fn script_linewise_register_puts_whole_lines() {
     for (format, source, keys_text, expected, expected_source) in [
         (Format::Markdown, "p\n\nz", "\"ap", "p\nqq\nz", "p\n\nqq\n\nz"),

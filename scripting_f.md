@@ -48,14 +48,10 @@ Some error numbers differ only because the oracle is 9.1 and the target is
 
 - **Value forms:**
   - `let @a = ['x', 'y']` should be E730.
-  - `setreg('a', [])` should give an empty characterwise register; Viem gives
-    a linewise `\n`.
-  - `setreg('/', ['pat'])` fails with E730.
   - `setreg()` rejects the `getreginfo()` dictionary form, and `getreginfo()`
     is missing.
   - `setreg('!', 'x')` succeeds instead of E354.
   - `setreg('a', 'x', 'q')` reports E475; Vim returns 0.
-- **`@=`** returns the evaluated result; Vim returns the expression text.
 - **Block width:** Vim stores an explicit width (`'b5'` gives `^V5`) and
   measures in display cells (`日本` is 4). Viem reports the widest row in
   characters. [Registers and marks](docs/vim-registers-and-marks.md) records
@@ -73,8 +69,7 @@ Some error numbers differ only because the oracle is 9.1 and the target is
 - `col([l, c])`, `virtcol([l, c])` and `charcol([l, c])` return 0,
   `line([2, 1])` errors, and `line(2)` returns 2 instead of 0. `col(1)` should
   be E1222.
-- `virtcol()` and `curswant` ignore tab expansion, and the `curswant` argument
-  of `cursor()` and `setpos()` is dropped.
+- The `curswant` argument of `cursor()` and `setpos()` is dropped.
 - `cursor(-1, -1)` returns -1 instead of E475, and `setpos('.', [1, 1])`
   returns 0 instead of -1.
 - `search()`:
@@ -88,7 +83,6 @@ Some error numbers differ only because the oracle is 9.1 and the target is
   `getbufline(99, 1)`, `getbufoneline(99, 1)`, `bufexists(99)`,
   `bufnr('nosuch')`, `getbufvar(99, …)`, `getcurpos(99)`, `winwidth(99)`.
 - `setline(1, {})` raises E731; Vim returns 0.
-- `append(0, …)` does not shift the cursor line.
 - `feedkeys(…, 'x')` does not execute.
 - `setbufvar()` and `setwinvar()` reject `&option`, and
   `setwinvar(0, 'wv', 7)` does not create `w:wv`.

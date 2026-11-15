@@ -3674,6 +3674,13 @@ impl CommandInterpreter {
         Ok(())
     }
 
+    pub(crate) fn clear_script_register(&mut self, name: char) -> Result<(), RegisterWriteError> {
+        self.registers.validate_write(Some(name), &self.clipboard_context)?;
+        let effect = self.registers.clear_script(name);
+        self.collect_register_write(effect);
+        Ok(())
+    }
+
     pub(crate) fn append_script_register(&mut self, name: char, combined: RegisterValue) -> Result<(), RegisterWriteError> {
         self.registers.validate_write(Some(name), &self.clipboard_context)?;
         let effect = self.registers.append_script(name, combined);

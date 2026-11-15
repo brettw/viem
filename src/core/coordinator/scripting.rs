@@ -334,7 +334,7 @@ impl<P: TextMeasurementProvider> ScriptHost for CoreScriptHost<'_, P> {
     fn get_register(&mut self, name: char) -> Result<Value, VimError> {
         let view_id = self.view_id;
         let core = &mut *self.core;
-        core.views.get_mut(&view_id).expect("script view").commands.script_register(&core.document, name)
+        core.views.get_mut(&view_id).expect("script view").commands.script_register_variable(&core.document, name)
     }
     fn set_register(&mut self, name: char, value: &Value, append: bool) -> Result<(), VimError> {
         self.commands_mut().set_script_register(name, value, append)?;
@@ -358,6 +358,11 @@ impl<P: TextMeasurementProvider> ScriptHost for CoreScriptHost<'_, P> {
                 };
                 let Some((line, column)) = Self::cursor_target(&args)? else { return Ok(Value::Number(-1)) };
                 let line = if line == 0 { self.commands().script_cursor_line(&self.core.document).max(1) as usize } else { line };
+                let column = if matches!(name, "setcharpos" | "setcursorcharpos") {
+                    self.commands().script_byte_column_for_character(&self.core.document, line, column)
+                } else {
+                    column
+                };
                 self.dispatch(rt, ScriptAction::SetCursor { line, column })?;
                 Ok(Value::Number(0))
             })(),

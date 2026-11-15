@@ -7,6 +7,7 @@
 //! builtin signatures; typed calls execute on the same runtime frame stack.
 pub mod autocmd;
 mod builtins;
+pub(crate) use builtins::display_width;
 pub(crate) mod commands;
 pub mod error;
 pub mod exec;

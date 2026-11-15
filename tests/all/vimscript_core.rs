@@ -348,3 +348,47 @@ fn vim9_comments_leave_substitute_and_normal_payloads_intact() {
     assert_eq!(messages(&outcome), vec!["' #tag' 'old #tag' 'x #in def'".to_string()]);
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn column_functions_count_utf8_bytes_characters_and_screen_cells() {
+    let (mut core, view) = editor("x\n");
+    let echo = |core: &mut Editor, line: &str| messages(&ex(core, view, line));
+    ex(&mut core, view, "set tabstop=8 | call setline(1, \"\\u00e9\\tx\") | call cursor(1, 4)");
+    assert_eq!(echo(&mut core, "echo col('.') charcol('.') virtcol('.') getcharpos('.')[2] getpos('.')[2] getcurpos()[4]"), ["4 3 9 3 4 9"]);
+    assert_eq!(echo(&mut core, "echo col('$') charcol('$') virtcol('$')"), ["5 4 10"]);
+    ex(&mut core, view, "call setcursorcharpos(1, 3)");
+    assert_eq!(echo(&mut core, "echo col('.')"), ["4"]);
+    ex(&mut core, view, "call setcharpos('.', [0, 1, 2, 0])");
+    assert_eq!(echo(&mut core, "echo col('.') charcol('.') virtcol('.')"), ["3 2 8"]);
+    // A composing character belongs to its base; a wide character spans two cells.
+    ex(&mut core, view, "call setline(1, \"e\\u0301\\u65e5x\") | call cursor(1, 4)");
+    assert_eq!(echo(&mut core, "echo col('.') charcol('.') virtcol('.') getcurpos()[4]"), ["4 2 3 2"]);
+    ex(&mut core, view, "call setcursorcharpos(1, 3)");
+    assert_eq!(echo(&mut core, "echo col('.') charcol('.') virtcol('.')"), ["7 3 4"]);
+    ex(&mut core, view, "normal! 0ma");
+    assert_eq!(echo(&mut core, "echo col(\"'a\") charcol(\"'a\") getcharpos(\"'a\")[2]"), ["1 1 1"]);
+}
+
+#[test]
+fn column_functions_use_utf8_columns_in_latin1_files() {
+    let document =
+        Document::from_bytes_with_file_format(b"\xe9xy\n".to_vec(), Encoding::Latin1, Format::PlainText, FileFormat::Unix).unwrap();
+    let mut core: Editor = Core::new(document);
+    let view = core.add_view(MockTextMeasurementProvider::new(), 700., 1200.);
+    ex(&mut core, view, "call cursor(1, 3)");
+    assert_eq!(messages(&ex(&mut core, view, "echo col('.') charcol('.') getline('.')[col('.') - 1]")), ["3 2 x"]);
+    ex(&mut core, view, "call setcursorcharpos(1, 3)");
+    assert_eq!(messages(&ex(&mut core, view, "echo col('.') charcol('.')")), ["4 3"]);
+    assert_eq!(core.document().source_bytes(), b"\xe9xy\n");
+}
+
+#[test]
+fn append_above_the_cursor_keeps_it_on_its_content() {
+    let (mut core, view) = editor("one\ntwo\nthree\n");
+    ex(&mut core, view, "call cursor(2, 2)");
+    for append in ["call append(0, ['added'])", "call append(1, ['b1', 'b2'])", "call append(line('.'), 'after')", "call append(line('$'), [])"] {
+        ex(&mut core, view, append);
+        let expected = if append.contains("(0,") { "3 2 two" } else { "5 2 two" };
+        assert_eq!(messages(&ex(&mut core, view, "echo line('.') col('.') getline('.')")), [expected], "{append}");
+    }
+}

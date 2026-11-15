@@ -638,6 +638,22 @@ impl Registers {
         }
     }
 
+    /// `setreg(r, [])`: register `r` becomes empty, as if never written. The
+    /// clipboard cannot be unset, so it receives empty text.
+    pub(crate) fn clear_script(&mut self, name: char) -> RegisterWriteEffect {
+        if ClipboardTarget::from_register(name).is_some() {
+            return self.write_script(name, RegisterValue::characterwise(""));
+        }
+        let names: &[char] = if name == '"' { &['"', '0'] } else { &[name] };
+        if is_writable(name) && names.iter().any(|name| self.bank.values.contains_key(name)) {
+            let bank = self.bank_mut();
+            for name in names {
+                bank.values.remove(name);
+            }
+        }
+        RegisterWriteEffect::default()
+    }
+
     /// A script append to register `name`, whose combined value the caller
     /// built with `setreg()`'s rules. A recorded macro keeps its key events
     /// and gains the appended text.
