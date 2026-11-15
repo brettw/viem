@@ -288,7 +288,7 @@ internal static class CodeBlockLanguageTests
                 "Windows code language selection preserves the viewport rather than revealing the offscreen caret");
             for (int attempt = 0; attempt < 30; ++attempt)
             {
-                document.PollSyntax();
+                document.ServiceBackgroundWork();
                 view.Refresh();
                 check(view.Viewport.top == before.top && view.Viewport.left == before.left
                     && view.Presentation.cursor_utf8_offset == caret.cursor_utf8_offset && view.Presentation.mode == caret.mode,

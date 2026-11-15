@@ -18,6 +18,8 @@ internal static class RecoveryCleanupTests
         var fixture = new RecoveryFixture(device, dispatcher, profile, check);
         try
         {
+            await fixture.BackupScheduling();
+            await fixture.EditDuringBackup();
             await fixture.RecoverAfterDurableReplacement();
             await fixture.DiscardSelectedSnapshots();
             fixture.ProtectedOwners();
@@ -78,6 +80,58 @@ internal static class RecoveryCleanupTests
             catch (IOException) {
                 return true;
             }
+        }
+
+        internal async Task BackupScheduling()
+        {
+            string path = NewPath("backup-scheduling");
+            using var doc = new CoreDocument(File.ReadAllBytes(path), path);
+            using var view = new CoreView(doc, device, dispatcher, 500, 200);
+            Exception? failure = null;
+            using var recovery = DocumentRecovery.Claim(doc, path, profile, dispatcher, error => failure = error);
+            check(!recovery.BackupScheduledForTesting, "unchanged recovery documents have no timer");
+            view.Command("i"); view.Text("changed ");
+            check(recovery.BackupScheduledForTesting, "a source revision arms a recovery deadline");
+            int scheduled = recovery.BackupScheduleCountForTesting;
+            doc.NotifyChanged();
+            check(recovery.BackupScheduleCountForTesting == scheduled,
+                "presentation notifications do not reset the recovery deadline");
+            recovery.FlushAfterPauseForTesting();
+            check(await recovery.Pending && !recovery.BackupScheduledForTesting && failure == null,
+                "one recovery snapshot leaves no recurring backup timer");
+            check(DocumentRecovery.Read(recovery.Slot)!.snapshot!.source.AsSpan().SequenceEqual(doc.Source(doc.State.document_revision)),
+                "the recovery deadline writes the latest exact source bytes");
+            view.Text("another ");
+            check(recovery.BackupScheduledForTesting, "a later edit restarts the recovery deadline");
+            recovery.Dispose();
+            check(!recovery.BackupScheduledForTesting, "closing recovery cancels its pending deadline");
+        }
+
+        internal async Task EditDuringBackup()
+        {
+            string path = NewPath("edit-during-backup");
+            using var doc = new CoreDocument(File.ReadAllBytes(path), path);
+            using var view = new CoreView(doc, device, dispatcher, 500, 200);
+            using var recovery = DocumentRecovery.Claim(doc, path, profile, dispatcher, _ => { });
+            var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var release = new ManualResetEventSlim();
+            recovery.BeforeWriteForTesting = () => { entered.TrySetResult(); release.Wait(TimeSpan.FromSeconds(10)); };
+            view.Command("i"); view.Text("first ");
+            recovery.FlushAfterPauseForTesting();
+            var prior = recovery.Pending;
+            try
+            {
+                await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                view.Text("second ");
+                check(recovery.BackupScheduledForTesting, "an edit during a backup retains a new deadline");
+            }
+            finally { release.Set(); await prior.WaitAsync(TimeSpan.FromSeconds(10)); }
+            check(!await prior, "a superseded backup cannot publish stale bytes");
+            recovery.BeforeWriteForTesting = null;
+            recovery.FlushAfterPauseForTesting();
+            check(await recovery.Pending && !recovery.BackupScheduledForTesting
+                && DocumentRecovery.Read(recovery.Slot)!.snapshot!.source.AsSpan().SequenceEqual(doc.Source(doc.State.document_revision)),
+                "the new recovery deadline publishes after an older active backup is discarded");
         }
 
 

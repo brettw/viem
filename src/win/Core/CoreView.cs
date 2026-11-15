@@ -22,6 +22,9 @@ internal sealed unsafe partial class CoreView : IDisposable
     // Hosts subscribe after restoring the initial or replacement view's scale.
     public event Action<float>? ZoomChanged;
     public event Action? Disposed;
+    public event Action<Exception>? BackgroundWorkFailed;
+    private readonly DispatcherQueueTimer pendingWork;
+    internal string? PendingWorkError { get; private set; }
     public string ClipboardText { get; set; } = "";
     public string ClipboardFragment { get; set; } = "";
     public ulong ClipboardGeneration { get; set; } = 1;
@@ -51,26 +54,56 @@ internal sealed unsafe partial class CoreView : IDisposable
     public CoreView(CoreDocument document, CanvasDevice device, DispatcherQueue dispatcher, float width, float height, ViemLayoutInsets padding = default, uint display = VIEM_VIEW_DISPLAY_DEFAULT)
     {
         Document = document;
-        using (Diagnostics.StartupPerformance.Measure("view.provider")) Provider = new(device, dispatcher);
-        // Background layout may probe local image headers from the first job.
-        Provider.SetImageDocumentPath(document.FilePath);
-        document.ImagePreviews.Seed(Provider, device, document.FilePath);
-        var table = Provider.Table;
-        var options = new ViemViewOptions(); options.execution_context = VIEM_LAYOUT_EXECUTION_FRONTEND_MAIN; options.width = Math.Max(1, width); options.height = Math.Max(1, height);
-        options.display = display;
-        options.padding_top = padding.top; options.padding_left = padding.left;
-        options.padding_bottom = padding.bottom; options.padding_right = padding.right;
-        var outcome = new ViemCoreOutcome(); ulong id = 0;
-        uint status;
-        using (Diagnostics.StartupPerformance.Measure("view.initialLayout")) status = viem_core_view_add(document.Handle, &options, &table, &id, &outcome);
-        if (status != 0) { string detail = Provider.LastError ?? ""; Provider.Dispose(); throw new InvalidOperationException($"Create editor view failed ({status}). {detail}"); }
-        Id = id; Outcome = outcome;
-        using (Diagnostics.StartupPerformance.Measure("view.backgroundSetup"))
+        pendingWork = dispatcher.CreateTimer();
+        pendingWork.IsRepeating = false;
+        pendingWork.Interval = TimeSpan.FromMilliseconds(40);
+        pendingWork.Tick += AdvancePendingWork;
+        try
         {
-            TableWidthRefinement = new(this, dispatcher, tableRefinement: true);
-            TableWidthRefinement.Update();
-            BackgroundLayout = new(this, dispatcher);
-            BackgroundLayout.Update();
+            using (Diagnostics.StartupPerformance.Measure("view.provider")) Provider = new(device, dispatcher);
+            // Background layout may probe local image headers from the first job.
+            Provider.SetImageDocumentPath(document.FilePath);
+            document.ImagePreviews.Seed(Provider, device, document.FilePath);
+            var table = Provider.Table;
+            var options = new ViemViewOptions(); options.execution_context = VIEM_LAYOUT_EXECUTION_FRONTEND_MAIN; options.width = Math.Max(1, width); options.height = Math.Max(1, height);
+            options.display = display;
+            options.padding_top = padding.top; options.padding_left = padding.left;
+            options.padding_bottom = padding.bottom; options.padding_right = padding.right;
+            var outcome = new ViemCoreOutcome(); ulong id = 0;
+            uint status;
+            using (Diagnostics.StartupPerformance.Measure("view.initialLayout")) status = viem_core_view_add(document.Handle, &options, &table, &id, &outcome);
+            if (status != 0) { string detail = Provider.LastError ?? ""; throw new InvalidOperationException($"Create editor view failed ({status}). {detail}"); }
+            Id = id; Outcome = outcome;
+            using (Diagnostics.StartupPerformance.Measure("view.backgroundSetup"))
+            {
+                TableWidthRefinement = new(this, dispatcher, tableRefinement: true);
+                TableWidthRefinement.Update();
+                BackgroundLayout = new(this, dispatcher);
+                BackgroundLayout.Update();
+            }
+#if DEBUG
+            document.BeforeViewBackgroundAttachmentForTesting?.Invoke(this);
+#endif
+            document.AttachBackgroundWork(dispatcher);
+            document.Changed += SynchronizePendingWork;
+            document.PendingViewWorkChanged += SynchronizePendingWork;
+            SynchronizePendingWork();
+        }
+        catch
+        {
+            pendingWork.Stop();
+            pendingWork.Tick -= AdvancePendingWork;
+            document.Changed -= SynchronizePendingWork;
+            document.PendingViewWorkChanged -= SynchronizePendingWork;
+            BackgroundLayout?.Dispose();
+            TableWidthRefinement?.Dispose();
+            if (Id != 0)
+            {
+                Check(viem_core_view_remove(document.Handle, Id), "Close failed pane");
+                Id = 0;
+            }
+            Provider?.Dispose();
+            throw;
         }
     }
     public ViemViewPresentation Presentation { get { var p = new ViemViewPresentation(); Check(viem_core_view_presentation(Document.Handle, Id, &p), "Read presentation"); return p; } }
@@ -196,6 +229,9 @@ internal sealed unsafe partial class CoreView : IDisposable
         else if (notify) Changed?.Invoke();
         BackgroundLayout.Update();
         TableWidthRefinement.Update();
+        // Search pattern/options are shared by the buffer's views even when
+        // the command does not edit source or move another pane's caret.
+        Document.NotifyPendingViewWorkChanged();
         if (outcome.command_status == VIEM_COMMAND_STATUS_READ_ONLY) throw new InvalidOperationException("E45: readonly option is set (use ! to override)");
         if (outcome.command_status == VIEM_COMMAND_STATUS_ERROR) throw new InvalidOperationException(diagnostic ?? "The command could not be completed.");
     }
@@ -330,10 +366,40 @@ internal sealed unsafe partial class CoreView : IDisposable
         var completion = new ViemCompletionInfo();
         Check(viem_core_view_completion_info(Document.Handle, Id, &completion), "Read completion");
         if ((completion.flags & VIEM_COMPLETION_SEARCHING) != 0) { Check(viem_core_view_poll_completion(Document.Handle, Id, &changed), "Update completion"); if (changed != 0) Changed?.Invoke(); }
+        SynchronizePendingWork();
     }
+    private void AdvancePendingWork(DispatcherQueueTimer sender, object args)
+    {
+        if (Id == 0 || Document.Handle == 0) return;
+        try { Poll(); }
+        catch (Exception error) { pendingWork.Stop(); PendingWorkError = error.ToString(); BackgroundWorkFailed?.Invoke(error); }
+    }
+    // Search/completion may have bounded incremental work, but an ordinary
+    // inactive view needs no clock. Mutations and shared-document changes
+    // restart this one-shot only when the core reports actual pending work.
+    private void SynchronizePendingWork()
+    {
+        if (Id == 0 || Document.Handle == 0) { pendingWork.Stop(); return; }
+        byte search = 0;
+        Check(viem_core_view_search_work_pending(Document.Handle, Id, &search), "Read search progress");
+        var completion = new ViemCompletionInfo();
+        Check(viem_core_view_completion_info(Document.Handle, Id, &completion), "Read completion");
+        if (search != 0 || (completion.flags & VIEM_COMPLETION_SEARCHING) != 0)
+        {
+            if (!pendingWork.IsRunning) pendingWork.Start();
+        }
+        else pendingWork.Stop();
+    }
+#if DEBUG
+    internal bool PendingWorkScheduledForTesting => pendingWork.IsRunning;
+#endif
     public void Dispose()
     {
         if (Id == 0) return;
+        pendingWork.Stop();
+        pendingWork.Tick -= AdvancePendingWork;
+        Document.Changed -= SynchronizePendingWork;
+        Document.PendingViewWorkChanged -= SynchronizePendingWork;
         BackgroundLayout.Dispose();
         TableWidthRefinement.Dispose();
         Check(viem_core_view_remove(Document.Handle, Id), "Close pane"); Id = 0; Provider.Dispose();

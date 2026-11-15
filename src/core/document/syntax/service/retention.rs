@@ -70,6 +70,9 @@ impl SyntaxService {
             }
         }
         self.cache.clear();
+        if self.visible_demands.as_ref().is_some_and(|demands| demands.input != input.identity()) {
+            self.visible_demands = None;
+        }
         self.current = Some(input.identity());
         self.current_input = Some(input);
         self.bound_presentation_cache();

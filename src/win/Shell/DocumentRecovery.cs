@@ -30,6 +30,7 @@ internal sealed class DocumentRecovery : IDisposable
 {
     private static readonly byte[] Magic = "VIEM-RECOVERY\n"u8.ToArray();
     private static readonly DateTime Epoch = new(2001, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+    private static readonly TimeSpan BackupPause = TimeSpan.FromSeconds(4);
     private readonly object gate = new();
     private readonly CoreDocument document;
     private readonly RecoveryRecord record;
@@ -38,7 +39,7 @@ internal sealed class DocumentRecovery : IDisposable
     private readonly Action<Exception> report;
     private long generation;
     private ulong observedRevision;
-    private DateTime changedAt;
+    private long? changedAt;
     private bool disposed;
     private RecoveryCandidate[] pendingRetirement = [];
     internal string Slot { get; }
@@ -46,14 +47,17 @@ internal sealed class DocumentRecovery : IDisposable
     internal string? RetirementWarning { get; private set; }
 #if DEBUG
     internal Action? BeforeWriteForTesting { get; set; }
+    internal bool BackupScheduledForTesting => timer.IsRunning;
+    internal int BackupScheduleCountForTesting { get; private set; }
+    internal void FlushAfterPauseForTesting() { timer.Stop(); CapturePendingSnapshot(); }
 #endif
     private DocumentRecovery(CoreDocument document, string slot, RecoveryRecord record, DispatcherQueue dispatcher, Action<Exception> report)
     {
         this.document = document; Slot = slot; this.record = record; this.report = report; this.dispatcher = dispatcher;
         observedRevision = document.State.document_revision;
-        timer = dispatcher.CreateTimer(); timer.Interval = TimeSpan.FromSeconds(1);
-        timer.Tick += (_, _) => { if (changedAt != default && DateTime.UtcNow - changedAt >= TimeSpan.FromSeconds(4)) { changedAt = default; try { Write(RecoverySnapshot.Capture(document)); } catch (Exception error) { report(error); } } };
-        document.Changed += Changed; document.Disposed += Dispose; timer.Start();
+        timer = dispatcher.CreateTimer(); timer.Interval = BackupPause; timer.IsRepeating = false;
+        timer.Tick += BackupDeadline;
+        document.Changed += Changed; document.Disposed += Dispose;
     }
     private static IEnumerable<string> Slots(string path, string profile)
     {
@@ -199,10 +203,33 @@ internal sealed class DocumentRecovery : IDisposable
     }
     private void Changed()
     {
+        if (disposed) return;
         var state = document.State;
         if (state.document_revision == observedRevision) return;
-        observedRevision = state.document_revision; changedAt = DateTime.UtcNow;
+        observedRevision = state.document_revision; changedAt = Stopwatch.GetTimestamp();
         lock (gate) generation++;
+        timer.Stop(); timer.Interval = BackupPause; timer.Start();
+#if DEBUG
+        BackupScheduleCountForTesting++;
+#endif
+    }
+    private void BackupDeadline(DispatcherQueueTimer sender, object args)
+    {
+        if (disposed || changedAt is not { } changed) return;
+        // A newer edit may have replaced a deadline whose callback was already
+        // queued. A monotonic clock prevents that old callback from saving early.
+        var remaining = BackupPause - Stopwatch.GetElapsedTime(changed);
+        if (remaining > TimeSpan.Zero) { timer.Stop(); timer.Interval = remaining; timer.Start(); return; }
+        CapturePendingSnapshot();
+    }
+    private void CapturePendingSnapshot()
+    {
+        if (disposed || changedAt == null) return;
+        changedAt = null;
+        // Failure settles this attempt, as before. A later revision or explicit
+        // write retries; no periodic timer retries an unchanged failed backup.
+        try { Write(RecoverySnapshot.Capture(document)); }
+        catch (Exception error) { report(error); }
     }
     public void Write(RecoverySnapshot snapshot)
     {
@@ -259,7 +286,8 @@ internal sealed class DocumentRecovery : IDisposable
     public void Dispose()
     {
         if (disposed) return;
-        timer.Stop(); document.Changed -= Changed; document.Disposed -= Dispose;
+        timer.Stop(); timer.Tick -= BackupDeadline; changedAt = null;
+        document.Changed -= Changed; document.Disposed -= Dispose;
         lock (gate) { disposed = true; generation++; try { if (File.Exists(Slot) && OwnsSlot()) File.Delete(Slot); } catch (Exception error) { report(error); } }
     }
 }

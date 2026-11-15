@@ -77,7 +77,7 @@ pub(super) struct CodeLayer {
     /// How far complete highlighting of the current input has progressed.
     /// Finished chunks are never revisited, so evicted coverage entries
     /// cannot make the pass repeat itself.
-    complete_progress: Option<(SyntaxInputIdentity, usize)>,
+    complete_progress: Option<(SyntaxInputIdentity, u64, usize)>,
     referenced_names: Vec<String>,
     implicit_limited: bool,
 }
@@ -297,10 +297,12 @@ impl<P: TextMeasurementProvider> Core<P> {
         factory: crate::document::syntax::service::SyntaxProviderFactory,
     ) {
         let mut service = SyntaxService::with_factory(factory);
+        service.set_work_wake(self.background.wake.clone());
         service.set_language(self.syntax.code.service.configuration.language.clone());
         service.set_vim_directory(self.syntax.code.service.configuration.vim_directory.clone());
         service.set_filename(self.syntax.code.service.configuration.filename.clone());
         self.syntax.code.service = service;
+        self.syntax.code.complete_progress = None;
         self.syntax.prepared_code = None;
         self.syntax.markdown = Default::default();
         self.syntax.code.published = None;
@@ -336,6 +338,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// Bounded publication and immutable request capture only. No provider
     /// function, parsing, or wait occurs under the coordinator's serial lock.
     pub fn poll_syntax(&mut self) -> bool {
+        self.background.deadline = None;
         self.poll_view_format_prefetch();
         let previous = self.document.focus();
         // Each live style layer serves every view drawn from it: Preview's
@@ -394,14 +397,15 @@ impl<P: TextMeasurementProvider> Core<P> {
             .and_then(|map| self.document.layout_change_between(map.source_revision(), map.target_revision()))
             .map(|change| (change.old, change.new));
         self.syntax.code.service.rebase_input(input.clone(), map, hull);
-        // Drain completed coverage before enqueueing: requesting first could
-        // restart a finished regional query on every publication frame.
-        let completed = self.syntax.code.service.poll(input.identity());
         let mut requests = Vec::new();
         for view in self.views.values().filter(|view| self.shows_focused_presentation(view)) {
             let range = self.visible_syntax_range(&input, view);
             if !requests.contains(&range) { requests.push(range); }
         }
+        self.syntax.code.service.set_visible_demands(&input, &requests);
+        // Drain completed coverage before enqueueing: requesting first could
+        // restart a finished regional query on every publication frame.
+        let completed = self.syntax.code.service.poll(input.identity());
         for range in &requests {
             self.syntax.code.service.request(input.clone(), range.clone());
         }
@@ -435,16 +439,20 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// bounded to their visible requests.
     fn request_complete_code_syntax(&mut self, input: &SyntaxInputSnapshot, visible: &[std::ops::Range<usize>]) {
         if !super::prelayout::retains_complete_presentation(&self.document) { return; }
-        let now = std::time::Instant::now();
+        let now = self.background.now();
         let changed_at = match self.syntax.code.input_changed {
             Some((identity, at)) if identity == input.identity() => at,
             _ => { self.syntax.code.input_changed = Some((input.identity(), now)); now }
         };
-        if now.duration_since(changed_at) < COMPLETE_SYNTAX_EDIT_PAUSE { return; }
+        if now.saturating_duration_since(changed_at) < COMPLETE_SYNTAX_EDIT_PAUSE {
+            self.background.schedule_at(changed_at + COMPLETE_SYNTAX_EDIT_PAUSE);
+            return;
+        }
         if !visible.iter().all(|range| self.syntax.code.service.covers(input, range.clone())) { return; }
         let len = input.byte_len();
+        let configuration = self.syntax.code.service.configuration.generation;
         let mut start = match self.syntax.code.complete_progress {
-            Some((identity, offset)) if identity == input.identity() => offset,
+            Some((identity, generation, offset)) if identity == input.identity() && generation == configuration => offset,
             _ => 0,
         };
         while start < len {
@@ -455,7 +463,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             }
             start = end;
         }
-        self.syntax.code.complete_progress = Some((input.identity(), start));
+        self.syntax.code.complete_progress = Some((input.identity(), configuration, start));
     }
 
     /// Capture the current view's syntax request without waiting under the

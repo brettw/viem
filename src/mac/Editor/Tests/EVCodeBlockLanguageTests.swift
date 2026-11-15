@@ -188,7 +188,7 @@ final class EVCodeBlockLanguageTests: XCTestCase {
         XCTAssertGreaterThan(label.typographic_bounds.y + label.typographic_bounds.height, row.y)
         let state = try backend.documentState()
         for _ in 0..<200 {
-            backend.pollSyntax()
+            backend.serviceBackgroundWork()
             if surface.layoutPaint?.runs.contains(where: { $0.text_start == row.text_start && $0.text_end >= row.text_start + 2 && $0.paint.flags & UInt32(VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) == 0 }) == true { break }
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))
         }
@@ -286,7 +286,7 @@ final class EVCodeBlockLanguageTests: XCTestCase {
         view.editingPreferences.setCaretHoverEffect(false)
         _ = try XCTUnwrap(surface.session).resize(width: 500, height: 240)
         for _ in 0..<200 {
-            backend.pollSyntax(); surface.refreshPresentation()
+            backend.serviceBackgroundWork(); surface.refreshPresentation()
             if surface.layoutPaint?.runs.contains(where: { $0.paint.flags & UInt32(VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) == 0
                 && $0.paint.foreground.red == 0 && $0.paint.foreground.green == 0 && $0.paint.foreground.blue == 0 }) == true { break }
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))

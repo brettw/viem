@@ -140,8 +140,8 @@ fn code_detection_abi_preserves_source_and_clean_history() {
             viem_core_set_code_language(core.0, 1, ptr::null(), 0),
             ViemStatus::Ok
         );
-        let mut changed = 0;
-        assert_eq!(viem_core_poll_syntax(core.0, &mut changed), ViemStatus::Ok);
+        let mut status = ViemBackgroundWorkStatus::default();
+        assert_eq!(viem_core_service_background_work(core.0, &mut status), ViemStatus::Ok);
         let mut required = 0;
         let mut source = [0; 19];
         assert_eq!(
@@ -216,7 +216,7 @@ fn code_configuration_abi_rejects_invalid_and_oversized_data_atomically() {
             ViemStatus::InvalidHandle
         );
         assert_eq!(
-            viem_core_poll_syntax(core.0, ptr::null_mut()),
+            viem_core_service_background_work(core.0, ptr::null_mut()),
             ViemStatus::NullPointer
         );
         for json in [

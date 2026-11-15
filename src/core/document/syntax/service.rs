@@ -119,7 +119,8 @@ struct Slot {
     cancellation: Arc<AtomicBool>,
     queued: bool,
     running: bool,
-    closed: bool,
+    closed: Arc<AtomicBool>,
+    wake: crate::background::WorkWake,
     continuation_key: Option<(SyntaxInputIdentity, SyntaxConfiguration)>,
     continuation_slices: usize,
 }
@@ -183,7 +184,7 @@ impl SyntaxWait {
         let mut slot = self.mailbox.lock().unwrap_or_else(|e| e.into_inner());
         let progress = slot.progress.clone();
         loop {
-            if slot.closed || self.cancellation.load(Ordering::Acquire) { return false; }
+            if slot.closed.load(Ordering::Acquire) || self.cancellation.load(Ordering::Acquire) { return false; }
             if slot.ready.is_some() { return true; }
             let pending = slot.pending.as_ref().is_some_and(|r| r.same(&self.request));
             let active = slot.active.as_ref().is_some_and(|r| r.same(&self.request));
@@ -198,22 +199,52 @@ impl SyntaxWait {
 }
 struct IdleProvider {
     mailbox: Weak<Mutex<Slot>>,
+    closed: Arc<AtomicBool>,
     provider: Box<dyn SyntaxProvider>,
     bytes: usize,
 }
+struct ScheduledMailbox {
+    mailbox: Weak<Mutex<Slot>>,
+    closed: Arc<AtomicBool>,
+}
+#[derive(Default)]
+struct Schedule {
+    queue: VecDeque<ScheduledMailbox>,
+    /// Overflow contains only a weak mailbox and its close flag, never another
+    /// request or snapshot. A mailbox reserves its unique entry under its own
+    /// lock before registering here. Thus total scheduling entries are bounded
+    /// by live services, with at most MAX_QUEUE_BUFFERS admitted at once.
+    waiting: VecDeque<ScheduledMailbox>,
+    /// Durable predicate: close must not be lost between cleanup and parking,
+    /// even when a detached SyntaxWait keeps the mailbox alive.
+    retirement_requested: bool,
+}
+impl Schedule {
+    fn admit_waiters(&mut self) {
+        while self.queue.len() < MAX_QUEUE_BUFFERS {
+            let Some(entry) = self.waiting.pop_front() else { break; };
+            if !entry.closed.load(Ordering::Acquire) {
+                self.queue.push_back(entry);
+            }
+        }
+        // A temporary burst of documents/code blocks must not retain its peak
+        // scheduling allocation forever after the services settle or close.
+        let capacity = self.waiting.capacity();
+        if capacity > MAX_QUEUE_BUFFERS && self.waiting.len() <= capacity / 4 {
+            self.waiting.shrink_to(self.waiting.len().max(MAX_QUEUE_BUFFERS));
+        }
+    }
+}
+#[derive(Default)]
 struct Pool {
-    queue: Mutex<VecDeque<Weak<Mutex<Slot>>>>,
+    schedule: Mutex<Schedule>,
     available: Condvar,
     idle: Mutex<VecDeque<IdleProvider>>,
 }
 static POOL: OnceLock<Arc<Pool>> = OnceLock::new();
 fn pool() -> &'static Arc<Pool> {
     POOL.get_or_init(|| {
-        let pool = Arc::new(Pool {
-            queue: Mutex::new(VecDeque::new()),
-            available: Condvar::new(),
-            idle: Mutex::new(VecDeque::new()),
-        });
+        let pool = Arc::new(Pool::default());
         for index in 0..WORKER_COUNT {
             let worker = pool.clone();
             std::thread::Builder::new()
@@ -237,12 +268,13 @@ impl Pool {
         provider: Box<dyn SyntaxProvider>,
         bytes: usize,
     ) -> Vec<IdleProvider> {
+        let closed = mailbox.lock().unwrap_or_else(|e| e.into_inner()).closed.clone();
+        let entry = IdleProvider { mailbox: Arc::downgrade(mailbox), closed, provider, bytes };
         let mut idle = self.idle.lock().unwrap_or_else(|e| e.into_inner());
-        idle.push_back(IdleProvider {
-            mailbox: Arc::downgrade(mailbox),
-            provider,
-            bytes,
-        });
+        // Check under the cache lock: a close either prevents insertion here,
+        // or its durable retirement request observes the inserted session.
+        if entry.closed.load(Ordering::Acquire) { return vec![entry]; }
+        idle.push_back(entry);
         let mut retained = idle.iter().map(|entry| entry.bytes).sum::<usize>();
         let mut retired = Vec::new();
         while idle.len() > MAX_IDLE_PROVIDER_SESSIONS || retained > MAX_IDLE_PROVIDER_BYTES {
@@ -257,8 +289,7 @@ impl Pool {
             let mut idle = self.idle.lock().unwrap_or_else(|e| e.into_inner());
             let mut retired = Vec::new();
             for index in (0..idle.len()).rev() {
-                let closed = idle[index].mailbox.strong_count() == 0;
-                if closed {
+                if idle[index].closed.load(Ordering::Acquire) {
                     retired.push(idle.remove(index).unwrap());
                 }
             }
@@ -266,39 +297,50 @@ impl Pool {
         };
         drop(retired);
     }
-    fn enqueue(&self, mailbox: &Mailbox) -> bool {
-        let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
-        if queue.len() >= MAX_QUEUE_BUFFERS {
-            queue.retain(|slot| slot.strong_count() > 0);
+    /// The caller first reserves Slot::queued, then releases the mailbox lock.
+    /// Every pending mailbox joins the fair queue exactly once, including when
+    /// admission is full. Workers promote overflow as capacity becomes free.
+    fn enqueue(&self, mailbox: &Mailbox, closed: Arc<AtomicBool>) {
+        let mut schedule = self.schedule.lock().unwrap_or_else(|e| e.into_inner());
+        if closed.load(Ordering::Acquire) { return; }
+        let entry = ScheduledMailbox { mailbox: Arc::downgrade(mailbox), closed };
+        if schedule.waiting.is_empty() && schedule.queue.len() < MAX_QUEUE_BUFFERS {
+            schedule.queue.push_back(entry);
+        } else {
+            schedule.waiting.push_back(entry);
         }
-        if queue.len() >= MAX_QUEUE_BUFFERS {
-            return false;
-        }
-        queue.push_back(Arc::downgrade(mailbox));
+        drop(schedule);
         self.available.notify_one();
-        true
+    }
+    fn close(&self, mailbox: &Mailbox) {
+        let key = Arc::downgrade(mailbox);
+        let mut schedule = self.schedule.lock().unwrap_or_else(|e| e.into_inner());
+        schedule.queue.retain(|entry| !entry.mailbox.ptr_eq(&key));
+        schedule.waiting.retain(|entry| !entry.mailbox.ptr_eq(&key));
+        schedule.admit_waiters();
+        schedule.retirement_requested = true;
+        drop(schedule);
+        self.available.notify_one();
+    }
+    fn take_work(&self) -> (Option<Mailbox>, bool) {
+        let mut schedule = self.schedule.lock().unwrap_or_else(|e| e.into_inner());
+        while schedule.queue.is_empty() && !schedule.retirement_requested {
+            schedule = self.available.wait(schedule).unwrap_or_else(|e| e.into_inner());
+        }
+        let retire = std::mem::take(&mut schedule.retirement_requested);
+        let mailbox = schedule.queue.pop_front().and_then(|entry| entry.mailbox.upgrade());
+        schedule.admit_waiters();
+        (mailbox, retire)
     }
     fn run(&self) {
         loop {
-            self.retire_closed();
-            let mailbox = {
-                let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
-                if queue.is_empty() {
-                    queue = self
-                        .available
-                        .wait_timeout(queue, std::time::Duration::from_millis(100))
-                        .unwrap_or_else(|e| e.into_inner())
-                        .0;
-                }
-                queue.pop_front().and_then(|v| v.upgrade())
-            };
-            let Some(mailbox) = mailbox else {
-                continue;
-            };
+            let (mailbox, retire) = self.take_work();
+            if retire { self.retire_closed(); }
+            let Some(mailbox) = mailbox else { continue; };
             let job = {
                 let mut slot = mailbox.lock().unwrap_or_else(|e| e.into_inner());
                 slot.queued = false;
-                if slot.closed {
+                if slot.closed.load(Ordering::Acquire) {
                     continue;
                 }
                 let Some(request) = slot.pending.take() else {
@@ -379,37 +421,39 @@ impl Pool {
                 result.continuation = false;
                 result.diagnostics.push("Syntax session exceeded retained memory budget".into());
             }
+            // Keep running=true until the provider is retained, so another
+            // request cannot admit this mailbox while its session is in transit.
+            // Mailbox, pool and cache locks are never nested.
+            let retired = provider.map(|provider| self.retain_provider(&mailbox, provider, provider_bytes)).unwrap_or_default();
             let mut slot = mailbox.lock().unwrap_or_else(|e| e.into_inner());
             slot.running = false;
             slot.active = None;
-            if slot.closed {
+            if slot.closed.load(Ordering::Acquire) {
                 drop(slot);
-                drop(provider);
+                drop(retired);
                 continue;
             }
-            // Publish idle session ownership before admitting a continuation.
-            // Another worker cannot take this mailbox before both are ready.
-            let retired = provider.map(|provider| self.retain_provider(&mailbox, provider, provider_bytes)).unwrap_or_default();
-            if !cancellation.load(Ordering::Acquire) {
+            let wake = if !cancellation.load(Ordering::Acquire) {
                 if result.continuation {
                     slot.continuation_slices += 1;
                     if slot.continuation_slices >= MAX_CONTINUATION_SLICES {
                         result.continuation = false;
-                        result
-                            .diagnostics
-                            .push("Shared syntax continuation budget exhausted".into());
+                        result.diagnostics.push("Shared syntax continuation budget exhausted".into());
                     }
                 }
                 if result.continuation && slot.pending.is_none() {
                     slot.pending = Some(request);
                 }
                 slot.ready = Some(result);
-            }
-            if slot.pending.is_some() && !slot.queued {
-                slot.queued = self.enqueue(&mailbox);
-            }
+                Some(slot.wake.clone())
+            } else { None };
+            let enqueue = slot.pending.is_some() && !slot.queued;
+            if enqueue { slot.queued = true; }
+            let closed = slot.closed.clone();
             slot.progress.notify_all();
             drop(slot);
+            if enqueue { self.enqueue(&mailbox, closed); }
+            if let Some(wake) = wake { wake.signal(); }
             // Native destruction is worker-only and outside every lock.
             drop(retired);
         }
@@ -424,15 +468,27 @@ pub struct SyntaxServiceStatistics {
     pub publications: u64,
     pub maximum_pending: usize,
 }
+struct VisibleDemand {
+    range: Range<usize>,
+    satisfied: bool,
+}
+struct VisibleDemands {
+    input: SyntaxInputIdentity,
+    configuration: SyntaxConfiguration,
+    /// Sorted and distinct; only the owner's current ranges are retained.
+    ranges: Vec<VisibleDemand>,
+}
+
 pub struct SyntaxService {
     mailbox: Mailbox,
     pub configuration: SyntaxConfiguration,
     cache: VecDeque<SyntaxResult>,
+    visible_demands: Option<VisibleDemands>,
     current: Option<SyntaxInputIdentity>,
     current_input: Option<SyntaxInputSnapshot>,
     /// The current input's displayed runs: accepted results plus appearance
     /// mapped from earlier inputs. Presentation only; runs cannot satisfy
-    /// analysis requests, which the coverage cache decides.
+    /// analysis requests, which accepted coverage and current demands decide.
     runs: RunStore,
     /// What changed in `runs` since the last publication took it.
     delta: PublicationDelta,
@@ -450,8 +506,12 @@ impl SyntaxService {
     /// clone has no viewport cache, and all provider work still runs on the
     /// shared syntax workers. It does not disturb the editor's pending request.
     pub(crate) fn for_export(&self) -> Self {
-        let factory = self.mailbox.lock().unwrap_or_else(|e| e.into_inner()).factory.clone();
+        let (factory, wake) = {
+            let slot = self.mailbox.lock().unwrap_or_else(|e| e.into_inner());
+            (slot.factory.clone(), slot.wake.clone())
+        };
         let mut service = Self::with_factory(factory);
+        service.set_work_wake(wake);
         service.configuration = self.configuration.clone();
         service
     }
@@ -460,6 +520,9 @@ impl SyntaxService {
     /// of using the viewport's incomplete, evictable presentation cache. Call
     /// only after releasing the coordinator lease; this waits for workers.
     pub(crate) fn export_runs(mut self, input: SyntaxInputSnapshot) -> Vec<SyntaxRun> {
+        // Prepared view services inherit the owner's notifier; a true export
+        // waits independently and must not wake that owner's presentation loop.
+        self.set_work_wake(crate::background::WorkWake::default());
         let mut output = Vec::new();
         let mut start = 0;
         while start < input.byte_len() {
@@ -518,12 +581,14 @@ impl SyntaxService {
                 cancellation: Arc::new(AtomicBool::new(false)),
                 queued: false,
                 running: false,
-                closed: false,
+                closed: Arc::new(AtomicBool::new(false)),
+                wake: crate::background::WorkWake::default(),
                 continuation_key: None,
                 continuation_slices: 0,
             })),
             configuration: Default::default(),
             cache: VecDeque::new(),
+            visible_demands: None,
             current: None,
             current_input: None,
             runs: RunStore::default(),
@@ -533,6 +598,20 @@ impl SyntaxService {
             registry_generation: 0,
         }
     }
+    /// Bind the owning document's coalesced completion notification. Workers
+    /// invoke it only after releasing all mailbox, scheduler and cache locks.
+    pub fn set_work_wake(&mut self, wake: crate::background::WorkWake) {
+        let previous = {
+            let mut slot = self.mailbox.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::replace(&mut slot.wake, wake)
+        };
+        drop(previous);
+    }
+
+    pub fn has_ready_work(&self) -> bool {
+        self.mailbox.lock().unwrap_or_else(|e| e.into_inner()).ready.is_some()
+    }
+
     pub fn set_language(&mut self, language: Option<String>) {
         if self.configuration.language != language {
             self.configuration.language = language;
@@ -555,6 +634,7 @@ impl SyntaxService {
         self.configuration.generation = self.configuration.generation.wrapping_add(1).max(1);
         self.cancel();
         self.cache.clear();
+        self.visible_demands = None;
         self.current = None;
         self.current_input = None;
         self.runs = RunStore::default();
@@ -579,6 +659,40 @@ impl SyntaxService {
         }
         Some(range)
     }
+    /// Replace the owner's current visible demands. Completed exact requests
+    /// remain settled even after their coverage metadata leaves the small cache;
+    /// otherwise more simultaneous views than cache entries would continuously
+    /// request and evict each other's results. Runs retain their separate budget.
+    /// Only current distinct ranges are stored, with no extra text or run copies.
+    pub(crate) fn set_visible_demands(&mut self, input: &SyntaxInputSnapshot, ranges: &[Range<usize>]) {
+        // Even a no-view buffer with complete analysis must notice replacement
+        // packages before deciding that no new requests are necessary.
+        self.refresh_registry_configuration();
+        let previous = self.visible_demands.take().filter(|previous|
+            previous.input == input.identity() && previous.configuration == self.configuration);
+        let mut ranges = ranges.iter().filter_map(|range| Self::request_range(input, range.clone())).collect::<Vec<_>>();
+        ranges.sort_unstable_by_key(|range| (range.start, range.end));
+        ranges.dedup();
+        let ranges = ranges.into_iter().map(|range| {
+            let satisfied = previous.as_ref().and_then(|previous| {
+                previous.ranges.binary_search_by_key(&(range.start, range.end), |demand| (demand.range.start, demand.range.end))
+                    .ok().map(|index| previous.ranges[index].satisfied)
+            }).unwrap_or(false) || self.has_cached_coverage(input.identity(), &range);
+            VisibleDemand { range, satisfied }
+        }).collect();
+        self.visible_demands = Some(VisibleDemands { input: input.identity(), configuration: self.configuration.clone(), ranges });
+    }
+
+    fn settle_visible_demands(&mut self) {
+        let Some(mut demands) = self.visible_demands.take() else { return; };
+        if demands.configuration == self.configuration {
+            for demand in &mut demands.ranges {
+                demand.satisfied |= self.has_cached_coverage(demands.input, &demand.range);
+            }
+        }
+        self.visible_demands = Some(demands);
+    }
+
     /// Whether completed analysis of `input` covers `range`, as a request
     /// would normalize it.
     pub(crate) fn covers(&self, input: &SyntaxInputSnapshot, range: Range<usize>) -> bool {
@@ -588,6 +702,14 @@ impl SyntaxService {
     /// still fit the budget that the failed one exceeded, so it never stands in
     /// for coverage of its subranges.
     fn has_coverage(&self, input: SyntaxInputIdentity, range: &Range<usize>) -> bool {
+        let satisfied = self.visible_demands.as_ref().filter(|demands|
+            demands.input == input && demands.configuration == self.configuration)
+            .and_then(|demands| demands.ranges.binary_search_by_key(&(range.start, range.end),
+                |demand| (demand.range.start, demand.range.end)).ok().map(|index| demands.ranges[index].satisfied))
+            .unwrap_or(false);
+        satisfied || self.has_cached_coverage(input, range)
+    }
+    fn has_cached_coverage(&self, input: SyntaxInputIdentity, range: &Range<usize>) -> bool {
         let mut covered = range.start;
         loop {
             let before = covered;
@@ -620,13 +742,16 @@ impl SyntaxService {
         let cancellation = self.mailbox.lock().unwrap_or_else(|e| e.into_inner()).cancellation.clone();
         Some(SyntaxWait { mailbox: self.mailbox.clone(), request, cancellation, deadline })
     }
-    pub fn request(&mut self, input: SyntaxInputSnapshot, range: Range<usize>) {
+    fn refresh_registry_configuration(&mut self) {
         let registry = super::treesitter::package_registry_generation();
         if registry != self.registry_generation {
             self.registry_generation = registry;
             self.configuration.registry_generation = registry;
             self.invalidate_configuration();
         }
+    }
+    pub fn request(&mut self, input: SyntaxInputSnapshot, range: Range<usize>) {
+        self.refresh_registry_configuration();
         let Some(range) = Self::request_range(&input, range) else { return; };
         if self.current != Some(input.identity()) {
             self.rebase_input(input.clone(), None, None);
@@ -649,14 +774,7 @@ impl SyntaxService {
                 && ready.range.start <= request.range.start
                 && ready.range.end >= request.range.end
         }) { return; }
-        if slot.pending.as_ref().is_some_and(|r| r.same(&request)) {
-            // A full shared queue leaves the coalesced request in its mailbox.
-            // A later frame must retry admission instead of stranding it.
-            if !slot.running && !slot.queued {
-                slot.queued = pool().enqueue(&self.mailbox);
-            }
-            return;
-        }
+        if slot.pending.as_ref().is_some_and(|r| r.same(&request)) { return; }
         if slot.active.as_ref().is_some_and(|r| r.same(&request)) {
             return;
         }
@@ -672,10 +790,12 @@ impl SyntaxService {
         slot.pending = Some(request);
         self.statistics.requests += 1;
         self.statistics.maximum_pending = 1;
-        if !slot.running && !slot.queued {
-            slot.queued = pool().enqueue(&self.mailbox);
-        }
+        let enqueue = !slot.running && !slot.queued;
+        if enqueue { slot.queued = true; }
+        let closed = slot.closed.clone();
         slot.progress.notify_all();
+        drop(slot);
+        if enqueue { pool().enqueue(&self.mailbox, closed); }
     }
     pub fn poll(&mut self, input: SyntaxInputIdentity) -> bool {
         let result = self
@@ -713,6 +833,9 @@ impl SyntaxService {
         let mut coverage = result;
         coverage.runs = Vec::new();
         self.cache.push_back(coverage);
+        // Record completion before bounding metadata: cache eviction must not
+        // turn an unchanged, already-served viewport into another request.
+        self.settle_visible_demands();
         self.bound_presentation_cache();
         if appearance_changed {
             self.statistics.publications += 1;
@@ -757,19 +880,22 @@ impl SyntaxService {
 impl Drop for SyntaxService {
     fn drop(&mut self) {
         let mut slot = self.mailbox.lock().unwrap_or_else(|e| e.into_inner());
-        slot.closed = true;
+        slot.closed.store(true, Ordering::Release);
         slot.cancellation.store(true, Ordering::Release);
         slot.pending = None;
         slot.ready = None;
         slot.progress.notify_all();
-        if let Some(pool) = POOL.get() {
-            pool.available.notify_all();
-        }
+        drop(slot);
+        if let Some(pool) = POOL.get() { pool.close(&self.mailbox); }
     }
 }
 
 #[cfg(test)]
 mod wait_tests;
+#[cfg(test)]
+mod scheduling_tests;
+#[cfg(test)]
+mod demand_tests;
 
 #[cfg(test)]
 mod tests {
@@ -829,8 +955,7 @@ mod tests {
                 SyntaxResult::missing(request, "fixture")
             }
         }
-        let local = Pool { queue: Mutex::new(VecDeque::new()), available: Condvar::new(),
-            idle: Mutex::new(VecDeque::new()) };
+        let local = Pool::default();
         let factory: Factory = Arc::new(|| Box::new(SizedProvider(0)));
         let first = SyntaxService::with_factory(factory.clone());
         let second = SyntaxService::with_factory(factory.clone());
@@ -918,7 +1043,7 @@ mod tests {
     }
 
     #[test]
-    fn queue_admission_retry_and_factory_failure_do_not_strand_other_buffers() {
+    fn factory_failure_does_not_strand_other_buffers() {
         let _registry = super::super::treesitter::package_registry_test_guard();
         let (started, receiver) = mpsc::channel();
         let gate = Arc::new((Mutex::new(true), Condvar::new()));
@@ -932,12 +1057,6 @@ mod tests {
         let mut service = SyntaxService::with_factory(factory);
         service.registry_generation = super::super::treesitter::package_registry_generation();
         let snapshot = input(4);
-        // Exact mailbox state left after an admission attempt meets a full queue.
-        service.mailbox.lock().unwrap().pending = Some(SyntaxRequest {
-            input: snapshot.clone(),
-            configuration: service.configuration.clone(),
-            range: 0..100,
-        });
         service.request(snapshot.clone(), 0..100);
         assert_eq!(receiver.recv_timeout(Duration::from_secs(5)).unwrap(), 4);
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -1014,7 +1133,19 @@ mod tests {
             assert!(Instant::now() < deadline);
             std::thread::yield_now();
         }
+        // A paint wait may outlive its service. Closing, not the final Arc
+        // release, must retire the native provider without a periodic sweep.
+        let detached_wait = {
+            let slot = service.mailbox.lock().unwrap();
+            SyntaxWait {
+                mailbox: service.mailbox.clone(),
+                request: SyntaxRequest { input: snapshot.clone(), configuration: service.configuration.clone(), range: 0..100 },
+                cancellation: slot.cancellation.clone(),
+                deadline: Instant::now() + SYNTAX_PRESENTATION_WAIT,
+            }
+        };
         drop(service); // Must return before the deliberately suspended native destructor.
+        assert!(!detached_wait.wait_until(Instant::now() + SYNTAX_PRESENTATION_WAIT));
         receiver.recv_timeout(Duration::from_secs(5)).unwrap();
         // Other parallel services may briefly hold this shared cache lock.
         // It must remain acquirable while this native destructor is suspended.

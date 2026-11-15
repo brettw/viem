@@ -19,6 +19,8 @@ internal sealed unsafe partial class CoreDocument : IDisposable
     public string Name => FilePath == null ? "Untitled" : Path.GetFileName(FilePath);
     public event Action? Changed;
     public event Action? SyntaxChanged;
+    internal event Action? PendingViewWorkChanged;
+    internal void NotifyPendingViewWorkChanged() => PendingViewWorkChanged?.Invoke();
     internal bool IsPublishingSyntaxChange { get; private set; }
     public event Action? Disposed;
     public string StartupDiagnostics { get; private set; } = "";
@@ -181,12 +183,6 @@ internal sealed unsafe partial class CoreDocument : IDisposable
         byte[] filename = Encoding.UTF8.GetBytes(FilePath ?? "");
         fixed (byte* p = filename) Check(viem_core_redetect_code_language(Handle, p, (ulong)filename.Length), "Detect code language");
     }
-    public bool PollSyntax()
-    {
-        byte changed = 0; Check(viem_core_poll_syntax(Handle, &changed), "Update syntax");
-        if (changed != 0) PublishSyntaxChange();
-        return changed != 0;
-    }
     internal void PublishSyntaxChange()
     {
         IsPublishingSyntaxChange = true;
@@ -214,6 +210,10 @@ internal sealed unsafe partial class CoreDocument : IDisposable
         if (Handle == 0) return;
         Check(viem_core_destroy(Handle), "Close document");
         Handle = 0;
+        // A failed destroy (for example CORE_BUSY) leaves the live document
+        // and its subscription intact. Successful destroy releases the native
+        // registration; only then retire our local timer and queued callbacks.
+        CloseBackgroundWork();
         ImagePreviews.Dispose();
         Disposed?.Invoke();
     }

@@ -83,7 +83,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             return;
         };
         let identity = (self.document.id(), self.document.revision());
-        let now = std::time::Instant::now();
+        let now = self.background.now();
         let changed_at = match self.syntax.view_format_changed {
             Some((current, at)) if current == identity => at,
             _ => {
@@ -93,9 +93,11 @@ impl<P: TextMeasurementProvider> Core<P> {
                 now
             }
         };
-        if now.duration_since(changed_at) >= VIEW_FORMAT_PREFETCH_PAUSE {
-            self.document.prefetch_view_format(target);
-            if target == Format::Code { self.prepare_code_syntax_for_switch(); }
+        if now.saturating_duration_since(changed_at) >= VIEW_FORMAT_PREFETCH_PAUSE {
+            self.document.prefetch_view_format(target, self.background.wake.clone());
+            if target == Format::Code && !self.code_layer_wanted() { self.prepare_code_syntax_for_switch(); }
+        } else {
+            self.background.schedule_at(changed_at + VIEW_FORMAT_PREFETCH_PAUSE);
         }
     }
 

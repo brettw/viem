@@ -31,6 +31,8 @@ Product and engineering requirements live in [AGENTS.md](../AGENTS.md).
   and measurement scope; no historical results.
 - [Native selection](native-selection.md): native/Vim interaction differences
   and remaining platform gaps.
+- [Background work](background-work.md): completion notifications, one-shot
+  deadlines, idle scheduling and worker cleanup.
 - [Native background layout](windows-background-layout.md): worker ownership,
   cache-only installation, cancellation and native regression checks.
 - [Viewport stability](viewport-stability.md): scroll anchoring, minimal caret

@@ -118,7 +118,7 @@ use std::str;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Version of the C ABI implemented by this library.
-pub const VIEM_CORE_ABI_VERSION: u32 = 9;
+pub const VIEM_CORE_ABI_VERSION: u32 = 10;
 
 /// Adds passive inline image metadata to the context-owned shaping contract.
 /// Image resources share the existing explicit fragment leases and metrics
@@ -4105,6 +4105,7 @@ struct CoreLease {
     core: Option<Core<CTextMeasurementProvider>>,
     /// The register bank the core held when the lease began.
     registers: crate::command::Registers,
+    code_sheet_revision: crate::document::StyleSheetRevision,
 }
 
 impl CoreLease {
@@ -4123,9 +4124,11 @@ impl CoreLease {
 
 impl Drop for CoreLease {
     fn drop(&mut self) {
-        let Some(core) = self.core.take() else {
+        let Some(mut core) = self.core.take() else {
             return;
         };
+        let background_wake = core.take_background_dependency_wake();
+        let code_sheet_changed = self.code_sheet_revision != crate::document::code_style::snapshot().revision;
         let file_marks = core.file_mark_targets();
         let registers = core.registers().clone();
         let Ok(mut registry) = core_registry().lock() else {
@@ -4142,6 +4145,8 @@ impl Drop for CoreLease {
         }
         drop(registry);
         drop(replaced);
+        if let Some(wake) = background_wake { wake.signal(); }
+        if code_sheet_changed { crate::background::registry_changed(); }
     }
 }
 
@@ -4208,6 +4213,7 @@ fn checkout_core(handle: ViemCoreHandle) -> Result<CoreLease, ViemStatus> {
         handle,
         core: Some(core),
         registers,
+        code_sheet_revision: crate::document::code_style::snapshot().revision,
     };
     // Every lease publishes its writes, so a newer application bank never
     // discards unpublished writes in this core.
@@ -5029,6 +5035,7 @@ pub unsafe extern "C" fn viem_code_edit_style(request:*const ViemStyleEdit, outp
         let edit = sheet.prepare_generated_field_edit(request.namespace,&request.style,&request.edit).map_err(style_error_status)?;
         let sheet = crate::document::code_style::edit(sheet.revision,edit).map_err(|_| ViemStatus::InvalidArgument)?;
         unsafe { output.write(export_code_style_snapshot(&sheet)?.info); }
+        crate::background::registry_changed();
         Ok(())
     })
 }
@@ -5051,6 +5058,7 @@ pub unsafe extern "C" fn viem_code_create_style(request:*const ViemCreateStyle, 
         };
         let sheet = crate::document::code_style::edit(sheet.revision,edit).map_err(|_| ViemStatus::InvalidArgument)?;
         unsafe { output.write(export_code_style_snapshot(&sheet)?.info); }
+        crate::background::registry_changed();
         Ok(())
     })
 }
@@ -5067,6 +5075,7 @@ pub unsafe extern "C" fn viem_code_delete_style(request:*const ViemDeleteStyle, 
         validate_code_style_identity(request.identity,&sheet)?;
         let sheet = crate::document::code_style::edit(sheet.revision,crate::document::StyleDefinitionEdit::DeleteCharacter(StyleId(id))).map_err(|_| ViemStatus::InvalidArgument)?;
         unsafe { output.write(export_code_style_snapshot(&sheet)?.info); }
+        crate::background::registry_changed();
         Ok(())
     })
 }
@@ -5098,6 +5107,7 @@ pub unsafe extern "C" fn viem_code_materialize_style(
             return Err(ViemStatus::ResourceExhausted);
         }
         unsafe { output.write(export_code_style_snapshot(&sheet)?.info); }
+        crate::background::registry_changed();
         Ok(())
     })
 }
@@ -5106,7 +5116,7 @@ pub unsafe extern "C" fn viem_code_materialize_style(
 /// The input slice must remain readable during this call. Empty resets defaults.
 #[no_mangle]
 pub unsafe extern "C" fn viem_code_replace_style_json(input:*const u8, length:u64) -> ViemStatus {
-    ffi_boundary(|| { let bytes = unsafe { input_bytes(input,length)? }; crate::document::code_style::replace_json(bytes).map_err(|_| ViemStatus::InvalidArgument)?; Ok(()) })
+    ffi_boundary(|| { let bytes = unsafe { input_bytes(input,length)? }; crate::document::code_style::replace_json(bytes).map_err(|_| ViemStatus::InvalidArgument)?; crate::background::registry_changed(); Ok(()) })
 }
 
 /// # Safety
@@ -7403,6 +7413,9 @@ pub extern "C" fn viem_core_destroy(handle: ViemCoreHandle) -> ViemStatus {
         };
         // Core teardown can release a large document and layout cache; keep it
         // outside the process-global registry lock just like all model work.
+        if let CoreRegistryEntry::Ready(core) = &core {
+            drop(core.detach_background_callback());
+        }
         drop(core);
         Ok(())
     })
@@ -10356,6 +10369,7 @@ mod tests {
     mod html_export_tests;
     mod diff_tests;
     mod syntax_wait_tests;
+    mod background_work_tests;
     mod clipboard_import_tests;
     mod theme_tests;
     mod style_assignment_tests;
@@ -13719,14 +13733,100 @@ pub unsafe extern "C" fn viem_core_initialize_reloaded_code_detection(handle:Vie
     })
 }
 
+/// Retained notification context. `wake` may run on any thread and only queues
+/// an owner-thread task. No callback runs under a core or registry lock.
+pub type ViemBackgroundWakeCallback = unsafe extern "C" fn(*mut c_void);
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ViemBackgroundWakeCallbacks {
+    pub context: *mut c_void,
+    pub wake: Option<ViemBackgroundWakeCallback>,
+    pub retain: Option<ViemBackgroundWakeCallback>,
+    pub release: Option<ViemBackgroundWakeCallback>,
+}
+
+struct RetainedBackgroundWake(ViemBackgroundWakeCallbacks);
+// The registration contract requires thread-safe context ownership and wake.
+unsafe impl Send for RetainedBackgroundWake {}
+unsafe impl Sync for RetainedBackgroundWake {}
+impl RetainedBackgroundWake {
+    fn signal(&self) { unsafe { (self.0.wake.unwrap())(self.0.context); } }
+}
+impl Drop for RetainedBackgroundWake {
+    fn drop(&mut self) { unsafe { (self.0.release.unwrap())(self.0.context); } }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ViemBackgroundWorkStatus {
+    pub changed: u8,
+    pub diagnostics_changed: u8,
+    pub more_ready: u8,
+    pub reserved: u8,
+    /// Relative monotonic delay, rounded up; UINT32_MAX means no deadline.
+    pub next_deadline_ms: u32,
+}
+impl Default for ViemBackgroundWorkStatus {
+    fn default() -> Self {
+        Self { changed: 0, diagnostics_changed: 0, more_ready: 0, reserved: 0, next_deadline_ms: u32::MAX }
+    }
+}
+
+/// Replace the document's wake subscription. NULL unregisters. Retain/release
+/// and wake may run on any thread; wake only schedules work, never enters core.
 /// # Safety
-/// changed points to one writable byte. Does no provider work and never waits.
+/// A nonnull callbacks record is readable for this call, all three callbacks
+/// are required, and the context stays usable until the matching release.
 #[no_mangle]
-pub unsafe extern "C" fn viem_core_poll_syntax(handle:ViemCoreHandle,changed:*mut u8)->ViemStatus {
+pub unsafe extern "C" fn viem_core_set_background_wake(
+    handle: ViemCoreHandle, callbacks: *const ViemBackgroundWakeCallbacks,
+) -> ViemStatus {
     ffi_boundary(|| {
-        typed_pointer_region(changed,1)?;
-        let value=with_core_mut(handle,|core|Ok(core.poll_syntax()))?;
-        unsafe{changed.write(u8::from(value));} Ok(())
+        let callbacks = if callbacks.is_null() { None } else {
+            typed_pointer_region(callbacks, 1)?;
+            let callbacks = unsafe { callbacks.read() };
+            if callbacks.wake.is_none() || callbacks.retain.is_none() || callbacks.release.is_none() {
+                return Err(ViemStatus::InvalidArgument);
+            }
+            Some(callbacks)
+        };
+        let wake = with_core_mut(handle, |core| Ok(core.background_work_wake()))?;
+        let callback = callbacks.map(|callbacks| {
+            unsafe { (callbacks.retain.unwrap())(callbacks.context); }
+            let receiver = RetainedBackgroundWake(callbacks);
+            Arc::new(move || receiver.signal()) as crate::background::WakeCallback
+        });
+        let enabled = callback.is_some();
+        drop(wake.replace_callback(callback));
+        if enabled {
+            wake.subscribe_registry_changes();
+            wake.acknowledge();
+            wake.signal(); // Also collects completions preceding registration.
+        }
+        Ok(())
+    })
+}
+
+/// Collect bounded ready work on the document owner. A running worker requires
+/// no timer: it signals completion. Re-arm only the returned real deadline.
+/// # Safety
+/// status points to a writable status record; this function never waits.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_service_background_work(
+    handle: ViemCoreHandle, status: *mut ViemBackgroundWorkStatus,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        typed_pointer_region(status, 1)?;
+        let work = with_core_mut(handle, |core| Ok(core.service_background_work()))?;
+        let next_deadline_ms = work.next_deadline.map_or(u32::MAX, |delay|
+            delay.as_millis().saturating_add(u128::from(delay.subsec_nanos() % 1_000_000 != 0))
+                .min(u128::from(u32::MAX - 1)) as u32);
+        unsafe { status.write(ViemBackgroundWorkStatus {
+            changed: u8::from(work.changed), diagnostics_changed: u8::from(work.diagnostics_changed),
+            more_ready: u8::from(work.more_ready), reserved: 0, next_deadline_ms,
+        }); }
+        Ok(())
     })
 }
 

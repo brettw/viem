@@ -47,6 +47,7 @@ internal sealed unsafe partial class CoreView
         byte changed = 0; Check(viem_core_view_accept_completion(Document.Handle, Id, &changed), "Accept completion");
         if (State.document_revision != before) Document.NotifySourceChanged();
         else if (changed != 0) Changed?.Invoke();
+        SynchronizePendingWork();
     }
     public WhitespaceExport Whitespace(ViemLayoutSnapshotInfo layout)
     {

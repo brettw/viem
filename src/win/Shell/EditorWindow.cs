@@ -28,7 +28,6 @@ internal sealed partial class EditorWindow : Window
     internal List<EditorPane> Panes { get; } = [];
     internal EditorPane? ActivePane { get; private set; }
     internal bool IsWindowActive { get; private set; }
-    private readonly DispatcherTimer poll = new() { Interval = TimeSpan.FromMilliseconds(40) };
     private bool closing, closed, updatingPreferences;
     private EditorPane? lastPane;
     private readonly Dictionary<CoreDocument, byte[]> savedSources = [];
@@ -103,7 +102,7 @@ internal sealed partial class EditorWindow : Window
         };
         AppWindow.Closing += (_, e) => { if (!closing) { e.Cancel = true; Safe(RequestClose); } };
         Closed += (_, _) => {
-            closed = true; poll.Stop(); preferences.Changed -= ApplyPreferences; preferences.RecentChanged -= RefreshRecentMenu; preferences.ThemesChanged -= RefreshThemeMenu;
+            closed = true; preferences.Changed -= ApplyPreferences; preferences.RecentChanged -= RefreshRecentMenu; preferences.ThemesChanged -= RefreshThemeMenu;
             folderRequest?.Cancel();
             if (diffEnabled) EndDiff();
             ReleaseMenuAccessKeys();
@@ -131,12 +130,6 @@ internal sealed partial class EditorWindow : Window
         }
         WindowSizing.TrackMinimumSize(this, () => new(Math.Max(480, paneGrid.MinimumSize.Width),
             Math.Max(280, paneGrid.MinimumSize.Height + Math.Max(0, root.ActualHeight - paneGrid.ActualHeight))));
-        poll.Tick += (_, _) => {
-            foreach (var doc in Panes.Select(p => p.Document).Distinct().ToArray()) ActivePane?.Run(() => doc.PollSyntax());
-            foreach (var pane in Panes.ToArray()) pane.Poll();
-            if (diffLeft is { } left) { left.Run(() => left.Document.PollSyntax()); left.Poll(); }
-        };
-        poll.Start();
     }
     public new void Close()
     {

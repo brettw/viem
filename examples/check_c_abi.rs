@@ -92,6 +92,8 @@ static ViemStatus (*take_startup_effects)(ViemCoreHandle, ViemViewId, ViemCoreOu
 static ViemStatus (*fire_autocmd)(ViemCoreHandle, ViemViewId, const uint8_t *, uint64_t, const uint8_t *, uint64_t, const ViemCommandTurnContext *, ViemCoreOutcome *, ViemEffectBatchHandle *) = viem_core_view_fire_autocmd;
 static ViemStatus (*set_theme_names)(const uint8_t *, uint64_t) = viem_set_theme_names;
 static ViemStatus (*copy_source_bytes)(ViemCoreHandle, uint64_t, uint64_t, uint64_t, uint64_t, uint8_t *, uint64_t, uint64_t *, uint32_t *) = viem_core_copy_source_range_bytes;
+static ViemStatus (*set_background_wake)(ViemCoreHandle, const ViemBackgroundWakeCallbacks *) = viem_core_set_background_wake;
+static ViemStatus (*service_background_work)(ViemCoreHandle, ViemBackgroundWorkStatus *) = viem_core_service_background_work;
 static ViemStatus (*wait_for_syntax)(ViemCoreHandle, ViemViewId, uint8_t *) = viem_core_view_wait_for_syntax;
 static ViemStatus (*font_en_width)(ViemCoreHandle, ViemViewId, uint64_t, float *) = viem_core_view_font_en_width;
 static ViemStatus (*navigate_link_fragment)(ViemCoreHandle, ViemViewId, uint64_t, uint64_t, ViemUtf8Slice, uint8_t *, ViemCoreOutcome *) = viem_core_view_navigate_link_fragment;

@@ -67,7 +67,7 @@ impl Document {
 
     /// Start preparing a switch to `target` unless one for this exact state
     /// already exists. The worker owns an immutable snapshot only.
-    pub(crate) fn prefetch_view_format(&self, target: Format) {
+    pub(crate) fn prefetch_view_format(&self, target: Format, wake: crate::background::WorkWake) {
         let Some(key) = self.view_format_prefetch_key(target) else { return };
         if self.state().source.len() > VIEW_FORMAT_PREFETCH_MAXIMUM_SOURCE_BYTES {
             return;
@@ -98,6 +98,7 @@ impl Document {
                     Some(PrefetchedViewFormat { candidate, edits })
                 })();
                 *output.lock().unwrap_or_else(|e| e.into_inner()) = Some(prepared);
+                wake.signal();
             });
         *slot = spawned.ok().map(|_| Job { key, cancelled, result });
     }
@@ -172,7 +173,7 @@ mod tests {
         for target in [Format::Code, Format::PlainText] {
             let mut prepared = markdown();
             let mut synchronous = markdown();
-            prepared.prefetch_view_format(target);
+            prepared.prefetch_view_format(target, Default::default());
             wait_until_ready(&prepared, target);
             let (result, work) = measure_document_work(|| prepared.set_view_format(target));
             result.unwrap();
@@ -192,7 +193,7 @@ mod tests {
     #[test]
     fn an_edit_or_another_projection_discards_the_preparation() {
         let mut document = markdown();
-        document.prefetch_view_format(Format::Code);
+        document.prefetch_view_format(Format::Code, Default::default());
         wait_until_ready(&document, Format::Code);
         // Text and Code share the Literal structure, so they share it too.
         assert!(document.view_format_prefetch_ready(Format::PlainText));

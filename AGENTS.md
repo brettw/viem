@@ -170,6 +170,9 @@ automation within the host profile in [docs/vimscript.md](docs/vimscript.md).
   cancellation. Exact visible work outranks overscan and offscreen work.
   Superseded edits, widths and viewports are coalesced, and foreground editing
   never waits for obsolete work. Cache eviction never affects correctness.
+- Settled documents have no maintenance polling. Background results signal
+  their owner, delayed work uses one-shot deadlines, and worker admission and
+  cleanup progress without a frontend clock. See [background work](docs/background-work.md).
 - A local edit costs logarithmic time plus the changed bytes, their
   dependencies, local Unicode and shaping work, and visible reflow. Typing in a
   short line must not scale with document bytes, lines, anchors or visual rows.

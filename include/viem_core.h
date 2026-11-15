@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define VIEM_CORE_ABI_VERSION 9u
+#define VIEM_CORE_ABI_VERSION 10u
 #define VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION 4u
 
 typedef uint64_t ViemCoreHandle;
@@ -2972,7 +2972,34 @@ ViemStatus viem_core_view_set_align_indents_to_previous_line(ViemCoreHandle core
 ViemStatus viem_core_view_copy_whitespace_markers(ViemCoreHandle core, ViemViewId view,
     const ViemLayoutSnapshotIdentity *expected, const ViemLayoutRect *expected_viewport,
     uint8_t *output, uint64_t capacity, uint64_t *out_length);
-ViemStatus viem_core_poll_syntax(ViemCoreHandle core, uint8_t *changed);
+/* One retained wake subscription per document. All callbacks are required.
+ * retain/release and wake must be thread-safe. The core calls wake only after
+ * releasing locks; it may run on any thread. It must only enqueue owner-thread
+ * work, never call core or UI synchronously. The context remains retained until
+ * the last in-flight callback finishes. Queued native tasks must independently
+ * validate that the document/registration is still live. NULL unregisters.
+ * Registration sends an initial wake so earlier completions are not lost. */
+typedef void (*ViemBackgroundWakeCallback)(void *context);
+typedef struct ViemBackgroundWakeCallbacks {
+    void *context;
+    ViemBackgroundWakeCallback wake;
+    ViemBackgroundWakeCallback retain;
+    ViemBackgroundWakeCallback release;
+} ViemBackgroundWakeCallbacks;
+typedef struct ViemBackgroundWorkStatus {
+    uint8_t changed;
+    uint8_t diagnostics_changed;
+    uint8_t more_ready;
+    uint8_t reserved;
+    /* Relative monotonic delay rounded up. UINT32_MAX means none, zero means
+     * service again immediately. Never arm a repeating maintenance timer. */
+    uint32_t next_deadline_ms;
+} ViemBackgroundWorkStatus;
+ViemStatus viem_core_set_background_wake(ViemCoreHandle core, const ViemBackgroundWakeCallbacks *callbacks);
+/* Bounded owner-thread collection; does not wait or run providers. Requeue if
+ * more_ready, otherwise arm only next_deadline_ms. Worker completion wakes the
+ * subscription. Refresh presentation only if changed; diagnostics separately. */
+ViemStatus viem_core_service_background_work(ViemCoreHandle core, ViemBackgroundWorkStatus *status);
 /* Wait up to the shared 100 ms syntax grace period, without holding the core.
  * Materialize the viewport first; refresh invalidated layout when changed.
  * Repeated presentation of the same timed-out request does not wait again. */

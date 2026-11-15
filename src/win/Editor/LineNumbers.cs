@@ -88,6 +88,7 @@ internal sealed partial class EditorPane
         gutterSelectionDragging = dragging = true;
         pressedPointer = args.Pointer.PointerId;
         if (!owner.CapturePointer(args.Pointer)) { pressedPointer = null; gutterSelectionDragging = dragging = false; }
+        SynchronizeDragScroll();
         UpdatePointerCursor(); args.Handled = true; ResetBlink();
     }
     private void ContinueGutterSelection(PointerRoutedEventArgs args)
@@ -98,6 +99,7 @@ internal sealed partial class EditorPane
             EndPointerSelection(Canvas, args); lineNumberCanvas.ReleasePointerCapture(args.Pointer); return;
         }
         dragPoint = point.Position;
+        SynchronizeDragScroll();
         Run(() => View.SelectPointerRow((float)Math.Clamp(dragPoint.Y, 0, Math.Max(0, Canvas.ActualHeight - 0.5)), true));
         UpdatePointerCursor(); args.Handled = true;
     }
@@ -105,6 +107,7 @@ internal sealed partial class EditorPane
     {
         bool selectedRowsOrColumns = gutterSelectionDragging || tableColumnGesture != null;
         pressedPointer = null; checkboxPress = null; gutterSelectionDragging = dragging = wordSelectionDragging = false;
+        dragScroll.Stop();
         owner.ReleasePointerCapture(args.Pointer);
         // Controls for selected rows or columns appear once the gesture ends.
         if (selectedRowsOrColumns) EndTableColumnSelection();

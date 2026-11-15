@@ -20,10 +20,9 @@ final class EVCodeOpeningTests: XCTestCase {
         file: StaticString = #filePath,
         line: UInt = #line
     ) async throws {
-        // Exercise the same worker publication and paint refresh as the timer.
+        // Worker completion must publish without a frontend polling call.
         // The fixture starts with `fn`; a Code format flag alone is insufficient.
         for _ in 0..<200 {
-            backend.pollSyntax()
             if surface.layoutPaint?.runs.contains(where: {
                 $0.text_start == 0 && $0.text_end >= 2
                     && $0.paint.flags & UInt32(VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) == 0
@@ -47,6 +46,40 @@ final class EVCodeOpeningTests: XCTestCase {
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), source)
         XCTAssertFalse(backend.persistenceState.isDirty)
         XCTAssertFalse(surface.canUndo)
+    }
+
+    func testRenderedCodeStopsBackgroundServiceAfterItsEditingPause() async throws {
+        let backend = backend()
+        let openedAt = ContinuousClock.now
+        // All source fits the initial visible request. Accepted keyword paint
+        // therefore proves that the fixture's syntax worker has completed.
+        try backend.read(source: Data("fn main() {}\n".utf8), typeName: EVDocument.plainTextType,
+                         origin: .file(path: "idle.rs", automaticCode: true))
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        let session = try XCTUnwrap(surface.session)
+        let work = try XCTUnwrap(backend.backgroundWork)
+        try await assertRustKeywordIsHighlighted(backend: backend, surface: surface)
+
+        // Observe the real scheduler after the core's 250 ms editing pause;
+        // neither this loop nor the paint assertion services background work.
+        let timeout = ContinuousClock.now.advanced(by: .seconds(5))
+        while ContinuousClock.now < timeout {
+            if openedAt.duration(to: ContinuousClock.now) >= .milliseconds(250), !work.hasScheduledService,
+               session.backgroundLayout.isIdle, session.tableWidthRefinement.isIdle { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        guard !work.hasScheduledService, session.backgroundLayout.isIdle,
+              session.tableWidthRefinement.isIdle else {
+            return XCTFail("Rendered Code did not retire its background work after the editing pause")
+        }
+        XCTAssertGreaterThan(work.serviceCount, 0)
+        let services = work.serviceCount
+        // This interval checks absence of work after observable readiness. It
+        // is not a delay intended to make asynchronous setup finish.
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(work.serviceCount, services, "Settled Code must not run maintenance collection")
+        XCTAssertFalse(work.hasScheduledService, "Settled Code must not retain a maintenance timer")
     }
 
     func testDocumentURLReadDetectsRustAndPublishesSyntaxPaint() async throws {
@@ -263,23 +296,22 @@ final class EVCodeOpeningTests: XCTestCase {
         }, UInt32(VIEM_STATUS_OK))
         var diagnostic = ""
         for _ in 0..<200 {
-            var changed: UInt8 = 0
-            XCTAssertEqual(viem_core_poll_syntax(backend.core, &changed), UInt32(VIEM_STATUS_OK))
             var required: UInt64 = 0
             _ = viem_core_copy_syntax_diagnostics(backend.core, nil, 0, &required)
             if required > 0 {
                 var bytes = [UInt8](repeating: 0, count: Int(required))
                 XCTAssertEqual(viem_core_copy_syntax_diagnostics(backend.core, &bytes, required, &required), UInt32(VIEM_STATUS_OK))
                 diagnostic = String(decoding: bytes, as: UTF8.self)
-                if changed == 0 { break }
+                if diagnostic.split(separator: "\n").allSatisfy({
+                    EVCodePreferences.shared.loadDiagnostics.contains(String($0))
+                }) { break }
             }
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertFalse(diagnostic.isEmpty)
-        var changed: UInt8 = 1
-        XCTAssertEqual(viem_core_poll_syntax(backend.core, &changed), UInt32(VIEM_STATUS_OK))
-        XCTAssertEqual(changed, 0)
-        backend.pollSyntax(now: ProcessInfo.processInfo.systemUptime + 1)
+        var work = ViemBackgroundWorkStatus()
+        XCTAssertEqual(viem_core_service_background_work(backend.core, &work), UInt32(VIEM_STATUS_OK))
+        XCTAssertEqual(work.changed, 0)
         for line in diagnostic.split(separator: "\n") {
             XCTAssertTrue(EVCodePreferences.shared.loadDiagnostics.contains(String(line)))
         }

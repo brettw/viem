@@ -60,7 +60,7 @@ final class EVCodeStyleMenuTests: XCTestCase {
 
     private func waitForRustHighlighting(_ surface: EVEditorSurfaceController) async throws {
         for _ in 0..<200 {
-            surface.backend.pollSyntax()
+            surface.backend.serviceBackgroundWork()
             surface.refreshPresentation()
             if surface.layoutPaint?.runs.contains(where: {
                 $0.text_start == 0 && $0.text_end >= 2

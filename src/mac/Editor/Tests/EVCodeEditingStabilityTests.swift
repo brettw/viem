@@ -161,7 +161,7 @@ final class EVCodeEditingStabilityTests: XCTestCase {
 
     private func waitForCommentSize(_ expected: CGFloat, fixture: Fixture) async throws {
         for _ in 0..<200 {
-            fixture.backend.pollSyntax()
+            fixture.backend.serviceBackgroundWork()
             fixture.surface.refreshPresentation()
             if let layout = fixture.surface.layoutSnapshot,
                let row = layout.rows.first(where: { $0.y + $0.line_advance > fixture.surface.viewportState.top }),
@@ -177,7 +177,7 @@ final class EVCodeEditingStabilityTests: XCTestCase {
 
     private func waitForCaretCommentSize(_ expected: CGFloat, fixture: Fixture) async throws {
         for _ in 0..<200 {
-            fixture.backend.pollSyntax()
+            fixture.backend.serviceBackgroundWork()
             fixture.surface.refreshPresentation()
             if let caret = try? caretState(fixture),
                let size = try? commentSize(in: caret.row, fixture: fixture), abs(size - expected) < 0.01 { return }

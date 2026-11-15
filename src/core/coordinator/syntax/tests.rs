@@ -622,7 +622,7 @@ fn highlighting_settles_when_a_collapsed_diff_spans_background_chunks() {
         loop {
             let (_, wait) = core.prepare_view_syntax_wait(view, deadline).unwrap();
             if let Some(wait) = wait { wait.wait_until(deadline); }
-            if core.syntax.code.complete_progress == Some((input.identity(), input.byte_len()))
+            if core.syntax.code.complete_progress == Some((input.identity(), core.syntax.code.service.configuration.generation, input.byte_len()))
                 && !core.syntax.code.service.has_pending_work() { break; }
             // One request for each of the two background chunks.
             assert!(core.syntax_statistics().requests - before <= 2, "idle highlighting repeatedly requested the same bytes");
@@ -685,7 +685,7 @@ fn complete_highlighting_of_a_large_rust_file_keeps_tree_sitter_styles() {
         core.poll_syntax();
         let _ = core.prepare_view_syntax_wait(view, Instant::now());
         let identity = core.syntax_input().identity();
-        if core.syntax.code.complete_progress == Some((identity, len)) && !core.syntax.code.service.has_pending_work() {
+        if core.syntax.code.complete_progress == Some((identity, core.syntax.code.service.configuration.generation, len)) && !core.syntax.code.service.has_pending_work() {
             break;
         }
         assert!(Instant::now() < deadline, "complete highlighting did not finish");

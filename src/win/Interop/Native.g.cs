@@ -1257,6 +1257,25 @@ internal unsafe struct ViemSetDocumentMode
 }
 
 [StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemBackgroundWakeCallbacks
+{
+    public void* @context;
+    public nint @wake;
+    public nint @retain;
+    public nint @release;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemBackgroundWorkStatus
+{
+    public byte @changed;
+    public byte @diagnostics_changed;
+    public byte @more_ready;
+    public byte @reserved;
+    public uint @next_deadline_ms;
+}
+
+[StructLayout(LayoutKind.Sequential)]
 internal unsafe struct ViemDiffBaseRequest
 {
     public uint @kind;
@@ -1319,7 +1338,7 @@ internal unsafe struct ViemDiffScrollbarMark
 
 internal static unsafe partial class Native
 {
-    public const uint VIEM_CORE_ABI_VERSION = 9u;
+    public const uint VIEM_CORE_ABI_VERSION = 10u;
     public const uint VIEM_TEXT_MEASUREMENT_PROVIDER_ABI_VERSION = 4u;
     public const uint VIEM_STATUS_OK = 0u;
     public const uint VIEM_STATUS_INVALID_ARGUMENT = 1u;
@@ -2368,7 +2387,9 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_copy_whitespace_markers(ulong @core, ulong @view, ViemLayoutSnapshotIdentity* @expected, ViemLayoutRect* @expected_viewport, byte* @output, ulong @capacity, ulong* @out_length);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_poll_syntax(ulong @core, byte* @changed);
+    public static extern uint viem_core_set_background_wake(ulong @core, ViemBackgroundWakeCallbacks* @callbacks);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_service_background_work(ulong @core, ViemBackgroundWorkStatus* @status);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_wait_for_syntax(ulong @core, ulong @view, byte* @changed);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

@@ -61,7 +61,7 @@ internal static class VimRuntimeTests
         bool painted = false;
         for (int attempt = 0; attempt < 500; attempt++)
         {
-            document.PollSyntax();
+            document.ServiceBackgroundWork();
             view.Refresh();
             LayoutSnapshot layout;
             try {
@@ -131,7 +131,7 @@ internal static class VimRuntimeTests
             // publish its first frame without yielding to the syntax timer.
             for (int attempt = 0; attempt < 500 && !ColoredVisible(); attempt++)
             {
-                document.PollSyntax();
+                document.ServiceBackgroundWork();
                 pane.Refresh();
                 await Task.Delay(10);
             }
@@ -144,7 +144,7 @@ internal static class VimRuntimeTests
                 Check(wait.Elapsed.TotalMilliseconds >= 80, filename + " gives pending syntax its presentation grace period");
                 for (int attempt = 0; attempt < 500 && !ColoredVisible(); attempt++)
                 {
-                    document.PollSyntax();
+                    document.ServiceBackgroundWork();
                     pane.Refresh();
                     await Task.Delay(10);
                 }

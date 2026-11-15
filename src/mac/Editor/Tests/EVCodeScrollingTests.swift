@@ -106,7 +106,7 @@ final class EVCodeScrollingTests: XCTestCase {
         surface: EVEditorSurfaceController
     ) async throws {
         for _ in 0..<200 {
-            backend.pollSyntax()
+            backend.serviceBackgroundWork()
             // Initial font registration may retire the first presentation
             // independently of the syntax worker's publication event.
             surface.refreshPresentation()
@@ -124,7 +124,7 @@ final class EVCodeScrollingTests: XCTestCase {
         surface: EVEditorSurfaceController
     ) async throws {
         for _ in 0..<200 {
-            backend.pollSyntax()
+            backend.serviceBackgroundWork()
             surface.refreshPresentation()
             if hasVisibleSyntaxPaint(surface) { return }
             try await Task.sleep(for: .milliseconds(10))

@@ -83,8 +83,12 @@ pub fn register_package(
     if !registry.contains_key(language) && registry.len() >= MAX_REGISTERED_PACKAGES {
         return Err(TreeSitterError::Limit("registered packages"));
     }
-    registry.insert(language.to_owned(), package);
-    Ok(PACKAGE_REGISTRY_GENERATION.fetch_add(1, Ordering::AcqRel) + 1)
+    let retired = registry.insert(language.to_owned(), package);
+    let generation = PACKAGE_REGISTRY_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+    drop(registry);
+    drop(retired);
+    crate::background::registry_changed();
+    Ok(generation)
 }
 
 pub fn unregister_package(language: &str) -> bool {
@@ -92,10 +96,12 @@ pub fn unregister_package(language: &str) -> bool {
         .get_or_init(Default::default)
         .write()
         .unwrap_or_else(|e| e.into_inner());
-    if registry.remove(language).is_none() {
-        return false;
-    }
+    let retired = registry.remove(language);
+    if retired.is_none() { return false; }
     PACKAGE_REGISTRY_GENERATION.fetch_add(1, Ordering::AcqRel);
+    drop(registry);
+    drop(retired);
+    crate::background::registry_changed();
     true
 }
 

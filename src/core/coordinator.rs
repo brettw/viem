@@ -973,6 +973,8 @@ mod syntax;
 pub use syntax::CodeLanguagePolicy;
 mod markdown_code;
 mod document_mode;
+mod background_work;
+pub use background_work::BackgroundWorkStatus;
 #[cfg(test)]
 mod presentation_tests;
 pub use document_mode::{DocumentMode, DocumentModeState};
@@ -980,6 +982,7 @@ mod whitespace;
 
 pub struct Core<P: TextMeasurementProvider> {
     document: Document,
+    background: background_work::BackgroundWork,
     syntax: syntax::CoreSyntax,
     buffer_commands: BufferCommandState,
     whitespace_defaults: crate::layout::WhitespacePresentationOptions,
@@ -1174,6 +1177,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         let buffer_commands = CommandInterpreter::new().export_buffer_state();
         Self {
             document,
+            background: Default::default(),
             syntax: syntax::CoreSyntax::default(),
             buffer_commands,
             whitespace_defaults: Default::default(),

@@ -136,7 +136,7 @@ fn visible_syntax_wait_times_out_once_then_preserves_async_completion() {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         assert_eq!(
-            unsafe { viem_core_poll_syntax(handle, &mut changed) },
+            unsafe { viem_core_service_background_work(handle, &mut ViemBackgroundWorkStatus::default()) },
             ViemStatus::Ok
         );
         if checkout_core(handle)

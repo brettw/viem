@@ -366,7 +366,7 @@ internal static partial class StyleInspectorBehaviorTests
         using var codeView = new CoreView(code, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
         for (int i = 0; i < 300; i++)
         {
-            code.PollSyntax();
+            code.ServiceBackgroundWork();
             codeView.Resize(700, 400);
             if (codeView.CurrentStyleEditorKey(codeView.Styles()) is { Namespace: 2 }) break;
             await Task.Delay(10);
@@ -539,7 +539,7 @@ internal static partial class StyleInspectorBehaviorTests
                 }
                 for (int i = 0; i < 300; i++)
                 {
-                    document.PollSyntax();
+                    document.ServiceBackgroundWork();
                     view.Refresh();
                     if (view.CurrentStyleEditorKey(view.Styles()) is { Namespace: 2 }) break;
                     await Task.Delay(10);

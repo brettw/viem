@@ -88,7 +88,7 @@ final class EVCodeStylesTests: XCTestCase {
         let sheet = try session.snapshot()
         try session.edit(key: .baseParagraph, expected: sheet.identity, mutation: .setDeclaration(.characterSize, .float(19)))
         for (index, backend) in [first, second].enumerated() {
-            backend.pollSyntax()
+            backend.serviceBackgroundWork()
             XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(19))
             XCTAssertEqual(try backend.recoverySnapshot(), before[index])
             XCTAssertFalse(backend.persistenceState.isDirty)
@@ -136,7 +136,7 @@ final class EVCodeStylesTests: XCTestCase {
         XCTAssertFalse(session.undoManager.canUndo, "A stale settings undo must not overwrite an external replacement")
         XCTAssertEqual(try Data(contentsOf: file), external, "Reloading does not rewrite external JSON")
         for (index, backend) in backends.enumerated() {
-            backend.pollSyntax()
+            backend.serviceBackgroundWork()
             XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(23))
             XCTAssertEqual(try backend.recoverySnapshot(), before[index])
         }
@@ -188,7 +188,7 @@ final class EVCodeStylesTests: XCTestCase {
                       "Reloading identical content is not an external replacement")
 
         for backend in backends {
-            backend.pollSyntax()
+            backend.serviceBackgroundWork()
             XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?
                 .properties[.characterSize]?.declared, .float(18),
                 "Every open buffer follows the republished sheet, not only the focused one")

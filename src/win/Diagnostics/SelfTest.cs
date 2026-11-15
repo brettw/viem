@@ -161,6 +161,7 @@ internal sealed partial class EditorWindow
             new("FileChecks", () => FrontendSmokeTests.FileChecks(device, DispatcherQueue, profile)),
             new("VimRuntime", () => VimRuntimeTests.Run(device, DispatcherQueue, profile)),
             new("BackgroundLayout", () => BackgroundLayoutTests.Run(device, DispatcherQueue)),
+            new("BackgroundWork", () => BackgroundWorkTests.Run(device, DispatcherQueue)),
             new("SaveLifecycle", () => SaveLifecycle(pane)),
             new("Reload", TestReloadPositions),
             new("HtmlExport", () => HtmlExportTests.Run(this, pane, profile)),

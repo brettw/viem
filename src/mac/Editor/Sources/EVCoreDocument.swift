@@ -117,10 +117,9 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     let configuration: EVConfigurationStore
     public private(set) var configurationWarning: String?
     private var codeObservers: [NSObjectProtocol] = []
-    private var syntaxTimer: Timer?
+    private(set) var backgroundWork: EVBackgroundWork?
     private var isPublishingSyntaxChange = false
     private let syntaxDiagnosticSource = UUID().uuidString
-    private var lastSyntaxDiagnosticRefresh: TimeInterval = -.infinity
 
     public init(configuration: EVConfigurationStore? = nil) {
         let configuration = configuration ?? .shared
@@ -133,9 +132,11 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         codeObservers.append(NotificationCenter.default.addObserver(forName: .viemGlobalCodeStyleDidChange, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                if self.sourceFormat == .code { self.configurationWarning = self.configuration.lastError }
-                self.pollSyntax()
-                self.refreshSyntaxDiagnostics()
+                if self.sourceFormat == .code, self.configurationWarning != self.configuration.lastError {
+                    self.configurationWarning = self.configuration.lastError
+                    self.refreshSyntaxDiagnostics()
+                }
+                self.backgroundWork?.wake.request()
             }
         })
         codeObservers.append(NotificationCenter.default.addObserver(forName: .viemThemeDidChange, object: configuration, queue: .main) { [weak self] notification in
@@ -145,10 +146,6 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
                 self.applyThemeStyles(changedNames: names)
             }
         })
-        syntaxTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.pollSyntax() }
-        }
-        if let syntaxTimer { RunLoop.main.add(syntaxTimer, forMode: .common) }
     }
 
     /// Style specimens use the document/layout pipeline without loading startup
@@ -225,8 +222,8 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         }
     }
 
-    /// A replacement has no observers, timers, surfaces, or persistence
-    /// callbacks until its fully configured core is transferred to the owner.
+    /// A replacement has no global observers, surfaces, or persistence
+    /// callbacks. Its background scheduler transfers with its configured core.
     private init(preparing source: Data, typeName: String, filename: String,
                  allowAutomaticCode: Bool, recoveryInterpretation: EVRecoverySnapshot?,
                  reloading previous: ViemCoreHandle, configuration: EVConfigurationStore) throws {
@@ -243,7 +240,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     deinit {
         let source = syntaxDiagnosticSource
         if !isStylePreview { Task { @MainActor in EVCodePreferences.shared.reportLoadDiagnostics([], source: source) } }
-        syntaxTimer?.invalidate()
+        backgroundWork?.wake.invalidate()
         for observer in codeObservers { NotificationCenter.default.removeObserver(observer) }
         if core != 0 {
             _ = viem_core_destroy(core)
@@ -276,7 +273,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         if status != Status.ok {
             configurationWarning = "Unable to update syntax filename (\(status))."
         }
-        pollSyntax()
+        backgroundWork?.wake.request()
     }
 
     public func read(source: Data, typeName: String, origin: EVSourceOrigin) throws {
@@ -305,11 +302,18 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
                 throw EVCoreFrontendError.core(operation: "Close document", status: status)
             }
         }
+        backgroundWork?.cancel()
         for surface in liveSurfaces {
             surface.detachFromCore()
         }
         core = replacement.core
         replacement.core = 0
+        // The registration belongs to this core, not its temporary backend.
+        // Keep its retained context and queued wakeups, rebinding only the weak
+        // frontend owner after every fallible replacement step has succeeded.
+        backgroundWork = replacement.backgroundWork
+        replacement.backgroundWork = nil
+        backgroundWork?.service = backgroundWorkService(for: core)
         documentImages = replacement.documentImages
         openingFilename = replacement.openingFilename
         self.allowAutomaticCode = replacement.allowAutomaticCode
@@ -609,6 +613,11 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         EVStartupPerformance.mark("core.document.created")
         try checked(status, operation: "Open document")
         core = handle
+        let work = EVBackgroundWork(service: backgroundWorkService(for: handle))
+        var callbacks = work.wake.callbacks
+        try checked(viem_core_set_background_wake(handle, &callbacks), operation: "Observe background work")
+        backgroundWork = work
+        work.wake.request()
         source.removeAll(keepingCapacity: false)
         _ = try documentState()
         if isStylePreview { return }
@@ -678,19 +687,26 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         if status != Status.ok { configurationWarning = "Unable to configure syntax highlighting (\(status))." }
     }
 
-    func pollSyntax(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
-        guard core != 0, sourceFormat == .code || sourceFormat == .markdown else { return }
-        var changed: UInt8 = 0
-        guard viem_core_poll_syntax(core, &changed) == Status.ok else { return }
-        if changed != 0 { publishSyntaxChange() }
-        // Providers can report a diagnostic without publishing different styles.
-        // Bound text export to four times per second independently of frame polling.
-        if now - lastSyntaxDiagnosticRefresh >= 0.25 { refreshSyntaxDiagnostics(now: now) }
+    private func backgroundWorkService(for handle: ViemCoreHandle) -> EVBackgroundWork.Service {
+        { [weak self] in
+            guard let self, self.core == handle, handle != 0 else { return nil }
+            var status = ViemBackgroundWorkStatus()
+            guard viem_core_service_background_work(handle, &status) == Status.ok else { return nil }
+            if status.changed != 0 { self.publishSyntaxChange() }
+            if status.diagnostics_changed != 0, !self.isStylePreview { self.refreshSyntaxDiagnostics() }
+            return status
+        }
+    }
+
+    /// Synchronously service already-ready work; ordinary publication arrives
+    /// through the core's coalesced wake callback.
+    func serviceBackgroundWork() {
+        backgroundWork?.serviceNow()
     }
 
     /// Give newly visible Code one bounded opportunity to acquire its colors
     /// before exporting a frame. The shared core owns the deadline and request
-    /// identity; secondary panes and timer-driven publication never wait again.
+    /// identity; secondary panes and completion-driven publication never wait again.
     func waitForSyntax(viewID: ViemViewId) throws -> Bool {
         guard core != 0, sourceFormat == .code || sourceFormat == .markdown, !isPublishingSyntaxChange else { return false }
         var changed: UInt8 = 0
@@ -709,9 +725,8 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         NotificationCenter.default.post(name: .viemCoreSyntaxDidChange, object: self)
     }
 
-    private func refreshSyntaxDiagnostics(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+    private func refreshSyntaxDiagnostics() {
         guard core != 0 else { return }
-        lastSyntaxDiagnosticRefresh = now
         var diagnostics = configurationWarning.map { [$0] } ?? []
         if sourceFormat == .code {
             var required: UInt64 = 0

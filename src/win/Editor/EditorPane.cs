@@ -56,9 +56,11 @@ internal sealed partial class EditorPane : Grid, IDisposable
     internal bool AlignIndentsToPreviousLine => whitespace?.AlignIndentsToPreviousLine ?? false;
     private (string Text, string Fragment)? clipboardOverride;
     private readonly DispatcherTimer blink = new();
+    private readonly DispatcherTimer dragScroll = new() { Interval = TimeSpan.FromMilliseconds(40) };
     private readonly DispatcherTimer mapping = new() { Interval = TimeSpan.FromSeconds(1) };
     private bool disposed, refreshing, scrollUpdating, inputUpdating, textCaptureQueued, composing, compositionRejected, dragging, wordSelectionDragging, caretVisible = true;
     private bool refreshPending, preparingSyntax;
+    private bool caretBlinkEnabled;
     private bool gutterSelectionDragging, pointerOverText, pointerOverGutter, pointerOverCheckbox;
     private readonly InputCursor textArrowCursor = InputSystemCursor.Create(InputSystemCursorShape.Arrow);
     private readonly InputCursor textInsertionCursor = InputSystemCursor.Create(InputSystemCursorShape.IBeam);
@@ -106,7 +108,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
 #endif
 
     private bool active;
-    public bool IsActive { get => active; set { active = value; if (!value) { pointerClickCount = 0; DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false); } Canvas.Invalidate(); } }
+    public bool IsActive { get => active; set { active = value; if (!value) { pointerClickCount = 0; DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false); } SynchronizeBlink(); Canvas.Invalidate(); } }
     private LayoutSnapshot? snapshot;
     private ViemViewPresentation presentation;
     private ViemViewportState viewport;
@@ -211,7 +213,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             Run(() => { RefreshLinkPopup(); RefreshImagePopup(); });
         };
         LostFocus += (_, _) => DispatcherQueue.TryEnqueue(() => { DismissLinkPopupIfFocusLeft(); DismissImagePopupIfFocusLeft(); });
-        input.LostFocus += (_, _) => { caretVisible = true; SetCaretHover(null); Canvas.Invalidate(); };
+        input.LostFocus += (_, _) => { caretVisible = true; SynchronizeBlink(); SetCaretHover(null); Canvas.Invalidate(); };
         input.PreviewKeyDown += OnKey;
         // TextChanging reliably signals input even for this nearly invisible
         // IME host. Drain after the native callback, coalescing a burst of text
@@ -238,8 +240,9 @@ internal sealed partial class EditorPane : Grid, IDisposable
         horizontal.Scroll += (_, _) => { if (!scrollUpdating && View != null) Run(() => { RefreshScrollGeometry(); View.Scroll((float)horizontal.Value, View.Viewport.top); }); };
         uint blinkMs = GetCaretBlinkTime();
         blink.Interval = TimeSpan.FromMilliseconds(blinkMs is 0 or uint.MaxValue ? 530 : Math.Max(100, blinkMs));
-        blink.Tick += (_, _) => { if (active && input.FocusState != FocusState.Unfocused && blinkMs != uint.MaxValue) { caretVisible = !caretVisible; Canvas.Invalidate(); prompt.Blink(caretVisible); } };
-        blink.Start();
+        caretBlinkEnabled = blinkMs != uint.MaxValue;
+        blink.Tick += (_, _) => { SynchronizeBlink(); if (blink.IsEnabled) { caretVisible = !caretVisible; Canvas.Invalidate(); prompt.Blink(caretVisible); } };
+        dragScroll.Tick += (_, _) => Run(AdvanceDragScroll);
         mapping.Tick += (_, _) => { mapping.Stop(); if (View?.HasPendingMapping == true) Run(() => View.FlushMapping()); };
         preferences.Changed += PreferencesChanged; Document.Changed += DocumentChanged;
         ClipboardFormats.ContentChanged += ClipboardChanged;
@@ -273,7 +276,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         using (Diagnostics.StartupPerformance.Measure("editor.createView")) View = new(Document, Canvas.Device, DispatcherQueue, (float)Canvas.ActualWidth, (float)Canvas.ActualHeight, padding, InitialDisplay ?? NewDisplay(Document));
         if (preferences.ZoomScale != 1) View.Zoom(preferences.ZoomScale);
         View.SetHostRegister(35, AlternatePath ?? "");
-        View.Changed += Refresh; View.Effects += ApplyEffects; View.ZoomChanged += RememberZoom;
+        View.Changed += Refresh; View.Effects += ApplyEffects; View.ZoomChanged += RememberZoom; View.BackgroundWorkFailed += Report;
         bool applyStartup = !preferences.StartupApplicationOptionsApplied;
         preferences.StartupApplicationOptionsApplied = true;
         Run(() => View.TakeStartupEffects(applyStartup));
@@ -319,12 +322,13 @@ internal sealed partial class EditorPane : Grid, IDisposable
         DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false); ResetImagePreviews();
         DismissCommandOutput(restoreFocus: false);
         pressedPointer = null; gutterSelectionDragging = dragging = wordSelectionDragging = false;
+        dragScroll.Stop();
         Canvas.ReleasePointerCaptures(); lineNumberCanvas.ReleasePointerCaptures();
         Document.Changed -= DocumentChanged;
-        if (View != null) { View.Changed -= Refresh; View.Effects -= ApplyEffects; View.ZoomChanged -= RememberZoom; View.Dispose(); }
+        if (View != null) { View.Changed -= Refresh; View.Effects -= ApplyEffects; View.ZoomChanged -= RememberZoom; View.BackgroundWorkFailed -= Report; View.Dispose(); }
         Document = document; View = prepared; View?.SetHostRegister(35, AlternatePath ?? "");
         Document.Changed += DocumentChanged;
-        if (View != null) { View.Changed += Refresh; View.Effects += ApplyEffects; View.ZoomChanged += RememberZoom; }
+        if (View != null) { View.Changed += Refresh; View.Effects += ApplyEffects; View.ZoomChanged += RememberZoom; View.BackgroundWorkFailed += Report; }
         mapping.Stop(); compositionRejected = composing; composing = false; ClearInput();
         snapshot = null; lineNumbers = null; InvalidateDrawingCache();
         if (!deferPresentation) FinishReplacement();
@@ -370,7 +374,13 @@ internal sealed partial class EditorPane : Grid, IDisposable
             ? error.Message + Environment.NewLine + detail : error.Message); }
     public void Run(Action action) { try { action(); } catch (Exception e) { Report(e); } }
     public void SetMessage(string text) { ShowCommandOutput(text); }
-    private void ResetBlink() { caretVisible = true; blink.Stop(); blink.Start(); Canvas.Invalidate(); prompt.Blink(true); }
+    private void SynchronizeBlink()
+    {
+        bool enabled = !disposed && caretBlinkEnabled && active && window.IsWindowActive && input.FocusState != FocusState.Unfocused;
+        if (enabled) { if (!blink.IsEnabled) blink.Start(); }
+        else { blink.Stop(); caretVisible = true; }
+    }
+    private void ResetBlink() { caretVisible = true; blink.Stop(); SynchronizeBlink(); Canvas.Invalidate(); prompt.Blink(true); }
     private void ClearInput() { inputUpdating = true; input.Text = ""; inputUpdating = false; }
     private void CaptureCommittedText()
     {
@@ -637,6 +647,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             EndPointerSelection(Canvas, e); return;
         }
         dragPoint = point.Position;
+        SynchronizeDragScroll();
         if (gutterSelectionDragging) { ContinueGutterSelection(e); return; }
         if (tableColumnGesture != null) { Run(() => DragTableColumns(dragPoint)); e.Handled = true; return; }
         if (!LeaveCheckboxPress(dragPoint)) { e.Handled = true; return; }
@@ -648,6 +659,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             dragging = true;
             pointerClickCount = 0;
         }
+        SynchronizeDragScroll();
         Run(() => { if (wordSelectionDragging || !DragTableCells(dragPoint)) View.Place((float)Math.Clamp(dragPoint.X, 0, Canvas.ActualWidth), (float)Math.Clamp(dragPoint.Y, 0, Canvas.ActualHeight), true, wordSelectionDragging); });
         e.Handled = true;
     }
@@ -871,6 +883,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     }
     internal void CaretHoverFocusChanged()
     {
+        SynchronizeBlink();
         if (!window.IsWindowActive) { pointerClickCount = 0; caretHoverLocation = null; SetCaretHover(null); DismissLinkPopup(suppress: false); if (!PickingImageLocation) DismissImagePopup(suppress: false); }
         else if (View != null) Run(() => { RefreshLinkPopup(); RefreshImagePopup(); });
     }
@@ -976,24 +989,36 @@ internal sealed partial class EditorPane : Grid, IDisposable
         while (lo < hi) { int mid = lo + (hi - lo) / 2; if (runs[mid].text_start <= offset) lo = mid + 1; else hi = mid; }
         return lo > 0 && runs[lo - 1].text_end > offset ? runs[lo - 1].paint : snapshot.Paint.default_paint;
     }
-    public void Poll()
+    private (double X, double Y) DragScrollDelta()
     {
-        if (View == null) return;
-        Run(() => {
-            View.Poll();
-            if (!dragging) return;
-            double dy = dragPoint.Y < 0 ? Math.Max(-60, dragPoint.Y) : dragPoint.Y > Canvas.ActualHeight ? Math.Min(60, dragPoint.Y - Canvas.ActualHeight) : 0;
-            double dx = gutterSelectionDragging ? 0 : dragPoint.X < 0 ? Math.Max(-60, dragPoint.X) : dragPoint.X > Canvas.ActualWidth ? Math.Min(60, dragPoint.X - Canvas.ActualWidth) : 0;
-            if (dx == 0 && dy == 0) return;
-            RefreshScrollGeometry();
-            View.Scroll(View.Viewport.left + (float)dx, View.Viewport.top + (float)dy);
-            if (gutterSelectionDragging) View.SelectPointerRow((float)Math.Clamp(dragPoint.Y, 0, Math.Max(0, Canvas.ActualHeight - 0.5)), true);
-            else if (wordSelectionDragging || !DragTableCells(dragPoint)) View.Place((float)Math.Clamp(dragPoint.X, 0, Canvas.ActualWidth), (float)Math.Clamp(dragPoint.Y, 0, Canvas.ActualHeight), true, wordSelectionDragging);
-        });
+        if (disposed || View == null || !dragging) return (0, 0);
+        double dy = dragPoint.Y < 0 ? Math.Max(-60, dragPoint.Y) : dragPoint.Y > Canvas.ActualHeight ? Math.Min(60, dragPoint.Y - Canvas.ActualHeight) : 0;
+        double dx = gutterSelectionDragging ? 0 : dragPoint.X < 0 ? Math.Max(-60, dragPoint.X) : dragPoint.X > Canvas.ActualWidth ? Math.Min(60, dragPoint.X - Canvas.ActualWidth) : 0;
+        return (dx, dy);
     }
+    private void SynchronizeDragScroll()
+    {
+        var delta = DragScrollDelta();
+        if (delta.X != 0 || delta.Y != 0) { if (!dragScroll.IsEnabled) dragScroll.Start(); }
+        else dragScroll.Stop();
+    }
+    private void AdvanceDragScroll()
+    {
+        var (dx, dy) = DragScrollDelta();
+        if (dx == 0 && dy == 0 || View == null) { dragScroll.Stop(); return; }
+        RefreshScrollGeometry();
+        View.Scroll(View.Viewport.left + (float)dx, View.Viewport.top + (float)dy);
+        if (gutterSelectionDragging) View.SelectPointerRow((float)Math.Clamp(dragPoint.Y, 0, Math.Max(0, Canvas.ActualHeight - 0.5)), true);
+        else if (wordSelectionDragging || !DragTableCells(dragPoint)) View.Place((float)Math.Clamp(dragPoint.X, 0, Canvas.ActualWidth), (float)Math.Clamp(dragPoint.Y, 0, Canvas.ActualHeight), true, wordSelectionDragging);
+        SynchronizeDragScroll();
+    }
+#if DEBUG
+    internal bool DragScrollScheduledForTesting => dragScroll.IsEnabled;
+    internal bool CaretBlinkScheduledForTesting => blink.IsEnabled;
+#endif
     public void Dispose()
     {
-        if (disposed) return; disposed = true; ready.TrySetCanceled(); blink.Stop(); mapping.Stop(); outputTimer.Stop();
+        if (disposed) return; disposed = true; ready.TrySetCanceled(); blink.Stop(); mapping.Stop(); dragScroll.Stop(); outputTimer.Stop();
         DismissCodeBlockLanguageMenu();
         DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false);
         ResetImagePreviews();
@@ -1002,6 +1027,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 18362)) scrollbarSettings.AutoHideScrollBarsChanged -= ScrollBarPreferenceChanged;
         InvalidateDrawingCache();
         pressedPointer = null; gutterSelectionDragging = dragging = wordSelectionDragging = false;
+        dragScroll.Stop();
         statusPointer = null; statusPointerSource = null; statusDragging = statusSelectingOutput = false;
         statusDragTarget = null; statusDragNeedsSplit = false;
         Canvas.ReleasePointerCaptures(); lineNumberCanvas.ReleasePointerCaptures();

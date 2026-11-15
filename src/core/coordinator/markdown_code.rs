@@ -653,7 +653,7 @@ impl Default for MarkdownCodeSyntax {
     }
 }
 pub(super) struct MarkdownCodeService {
-    service: SyntaxService,
+    pub(super) service: SyntaxService,
     anchors: Option<(crate::document::TextAnchor, crate::document::TextAnchor)>,
     input: Option<SyntaxInputSnapshot>,
     /// The block language at the last publication; `None` before one.
@@ -957,6 +957,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .service
                 .rebase_input(input.clone(), map.as_ref(), hull);
             entry.input = Some(input.clone());
+            let relative_regions = regions.iter().map(|region|
+                region.start - block.range.start..region.end - block.range.start).collect::<Vec<_>>();
+            entry.service.set_visible_demands(&input, &relative_regions);
             let deferred = position >= visible_blocks && offscreen_publications >= MAX_OFFSCREEN_PUBLICATIONS;
             let completed = !deferred && entry.service.poll(input.identity());
             completed_analysis |= completed;
@@ -968,11 +971,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                 changed_blocks.push(block.range.clone());
                 republish.insert(id);
             }
-            for region in regions {
-                entry.service.request(
-                    input.clone(),
-                    region.start - block.range.start..region.end - block.range.start,
-                );
+            for region in relative_regions {
+                entry.service.request(input.clone(), region);
             }
             inputs.push((id, input));
         }

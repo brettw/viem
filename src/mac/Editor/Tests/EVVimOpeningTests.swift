@@ -20,7 +20,7 @@ final class EVVimOpeningTests: XCTestCase {
         surface.loadViewIfNeeded()
         var highlighted = false
         for _ in 0..<500 {
-            backend.pollSyntax()
+            backend.serviceBackgroundWork()
             if surface.layoutPaint?.runs.contains(where: {
                 $0.text_start == 0 && $0.text_end >= command.utf8.count
                     && $0.paint.flags & UInt32(VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) == 0
@@ -92,7 +92,7 @@ final class EVVimOpeningTests: XCTestCase {
         surface.loadViewIfNeeded()
         var paintedTarget = false
         for _ in 0..<500 {
-            backend.pollSyntax()
+            backend.serviceBackgroundWork()
             if surface.layoutPaint?.runs.contains(where: {
                 $0.text_start == 0 && $0.text_end >= 3
                     && $0.paint.flags & UInt32(VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) == 0
@@ -131,7 +131,7 @@ final class EVVimOpeningTests: XCTestCase {
         surface.loadViewIfNeeded()
         func waitForStyle(_ name: String) async throws {
             for _ in 0..<200 {
-                backend.pollSyntax()
+                backend.serviceBackgroundWork()
                 if try backend.syntaxStyleNames().contains(name) { return }
                 try await Task.sleep(for: .milliseconds(10))
             }

@@ -4,6 +4,7 @@
 //! interpretation, and layout are separate modules with one-way dependencies.
 
 pub mod application_config;
+pub mod background;
 pub mod command;
 pub mod diff;
 pub mod document;
@@ -26,7 +27,7 @@ pub use command::composition::{
 };
 pub use command::layout_motion::{LayoutDemand, LayoutDemandEdge};
 pub use coordinator::{
-    ChangeDirection, ChangeNavigation, DiffSession, DiffSync, DocumentLines, ScrollbarMark,
+    BackgroundWorkStatus, ChangeDirection, ChangeNavigation, DiffSession, DiffSync, DocumentLines, ScrollbarMark,
     LineNumberRegion, CodeLanguagePolicy, DocumentMode, DocumentModeState, CompletionPopupAnchor, CompositionCancelReason, Core, CoreError, CoreEvent, CoreIdentifierKind, CoreOutcome,
     FormattingAction, FormattingActionSet, FormattingActions, ImageContext, LinkContext,
     LogicalSelectionIdentity, LogicalSelectionKind, SemanticStylePresentation, SemanticStyleState,
