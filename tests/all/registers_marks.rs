@@ -130,14 +130,14 @@ fn affected_marks_last_insert_and_previous_position_are_usable_and_rebased() {
     keys(&mut core, view, "`[");
     assert_eq!(cursor(&core, view), 0);
     keys(&mut core, view, "`]");
-    assert_eq!(cursor(&core, view), 1);
+    assert_eq!(cursor(&core, view), 2);
     keys(&mut core, view, "`.");
     assert_eq!(cursor(&core, view), 1);
     let other = core.add_view(MockTextMeasurementProvider::new(), 300., 400.);
     keys(&mut core, other, "`]");
-    assert_eq!(cursor(&core, other), 1);
+    assert_eq!(cursor(&core, other), 2);
     keys(&mut core, view, "ggd`]");
-    assert_eq!(core.document().text(), "Yone\n  two\nthree");
+    assert_eq!(core.document().text(), "one\n  two\nthree");
     keys(&mut core, view, "u");
     assert_eq!(core.document().text(), "XYone\n  two\nthree");
 }
@@ -608,5 +608,211 @@ fn script_linewise_register_puts_whole_lines() {
         assert_eq!(core.document().source_bytes(), expected_source.as_bytes(), "{format:?} {keys_text}");
         keys(&mut core, view, "u");
         assert_eq!(core.document().source_bytes(), source.as_bytes(), "{format:?} {keys_text}: undo");
+    }
+}
+
+// Vim 9.1.1752 oracle: each operation starts at line 2, column 1 with
+// shiftwidth=2 expandtab. Endpoints are getpos()'s byte columns.
+const CHANGE_MARK_CASES: &[(&str, &str, &str, &str)] = &[
+    (">>", "[2, 1] [2, 11]", "one\n  two words\nthree\nfour", ""),
+    ("3>>", "[2, 1] [4, 6]", "one\n  two words\n  three\n  four", ""),
+    ("J", "[2, 10] [2, 16]", "one\ntwo words three\nfour", ""),
+    ("3J", "[2, 10] [2, 21]", "one\ntwo words three four", ""),
+    ("itext", "[2, 1] [2, 5]", "one\ntexttwo words\nthree\nfour", "insert"),
+    ("A tail", "[2, 10] [2, 15]", "one\ntwo words tail\nthree\nfour", "insert"),
+    ("oadded", "[3, 1] [3, 6]", "one\ntwo words\nadded\nthree\nfour", "insert"),
+    ("Oabove", "[2, 1] [2, 6]", "one\nabove\ntwo words\nthree\nfour", "insert"),
+    ("ccnew", "[2, 1] [2, 4]", "one\nnew\nthree\nfour", "insert"),
+    (":2,3s/o/0/g", "[2, 1] [3, 1]", "one\ntw0 w0rds\nthree\nfour", "ex"),
+];
+const CHANGE_MARK_QUERY: &str = "echo getpos(\"'[\")[1:2] getpos(\"']\")[1:2]";
+
+#[test]
+fn change_marks_match_vim_through_keys_normal_and_scripts() {
+    let original = "one\ntwo words\nthree\nfour";
+    for route in ["keys", "normal", "script"] {
+        for &(input, expected, source, kind) in CHANGE_MARK_CASES {
+            let (mut core, view) = editor(original);
+            ex(&mut core, view, "set shiftwidth=2 expandtab");
+            keys(&mut core, view, "j0");
+            let output = if kind == "ex" {
+                ex(&mut core, view, &input[1..])
+            } else if route == "keys" {
+                let output = keys(&mut core, view, input);
+                if kind == "insert" { key(&mut core, view, Key::Escape) } else { output }
+            } else if route == "normal" {
+                // :normal ends Insert mode even without an explicit Escape.
+                ex(&mut core, view, &format!("normal! {input}"))
+            } else {
+                let escape = if kind == "insert" { "\\<Esc>" } else { "" };
+                ex(&mut core, view, &format!("execute \"normal! {input}{escape}\""))
+            };
+            assert!(matches!(output.command.as_ref().unwrap().status, CommandStatus::Complete), "{route} {input}: {output:?}");
+            assert_eq!(messages(&ex(&mut core, view, CHANGE_MARK_QUERY)), [expected], "{route} {input}");
+            assert_eq!(core.document().source_bytes(), source.as_bytes(), "{route} {input}");
+            keys(&mut core, view, "u");
+            assert_eq!(core.document().source_bytes(), original.as_bytes(), "{route} {input}: undo");
+            key(&mut core, view, Key::Ctrl('r'));
+            assert_eq!(core.document().source_bytes(), source.as_bytes(), "{route} {input}: redo");
+        }
+    }
+}
+
+#[test]
+fn change_marks_match_vim_without_a_coordinator() {
+    use viem_core::command::CommandInterpreter;
+    use viem_core::command::ex_execute::{ExFrontendRequest, ExInfoRequest};
+    for &(input, expected, source, kind) in CHANGE_MARK_CASES {
+        let mut document = Document::new("one\ntwo words\nthree\nfour");
+        let mut commands = CommandInterpreter::new();
+        let send = |commands: &mut CommandInterpreter, document: &mut Document, input: &str| {
+            for ch in input.chars() {
+                commands.handle(document, InputEvent::key(ch)).unwrap();
+            }
+        };
+        send(&mut commands, &mut document, ":set sw=2 et");
+        commands.handle(&mut document, InputEvent::Key(Key::Enter)).unwrap();
+        send(&mut commands, &mut document, "j0");
+        send(&mut commands, &mut document, input);
+        if kind == "insert" {
+            commands.handle(&mut document, InputEvent::Key(Key::Escape)).unwrap();
+        } else if kind == "ex" {
+            commands.handle(&mut document, InputEvent::Key(Key::Enter)).unwrap();
+        }
+        send(&mut commands, &mut document, &format!(":{CHANGE_MARK_QUERY}"));
+        let output = commands.handle(&mut document, InputEvent::Key(Key::Enter)).unwrap();
+        let messages: Vec<_> = output.ex_outcome.unwrap().frontend_requests.into_iter().filter_map(|request| match request {
+            ExFrontendRequest::Info(ExInfoRequest::Message(text)) => Some(text),
+            _ => None,
+        }).collect();
+        assert_eq!(messages, [expected], "{input}");
+        assert_eq!(document.source_bytes(), source.as_bytes(), "{input}");
+    }
+}
+
+#[test]
+fn substitute_marks_cover_unmatched_lines_and_inserted_line_breaks() {
+    for (command, expected) in [
+        ("1,4s/words/X/", "[1, 1] [4, 1]"),
+        ("1,4s/words/X\\rY/", "[1, 1] [5, 1]"),
+        ("2,2s/words/X\\rY/", "[2, 1] [3, 1]"),
+    ] {
+        let (mut core, view) = editor("one\ntwo words\nthree\nfour");
+        ex(&mut core, view, command);
+        assert_eq!(messages(&ex(&mut core, view, CHANGE_MARK_QUERY)), [expected], "{command}");
+    }
+}
+
+#[test]
+fn change_marks_are_shared_with_other_views() {
+    let (mut core, view) = editor("one\ntwo words\nthree\nfour");
+    let other = core.add_view(MockTextMeasurementProvider::new(), 300., 400.);
+    keys(&mut core, view, "jA tail");
+    key(&mut core, view, Key::Escape);
+    assert_eq!(messages(&ex(&mut core, other, CHANGE_MARK_QUERY)), ["[2, 10] [2, 15]"]);
+}
+
+#[test]
+fn ex_join_and_shift_publish_command_mark_ranges() {
+    for (command, expected) in [
+        ("2,4>", "[2, 1] [4, 6]"),
+        ("2,3join", "[2, 10] [2, 16]"),
+        ("2,4join!", "[2, 10] [2, 19]"),
+    ] {
+        let (mut core, view) = editor("one\ntwo words\nthree\nfour");
+        ex(&mut core, view, "set sw=2 et");
+        ex(&mut core, view, command);
+        assert_eq!(messages(&ex(&mut core, view, CHANGE_MARK_QUERY)), [expected], "{command}");
+    }
+}
+
+#[test]
+fn insertion_mark_units_follow_counts_movement_and_multibyte_text() {
+    for (input, expected) in [
+        ("3iXY", "[2, 1] [2, 7]"),
+        ("ié日", "[2, 1] [2, 6]"),
+        ("Rxy", "[2, 1] [2, 3]"),
+    ] {
+        let (mut core, view) = editor("one\ntwo words\nthree\nfour");
+        keys(&mut core, view, "j0");
+        keys(&mut core, view, input);
+        key(&mut core, view, Key::Escape);
+        assert_eq!(messages(&ex(&mut core, view, CHANGE_MARK_QUERY)), [expected], "{input}");
+    }
+    let (mut core, view) = editor("one\ntwo words\nthree\nfour");
+    keys(&mut core, view, "jiXY");
+    key(&mut core, view, Key::Left);
+    keys(&mut core, view, "Z");
+    key(&mut core, view, Key::Escape);
+    assert_eq!(messages(&ex(&mut core, view, CHANGE_MARK_QUERY)), ["[2, 2] [2, 3]"]);
+}
+
+#[test]
+fn semantic_change_marks_are_readable_in_the_same_script() {
+    use viem_core::command::CommandInterpreter;
+    use viem_core::command::ex_execute::{ExFrontendRequest, ExInfoRequest};
+    for &(input, expected, _, kind) in CHANGE_MARK_CASES {
+        let mut document = Document::new("one\ntwo words\nthree\nfour");
+        let mut commands = CommandInterpreter::new();
+        let operation = if kind == "ex" { input[1..].to_owned() }
+            else { format!("execute 'normal! {input}'") };
+        assert!(commands.set_cursor(&document, 4));
+        let script = format!(":set sw=2 et | {operation} | {CHANGE_MARK_QUERY}");
+        for ch in script.chars() {
+            commands.handle(&mut document, InputEvent::key(ch)).unwrap();
+        }
+        let output = commands.handle(&mut document, InputEvent::Key(Key::Enter)).unwrap();
+        assert!(matches!(output.status, CommandStatus::Complete), "{input}: {output:?}");
+        let messages: Vec<_> = output.ex_outcome.unwrap().frontend_requests.into_iter().filter_map(|request| match request {
+            ExFrontendRequest::Info(ExInfoRequest::Message(text)) => Some(text),
+            _ => None,
+        }).collect();
+        assert_eq!(messages, [expected], "{input}");
+    }
+}
+
+#[test]
+fn failed_changes_preserve_affected_marks() {
+    let (mut core, view) = editor("one\ntwo words\nthree\nfour");
+    keys(&mut core, view, "jiXY");
+    key(&mut core, view, Key::Escape);
+    let before = messages(&ex(&mut core, view, CHANGE_MARK_QUERY));
+    let source = core.document().source_bytes();
+    ex(&mut core, view, "set nomodifiable");
+    keys(&mut core, view, ">>");
+    assert_eq!(messages(&ex(&mut core, view, CHANGE_MARK_QUERY)), before);
+    assert_eq!(core.document().source_bytes(), source);
+    ex(&mut core, view, "set modifiable");
+    ex(&mut core, view, "1,4s/missing/never/");
+    assert_eq!(messages(&ex(&mut core, view, CHANGE_MARK_QUERY)), before);
+    assert_eq!(core.document().source_bytes(), source);
+}
+
+#[test]
+fn substitute_confirmation_marks_cover_the_addressed_range() {
+    let (mut core, view) = editor("one\ntwo words\nthree\nfour");
+    ex(&mut core, view, "2,4s/o/X/gc");
+    keys(&mut core, view, "yq");
+    assert_eq!(core.document().text(), "one\ntwX words\nthree\nfour");
+    assert_eq!(messages(&ex(&mut core, view, CHANGE_MARK_QUERY)), ["[2, 1] [4, 1]"]);
+}
+
+#[test]
+fn substitute_without_matches_preserves_marks_when_errors_are_suppressed() {
+    let (mut core, view) = editor("one\ntwo words\nthree\nfour");
+    ex(&mut core, view, "call setpos(\"'[\", [0, 2, 3, 0]) | call setpos(\"']\", [0, 3, 2, 0])");
+    ex(&mut core, view, "1,4s/missing/X/e");
+    assert_eq!(messages(&ex(&mut core, view, CHANGE_MARK_QUERY)), ["[2, 3] [3, 2]"]);
+}
+
+#[test]
+fn opened_line_marks_include_generated_indentation() {
+    for (input, expected) in [("oadded", "[3, 1] [3, 8]"), ("Oabove", "[2, 1] [2, 8]")] {
+        let (mut core, view) = editor("one\n  two words\nthree\nfour");
+        ex(&mut core, view, "set autoindent");
+        keys(&mut core, view, "j0");
+        keys(&mut core, view, input);
+        key(&mut core, view, Key::Escape);
+        assert_eq!(messages(&ex(&mut core, view, CHANGE_MARK_QUERY)), [expected], "{input}");
     }
 }

@@ -1061,6 +1061,12 @@ impl CommandInterpreter {
             self.note_affected_range(document, extent.text.clone(), false, false);
             return Ok(CommandOutput::complete());
         }
+        let shift_lines = matches!(operator, Operator::Indent | Operator::Outdent | Operator::Reindent).then(|| {
+            let lines = document.hard_line_snapshot();
+            let first = lines.line_at_offset(extent.text.start).expect("valid shift start").index();
+            let end = lines.previous_grapheme_boundary(extent.text.end).unwrap_or(extent.text.start).max(extent.text.start);
+            (first, lines.line_at_offset(end).expect("valid shift end").index())
+        });
         let before = document.revision();
         let deletion_containment = (operator == Operator::Delete && extent.whole)
             .then(|| crate::document::LineDeletionContainment::capture(document, &extent.text))
@@ -1263,6 +1269,11 @@ impl CommandInterpreter {
                 ..CommandOutput::complete()
             }
         };
+        if document.revision() != before {
+            if let Some((first, last)) = shift_lines {
+                self.note_shift_mark_range(document, first, last);
+            }
+        }
         let deletion_boundary = self.cursor;
         if operator == Operator::Change {
             output.merge(self.enter_insert(document, InsertPlacement::Before, 1));
@@ -2044,6 +2055,12 @@ impl CommandInterpreter {
             joined.split_off(first_text_len),
         )?;
         self.cursor = document.visible_point_for_source(source_cursor, true)?;
+        // Resolve the retained source prefix rather than adding decoded
+        // source bytes to a Preview offset (the prefix may contain syntax).
+        if let Ok(start) = document.visible_point_for_source(first.content_range.end, false) {
+            let end = line_end(&document.hard_line_snapshot(), start);
+            self.set_affected_change_marks(document, start, end);
+        }
         self.visual_position = None;
         self.remember_physical_cursor(document, source_cursor);
         if !self.replaying {

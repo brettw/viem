@@ -318,6 +318,9 @@ impl CommandInterpreter {
     }
 
     pub(super) fn finish_substitute_invocation(&mut self, document: &Document, outcome: &ExOutcome) {
+        if let Some(range) = outcome.affected_marks {
+            self.set_affected_change_marks(document, range.start, range.end);
+        }
         if let Some(pattern) = self.ex_state.previous_substitute_pattern() {
             let direction = self
                 .last_search

@@ -666,6 +666,8 @@ pub struct ExOutcome {
     pub vim_option_effects: Vec<super::options::VimOptionEffect>,
     pub frontend_requests: Vec<ExFrontendRequest>,
     pub substitutions: usize,
+    /// Mark locations in the committed projection, chosen by the command.
+    pub(crate) affected_marks: Option<super::marks::AffectedMarks>,
 }
 
 impl ExOutcome {
@@ -710,6 +712,7 @@ impl ExOutcome {
         self.vim_option_effects.extend(next.vim_option_effects);
         self.frontend_requests.extend(next.frontend_requests);
         self.substitutions = substitutions;
+        if next.affected_marks.is_some() { self.affected_marks = next.affected_marks; }
         Ok(())
     }
 }
@@ -772,7 +775,8 @@ impl SubstitutePreview {
             })
         };
         ExPlan { document_id: self.document_id, expected_revision: self.revision, navigation_is_candidate: false,
-            mutation, outcome, next_substitute: Some(self.stored.clone()) }
+            mutation, outcome, next_substitute: Some(self.stored.clone()),
+            affected_marks: Some((ExAffectedMarkKind::Substitute, self.lines.start.content.start..self.lines.end.content.end)) }
     }
 }
 
@@ -984,6 +988,10 @@ pub enum ExMutation {
     FormattedPayload(FormattedPayloadEditRequest),
 }
 
+/// How an Ex command names its affected text independently of its patches.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ExAffectedMarkKind { Shift, Join, Substitute }
+
 /// A revision-bound, fully validated command plan.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExPlan {
@@ -993,6 +1001,7 @@ pub struct ExPlan {
     pub outcome: ExOutcome,
     next_substitute: Option<StoredSubstitute>,
     navigation_is_candidate: bool,
+    affected_marks: Option<(ExAffectedMarkKind, Range<usize>)>,
 }
 
 impl ExPlan {
@@ -1016,6 +1025,7 @@ impl ExPlan {
             outcome: ExOutcome::default(),
             next_substitute: None,
             navigation_is_candidate: false,
+            affected_marks: None,
         }
     }
 
@@ -1447,6 +1457,7 @@ pub fn commit_ex(
                     } else { ex_model_error(error, navigation) })?;
             document.attach_prepared_source_map(&mut prepared).map_err(|error| ex_model_error(error, navigation))?;
             rebase_print_requests(document, &prepared, &mut plan.outcome)?;
+            rebase_affected_marks(document, &prepared, plan.affected_marks.as_ref(), &mut plan.outcome)?;
             if let Some(at) = substitution_cursor {
                 let cursor = super::prepared_cursor(
                     document,
@@ -1473,6 +1484,7 @@ pub fn commit_ex(
                 .map_err(|error| ex_model_error(error, None))?;
             document.attach_prepared_source_map(&mut prepared).map_err(|error| ex_model_error(error, None))?;
             rebase_print_requests(document, &prepared, &mut plan.outcome)?;
+            rebase_affected_marks(document, &prepared, plan.affected_marks.as_ref(), &mut plan.outcome)?;
             if matches!(plan.outcome.navigation, Some(ExNavigation::PhysicalSourceOffset(_))) {
                 let candidate = document.prepared_candidate_document(&prepared)?;
                 validate_source_navigation(&candidate, &plan.outcome)?;
@@ -1503,6 +1515,33 @@ pub fn commit_ex(
     plan.outcome.document_changed = document.revision() != before;
     plan.outcome.model_transactions.extend(model_transaction);
     Ok(plan.outcome)
+}
+
+/// Compute mark endpoints against the candidate before its atomic publication.
+fn rebase_affected_marks(
+    document: &Document,
+    prepared: &crate::document::PreparedModelTransaction,
+    marks: Option<&(ExAffectedMarkKind, Range<usize>)>,
+    outcome: &mut ExOutcome,
+) -> Result<(), ExExecuteError> {
+    let Some((kind, range)) = marks else { return Ok(()); };
+    let start = super::prepared_cursor(document, prepared, range.start, crate::document::Association::BeforeInsertion)?;
+    let end = super::prepared_cursor(document, prepared, range.end, crate::document::Association::AfterInsertion)?;
+    let candidate = document.prepared_candidate_document(prepared)?;
+    let lines = candidate.hard_line_snapshot();
+    let (start, end) = match kind {
+        ExAffectedMarkKind::Join => (start, end),
+        ExAffectedMarkKind::Shift => {
+            let start = super::line_start(&lines, start);
+            let last = lines.line_at_offset(end).map_err(|_| ExExecuteError::AddressOverflow)?.content_range();
+            let end = if last.is_empty() { last.start }
+                else { lines.previous_grapheme_boundary(last.end).ok_or(ExExecuteError::AddressOverflow)? };
+            (start, end)
+        }
+        ExAffectedMarkKind::Substitute => (super::line_start(&lines, start), super::line_start(&lines, end)),
+    };
+    outcome.affected_marks = Some(super::marks::AffectedMarks { start, end });
+    Ok(())
 }
 
 fn address_navigation(document: &Document, line: &ResolvedExLine) -> Result<ExNavigation, ExExecuteError> {
@@ -2158,6 +2197,9 @@ fn plan_substitution(
         ));
     }
 
+    if substitutions != 0 {
+        plan.affected_marks = Some((ExAffectedMarkKind::Substitute, lines.start.content.start..lines.end.content.end));
+    }
     plan.outcome.substitutions = substitutions;
     if let Some(first) = edits.first() {
         plan.outcome.navigation = Some(ExNavigation::TextOffset(first.range.start));
@@ -2222,6 +2264,7 @@ pub(super) fn prepare_global_substitutions<R: ExRegisterReader + ?Sized>(
         if let Some(ExNavigation::TextOffset(at)) = plan.outcome.navigation {
             combined.outcome.navigation = Some(ExNavigation::TextOffset(at));
         }
+        if plan.affected_marks.is_some() { combined.affected_marks = plan.affected_marks; }
         combined.outcome.substitutions += plan.outcome.substitutions;
         combined.next_substitute = plan.next_substitute;
         all_edits.extend(edits);

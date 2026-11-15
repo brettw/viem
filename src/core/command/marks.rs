@@ -12,7 +12,56 @@ pub(super) fn canonical_mark(name: char) -> char {
     }
 }
 
+/// Two mark locations, not an edit range: Vim sometimes puts the end mark
+/// on the last character and sometimes on the boundary after it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AffectedMarks {
+    pub start: usize,
+    pub end: usize,
+}
+
 impl CommandInterpreter {
+    /// Mark endpoints chosen by a semantic command. These are valid
+    /// only in the revision that command published, never a later edit.
+    pub(super) fn set_affected_change_marks(&mut self, document: &Document, start: usize, end: usize) {
+        let marks = AffectedMarks { start, end };
+        self.affected_change_marks = Some((document.revision(), marks));
+        self.publish_affected_change_marks(marks);
+    }
+
+    pub(crate) fn affected_change_marks(&self, document: &Document) -> Option<AffectedMarks> {
+        if let Some((revision, range)) = &self.affected_change_marks {
+            if *revision == document.revision() {
+                return Some(*range);
+            }
+        }
+        // unit_floor follows the insertion's start (and a new unit after
+        // movement). The caret is the one-past endpoint, before Escape steps
+        // back to the last inserted character.
+        self.insert_session.as_ref().map(|session| {
+            let start = if matches!(session.placement, InsertPlacement::OpenBelow | InsertPlacement::OpenAbove) {
+                // Opening a line changes its generated indentation too.
+                line_start(&document.hard_line_snapshot(), session.unit_floor)
+            } else { session.unit_floor };
+            AffectedMarks { start: start.min(self.cursor), end: self.cursor }
+        })
+    }
+
+    pub(crate) fn publish_affected_change_marks(&mut self, range: AffectedMarks) {
+        self.line_end_marks.remove(&']');
+        self.marks.insert('[', range.start);
+        self.marks.insert(']', range.end);
+    }
+
+    pub(super) fn note_shift_mark_range(&mut self, document: &Document, first: usize, last: usize) {
+        let lines = document.hard_line_snapshot();
+        let start = lines.line(first).expect("shift preserves its first line").content_range().start;
+        let range = lines.line(last).expect("shift preserves its last line").content_range();
+        let end = if range.is_empty() { range.start }
+            else { lines.previous_grapheme_boundary(range.end).expect("nonempty shifted line") };
+        self.set_affected_change_marks(document, start, end);
+    }
+
     pub(crate) fn note_affected_range(
         &mut self,
         document: &Document,
@@ -195,6 +244,14 @@ impl CommandInterpreter {
     ) -> Result<bool, PositionError> {
         let mut marks = self.marks.clone();
         for (name, anchor) in anchors {
+            // A semantic command may deliberately leave a mark at the same
+            // numeric offset. It is already in the target revision, so equality
+            // with its old offset must not rebase it through the edit again.
+            if matches!(name, '[' | ']')
+                && self.affected_change_marks.as_ref().is_some_and(|(revision, _)| *revision == map.target_revision())
+            {
+                continue;
+            }
             let Some(old_offset) = before.marks.get(name) else {
                 continue;
             };
@@ -261,6 +318,11 @@ impl CommandInterpreter {
                         matches!(before.mode, Mode::Insert | Mode::Replace),
                         !output.history_navigation,
                     );
+                    if !output.history_navigation {
+                        if let Some(range) = self.affected_change_marks(document) {
+                            self.publish_affected_change_marks(range);
+                        }
+                    }
                 }
             }
         }

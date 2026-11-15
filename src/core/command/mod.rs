@@ -59,6 +59,7 @@ mod command_line_edit;
 mod command_line_register;
 mod special_registers;
 mod marks;
+pub(crate) use marks::AffectedMarks;
 mod filename_candidates;
 mod input_assistance;
 #[cfg(test)]
@@ -1396,6 +1397,7 @@ pub struct CommandInterpreter {
     /// coordinator remains the product execution boundary.
     plan_compound_replay: bool,
     tracking_positions: bool,
+    affected_change_marks: Option<(Revision, marks::AffectedMarks)>,
     pending_replay: Option<ReplayPlan>,
     insert_normal_once: Option<Mode>,
     ctrl_o_just_started: bool,
@@ -1598,6 +1600,7 @@ impl CommandInterpreter {
             macro_recording_suppressed: false,
             plan_compound_replay: false,
             tracking_positions: false,
+            affected_change_marks: None,
             pending_replay: None,
             insert_normal_once: None,
             ctrl_o_just_started: false,
@@ -9792,8 +9795,12 @@ impl CommandInterpreter {
                 if edits.is_empty() {
                     return Ok(CommandOutput::complete());
                 }
+                let first = lines.line_at_offset(extent.range.start).expect("valid shift start").index();
+                let last_at = lines.previous_grapheme_boundary(extent.range.end).unwrap_or(extent.range.start).max(extent.range.start);
+                let last = lines.line_at_offset(last_at).expect("valid shift end").index();
                 document.validate_hard_line_snapshot(&lines)?;
                 document.apply_edits(edits)?;
+                self.note_shift_mark_range(document, first, last);
                 let current = document.hard_line_snapshot();
                 self.cursor = if let Some(column) = retained_column { options::at_logical_column(&current, extent.range.start, column) }
                     else { first_nonblank_document(document, &current, extent.range.start) };
@@ -12246,6 +12253,9 @@ impl CommandInterpreter {
             expansion_changed |= self.cleanup_generated_indent(document)?;
         }
         self.retire_typing_context();
+        if let Some(range) = self.affected_change_marks(document) {
+            self.set_affected_change_marks(document, range.start, range.end);
+        }
         if let Some(session) = self.insert_session.take() {
             let last_inserted = session.last_inserted.clone();
             document.end_edit_group();
@@ -12870,6 +12880,7 @@ impl CommandInterpreter {
         }
         document.validate_hard_line_snapshot(&lines)?;
         document.apply_edits(edits)?;
+        self.set_affected_change_marks(document, start + current.content_range().len(), start + joined_len);
         self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
             start + last_join_offset,
         );
@@ -13837,6 +13848,9 @@ impl CommandInterpreter {
                 };
             }
         };
+        if let Some(range) = outcome.affected_marks {
+            self.set_affected_change_marks(document, range.start, range.end);
+        }
         if records_jump {
             if let Some(transaction) = outcome.model_transaction() {
                 let map = transaction.text_position_map();

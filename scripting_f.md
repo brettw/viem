@@ -23,31 +23,6 @@ differs.
 Some error numbers differ only because the oracle is 9.1 and the target is
 9.2 (E896 against E1531, for example). Those are not listed.
 
-## Registers and marks
-
-- `'[` and `']` differ from Vim after several changes. Each row shows
-  `'[` and `']` as line and column, in the lines `one`, `two words`, `three`
-  and `four` with `shiftwidth=2 expandtab`, starting at column 1 of line 2.
-
-  | Change | Vim | Viem |
-  | --- | --- | --- |
-  | `>>` | 2,1 to 2,11 | 2,1 to 2,2 |
-  | `3>>` | 2,1 to 4,6 | 2,1 to 4,2 |
-  | `J` | 2,10 to 2,16 | 2,10 to 2,10 |
-  | `3J` | 2,10 to 2,21 | 2,10 to 2,16 |
-  | `itext` | 2,1 to 2,5 | 2,5 to 2,4 |
-  | `A tail` | 2,10 to 2,15 | 2,1 to 2,14 |
-  | `oadded` | 3,1 to 3,6 | 2,1 to 3,5 |
-  | `Oabove` | 2,1 to 2,6 | 3,1 to 2,5 |
-  | `ccnew` | 2,1 to 2,4 | 2,4 to 2,3 |
-  | `:2,3s/o/0/g` | 2,1 to 3,1 | 2,3 to 2,6 |
-
-  Viem records the span of the edit's replacements
-  (`track_headless_marks` in `src/core/command/marks.rs`). Vim instead covers
-  whole shifted lines; ends a join and an Insert-mode change one past the last
-  character; starts an Insert-mode change where typing began; and covers a
-  substitute's whole range at column 1.
-
 ## Position and buffer builtins
 
 - `col([l, c])`, `virtcol([l, c])` and `charcol([l, c])` return 0,

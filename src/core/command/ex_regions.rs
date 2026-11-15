@@ -141,7 +141,10 @@ pub(super) fn prepare<R: ExRegisterReader + ?Sized>(
                 value,
             });
         }
-        ExAction::Join { .. } => prepare_join(document, context, range, command.bang, &mut plan)?,
+        ExAction::Join { .. } => {
+            prepare_join(document, context, range, command.bang, &mut plan)?;
+            plan.affected_marks = Some((ExAffectedMarkKind::Join, range.start.content.end..range.end.content.end));
+        }
         ExAction::Copy { .. } | ExAction::Move { .. } => {
             prepare_transfer(
                 document,
@@ -162,6 +165,7 @@ pub(super) fn prepare<R: ExRegisterReader + ?Sized>(
             list,
             ..
         } => {
+            plan.affected_marks = Some((ExAffectedMarkKind::Shift, range.start.content.start..range.end.content.end));
             prepare_whitespace(
                 document,
                 context,

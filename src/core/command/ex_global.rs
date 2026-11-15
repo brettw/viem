@@ -396,6 +396,9 @@ impl CommandInterpreter {
         // Preparation failures use the ordinary prefix-preserving replay. No
         // partial batch state or history has been published at this point.
         let outcome = commit_ex(document, &mut self.ex_state, plan).ok()?;
+        if let Some(range) = outcome.affected_marks {
+            self.set_affected_change_marks(document, range.start, range.end);
+        }
         let map = outcome.model_transactions().last().expect("fragment model request publishes a transaction").text_position_map();
         self.jumps = match jumps.into_iter().map(|anchor| mapped_anchor(map, anchor)
             .map_err(command_position_document_error).and_then(|at| at.ok_or(DocumentError::AmbiguousProjection)))

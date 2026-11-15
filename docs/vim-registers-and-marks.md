@@ -100,11 +100,19 @@ Mappings, abbreviations and script state are also per buffer; see
 
 | Mark | Location |
 | --- | --- |
-| `[` / `]` | First/last affected grapheme of the latest change or yank |
+| `[` / `]` | Bounds of the latest change or yank, following the command's Vim semantics |
 | `.` | Latest change position |
 | `^` | Position where Insert or Replace ended, before stepping back into Normal mode |
 | `'` / backtick | Position before the latest jump; repeated jumps exchange the two positions |
 | `A`–`Z` | Application-wide file marks set with `mA` through `mZ` |
+
+Shifts cover complete affected lines, ending on the last grapheme. Joins
+start at the end of the original first line and end one position past the
+joined text. Insert and Replace changes start where that insertion unit began
+and end at the caret before returning to Normal mode; opened lines start at
+the new line. Substitutions cover the whole addressed range at column 1,
+including unmatched lines and line breaks introduced by the replacement.
+Other changes and characterwise yanks end on their last affected grapheme.
 
 Apostrophe jumps select the first nonblank grapheme of the marked line;
 backtick jumps keep the exact marked position. Local mark motions also work

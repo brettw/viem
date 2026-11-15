@@ -7117,6 +7117,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                 let acting_kind = self.document.kind_for(self.views[&view_id].presentation);
                 let previous_focus = self.document.focus();
                 if let Some(range) = affected_range {
+                    let semantic_marks = (!history_navigation)
+                        .then(|| self.views[&view_id].commands.affected_change_marks(&self.document)).flatten();
                     let continuing = edit_group_depth_before > 0
                         && self.document.edit_group_generation() == edit_group_generation_before
                         && matches!(self.views[&view_id].commands.mode(), Mode::Insert | Mode::Replace);
@@ -7124,8 +7126,16 @@ impl<P: TextMeasurementProvider> Core<P> {
                         let kind = self.document.kind_for(view.presentation);
                         let translate = |offset| self.document.translate_offset(acting_kind, kind, offset);
                         let (Some(start), Some(end)) = (translate(range.start), translate(range.end)) else { continue };
+                        let semantic_marks = semantic_marks.as_ref().and_then(|range| {
+                            Some(crate::command::AffectedMarks {
+                                start: translate(range.start)?, end: translate(range.end)?,
+                            })
+                        });
                         self.document.set_focus(view.presentation);
                         view.commands.note_affected_range(&self.document, start.min(end)..start.max(end), continuing, !history_navigation);
+                        if let Some(range) = semantic_marks {
+                            view.commands.publish_affected_change_marks(range);
+                        }
                     }
                     self.document.set_focus(previous_focus);
                 }
