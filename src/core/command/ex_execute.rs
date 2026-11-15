@@ -1396,6 +1396,7 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
         }
         ExAction::File { path } => push_file(&mut plan, ExFileRequest::File { path: path.clone(), truncate: command.bang }),
         ExAction::DeleteMarks { .. } => return Err(ExExecuteError::UnsupportedCommand("mark deletion requires the command interpreter".into())),
+        ExAction::Mark { .. } => return Err(ExExecuteError::UnsupportedCommand("setting a mark requires the command interpreter".into())),
         ExAction::NoHighlight => plan.outcome.suppress_search_highlight = true,
         ExAction::Set(set) => prepare_set(document, context, set.scope, &set.operation, &mut plan)?,
     }

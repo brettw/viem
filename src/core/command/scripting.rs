@@ -252,7 +252,11 @@ impl CommandInterpreter {
         }
     }
 
+    /// `:let @r = value`. Unlike `setreg()`, a List is not a register value.
     pub(crate) fn set_script_register(&mut self, name: char, value: &Value, append: bool) -> Result<(), VimError> {
+        if matches!(value, Value::List(_)) {
+            return Err(VimError::new(730, "Using a List as a String"));
+        }
         self.set_script_register_with_type(name, value, append, None, None)
     }
 
@@ -276,6 +280,10 @@ impl CommandInterpreter {
             self.last_expression = Some(value.to_text()?);
             return Ok(());
         }
+        // Scripts cannot write read-only or unknown registers.
+        if !crate::command::registers::is_valid_register(name) || matches!(name, '.' | '%' | ':' | '#' | '~') {
+            return Err(VimError::new(354, format!("Invalid register name: '{name}'")));
+        }
         let append = append || name.is_ascii_uppercase();
         let name = name.to_ascii_lowercase();
         let empty_list = matches!(value, Value::List(list) if list.len() == 0);
@@ -289,7 +297,7 @@ impl CommandInterpreter {
             let value = script_register_value(value, kind)?.with_block_width(width);
             self.write_script_register(name, value)
         };
-        result.map_err(|error| VimError::plain(format!("{error:?}")))
+        result.map_err(|error| VimError::plain(error.to_string()))
     }
 
     /// `setreg()` with the Dictionary `getreginfo()` returns. Without
@@ -351,6 +359,40 @@ impl CommandInterpreter {
         self.script_cursor_position(document).map_or(1, |(_, column)| column.byte())
     }
 
+    /// `setpos("'x", ...)`: set a mark at a one-based physical line and byte
+    /// column. Unlike Vim, marks follow the text, so a line past the end
+    /// fails and a column past the end of the line is clamped to it.
+    pub(crate) fn script_set_mark(&mut self, document: &Document, name: char, line: usize, column: usize) -> bool {
+        if !(marks::valid_mark(name) || name == '"') || matches!(name, '.' | '^') {
+            return false;
+        }
+        let Some(index) = line.checked_sub(1).filter(|index| *index < document.physical_source_line_number_count()) else { return false };
+        let Ok(physical) = document.physical_line(index) else { return false };
+        let text = physical.content_text();
+        let mut column = column.saturating_sub(1).min(text.len());
+        while !text.is_char_boundary(column) {
+            column -= 1;
+        }
+        let source = physical.content_range.start + document.encoding().encoded_text_len(&text[..column]);
+        let Ok(offset) = document.visible_point_for_source(source.min(physical.content_range.end), true) else { return false };
+        match name {
+            '<' | '>' => {
+                self.marks.insert(name, offset);
+                self.set_line_end_mark(name, false);
+                // Keep `gv` selecting what the marks now name.
+                if let Some(memory) = self.last_visual.as_mut() {
+                    let start_is_anchor = memory.anchor <= memory.active;
+                    match (name, start_is_anchor) {
+                        ('<', true) | ('>', false) => memory.anchor = offset,
+                        _ => memory.active = offset,
+                    }
+                }
+            }
+            _ => self.set_named_mark_at(name, offset),
+        }
+        true
+    }
+
     /// The one-based byte column of one-based character `column` on
     /// physical `line`, for `setcharpos()` and `setcursorcharpos()`.
     pub(crate) fn script_byte_column_for_character(&self, document: &Document, line: usize, column: usize) -> usize {
@@ -399,10 +441,18 @@ impl CommandInterpreter {
     }
 
     fn script_mark_position(&self, document: &Document, text: &str) -> Option<(i64, LineColumn)> {
-        let offset = text.chars().nth(1).and_then(|name| self.mark_offset(name))?;
+        let name = text.chars().nth(1)?;
+        let offset = self.mark_offset(name)?;
         let source = document.projection().source_insertion_point(offset, true)?;
         let line = document.physical_line(document.physical_line_index_at_source(source).ok()?).ok()?;
-        Some((line.index as i64 + 1, LineColumn::at_source(document, &line, source)))
+        let mut column = LineColumn::at_source(document, &line, source);
+        // Vim ends a linewise Visual selection and a linewise yank at the
+        // maximum column, which reads as the end of the line.
+        if self.line_end_marks.contains(&name) {
+            column.offset = column.text.len();
+            column.line_end = true;
+        }
+        Some((line.index as i64 + 1, column))
     }
 
     /// The position `col()`, `getpos()` and their relatives read: `.`, `$`
@@ -474,15 +524,28 @@ impl CommandInterpreter {
                     Some(position) if name != "getcurpos" => position.to_text()?,
                     _ => ".".into(),
                 };
+                // A file mark names its buffer; Viem has only buffer 1.
+                let buffer = i64::from(text.len() == 2 && text.starts_with('\'') && text.as_bytes()[1].is_ascii_uppercase());
                 let (line, column) = match self.script_column_position(document, &text) {
                     Some((line, column)) if text != "$" => {
-                        let number = if name == "getcharpos" { column.character() } else { column.byte() };
+                        let number = match name {
+                            _ if column.line_end && name != "getcharpos" => MAXIMUM_COLUMN,
+                            // Vim reads the maximum column as the last character.
+                            _ if column.line_end => column.character() - 1,
+                            "getcharpos" => column.character(),
+                            _ => column.byte(),
+                        };
                         (line, number)
                     }
                     _ if text.starts_with('\'') => (0, 0),
-                    _ => (self.script_position_line(document, &Value::from(text.as_str()))?, 1),
+                    _ => match self.script_position_line(document, &Value::from(text.as_str()))? {
+                        // An unknown position is all zeros.
+                        0 => (0, 0),
+                        line => (line, 1),
+                    },
                 };
-                let mut items = vec![Value::Number(0), line.into(), column.into(), Value::Number(0)];
+                let buffer = if line == 0 { 0 } else { buffer };
+                let mut items = vec![Value::Number(buffer), line.into(), column.into(), Value::Number(0)];
                 if name == "getcurpos" {
                     let want = self.script_cursor_position(document).map_or(1, |(_, column)| column.cursor_want(self.script_tabstop()));
                     items.push(want.into());
@@ -928,7 +991,8 @@ fn setreg_options(options: &str) -> Result<(bool, Option<RegisterKind>, Option<u
                 }
                 width = digits.parse().ok().filter(|width| *width > 0);
             }
-            other => return Err(VimError::plain(format!("E475: Invalid argument: {other}"))),
+            // Vim ignores options it does not know.
+            _ => {}
         }
     }
     Ok((append, kind, width))
@@ -1405,7 +1469,12 @@ impl CommandInterpreter {
 struct LineColumn {
     text: String,
     offset: usize,
+    /// A mark at Vim's maximum column, after the end of the line.
+    line_end: bool,
 }
+
+/// Vim's `MAXCOL` as script functions report it.
+const MAXIMUM_COLUMN: i64 = 2147483647;
 
 impl LineColumn {
     fn at_source(document: &Document, line: &crate::document::PhysicalSourceLine, source: usize) -> Self {
@@ -1420,7 +1489,7 @@ impl LineColumn {
             }
             at += encoding.scalar_source_width(character);
         }
-        Self { text, offset }
+        Self { text, offset, line_end: false }
     }
 
     /// `col()`: one-based UTF-8 byte column.

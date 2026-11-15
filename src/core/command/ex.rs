@@ -142,6 +142,8 @@ pub enum ExAction {
     Retab { tabstop: Option<u64>, indent_only: bool },
     Align { alignment: ExAlignment, width: Option<u64> },
     DeleteMarks { names: Vec<char> },
+    /// `:mark x` and `:kx`: set a mark at the first non-blank of a line.
+    Mark { name: char },
     Only,
     Read { path: Option<String> },
     File { path: Option<String> },
@@ -513,6 +515,11 @@ impl<'a> Parser<'a> {
         let command_offset = self.at;
         let command = if matches!(self.peek(), Some('&' | '~' | '>' | '<' | '#')) {
             self.bump().unwrap().to_string()
+        } else if self.peek() == Some('k') && !self.input[self.at..].starts_with("kee") {
+            // As in Vim, `:k` may be followed directly by its mark name;
+            // only the `:keep...` modifiers start with "kee".
+            self.bump();
+            "k".to_owned()
         } else {
             let start = self.at;
             while self.peek().is_some_and(|ch| ch.is_ascii_alphabetic()) {
@@ -531,6 +538,8 @@ impl<'a> Parser<'a> {
         };
         let name = (if command == "E" {
             Ok(CommandName::EditNewWindow)
+        } else if command == "k" {
+            Ok(CommandName::Mark)
         } else {
             resolve_command(&command)
         })
@@ -811,6 +820,15 @@ impl<'a> Parser<'a> {
                 width: if args.is_empty() { None } else { Some(parse_number(args, args_offset)?) },
             }),
             CommandName::DeleteMarks => Ok(ExAction::DeleteMarks { names: parse_mark_deletions(args, args_offset)? }),
+            CommandName::Mark => {
+                let name = args.trim();
+                let mut chars = name.chars();
+                match (chars.next(), chars.next()) {
+                    (None, _) => Err(ExParseError { offset: args_offset, kind: ExParseErrorKind::MissingArgument("mark name") }),
+                    (Some(name), None) if name.is_ascii_alphabetic() || matches!(name, '\'' | '`') => Ok(ExAction::Mark { name }),
+                    _ => Err(ExParseError { offset: args_offset, kind: ExParseErrorKind::UnexpectedArgument(name.into()) }),
+                }
+            }
             CommandName::Only => no_args(ExAction::Only),
             CommandName::Read => {
                 if args.starts_with('!') || args.starts_with("++") {
@@ -919,7 +937,7 @@ enum CommandName {
     Registers,
     Jumps,
     Print, Number, List, ShiftRight, ShiftLeft, Retab, Left, Right, Center,
-    DeleteMarks, Only, Read, Source, File,
+    DeleteMarks, Mark, Only, Read, Source, File,
     NoHighlight,
     Set,
     SetLocal,
@@ -987,7 +1005,7 @@ impl CommandName {
             Self::Print => "print", Self::Number => "number", Self::List => "list",
             Self::ShiftRight => ">", Self::ShiftLeft => "<", Self::Retab => "retab",
             Self::Left => "left", Self::Right => "right", Self::Center => "center",
-            Self::DeleteMarks => "delmarks", Self::Only => "only", Self::Read => "read",
+            Self::DeleteMarks => "delmarks", Self::Mark => "mark", Self::Only => "only", Self::Read => "read",
             Self::Source => "source", Self::File => "file",
             Self::NoHighlight => "nohlsearch",
             Self::Set => "set",
@@ -1023,7 +1041,7 @@ impl CommandName {
 
     fn accepts_range(self) -> bool {
         matches!(self, Self::Cquit | Self::Split | Self::VSplit | Self::NewPane | Self::VNew | Self::Window | Self::Resize | Self::Print | Self::Number | Self::List | Self::ShiftRight | Self::ShiftLeft
-            | Self::Retab | Self::Left | Self::Right | Self::Center | Self::Read) ||
+            | Self::Retab | Self::Left | Self::Right | Self::Center | Self::Read | Self::Mark) ||
         matches!(self, Self::Next | Self::Previous | Self::Argument | Self::WriteNext | Self::WritePrevious) || matches!(
             self,
             Self::Global
@@ -1064,6 +1082,7 @@ const COMMANDS: &[CommandSpec] = &[
     CommandSpec { name: CommandName::Right, spelling: "right", minimum: 2 },
     CommandSpec { name: CommandName::Center, spelling: "center", minimum: 2 },
     CommandSpec { name: CommandName::DeleteMarks, spelling: "delmarks", minimum: 4 },
+    CommandSpec { name: CommandName::Mark, spelling: "mark", minimum: 2 },
     CommandSpec { name: CommandName::Only, spelling: "only", minimum: 2 },
     CommandSpec { name: CommandName::Read, spelling: "read", minimum: 1 },
     CommandSpec { name: CommandName::Source, spelling: "source", minimum: 2 },
@@ -1237,10 +1256,11 @@ const COMMANDS: &[CommandSpec] = &[
         spelling: "goto",
         minimum: 2,
     },
+    // `:ma` and `:mar` are `:mark`; `:marks` is never abbreviated.
     CommandSpec {
         name: CommandName::Marks,
         spelling: "marks",
-        minimum: 3,
+        minimum: 5,
     },
     CommandSpec {
         name: CommandName::Registers,

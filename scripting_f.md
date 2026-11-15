@@ -25,17 +25,14 @@ Some error numbers differ only because the oracle is 9.1 and the target is
 
 ## Registers and marks
 
-- **Value forms:**
-  - `let @a = ['x', 'y']` should be E730.
-  - `setreg('!', 'x')` succeeds instead of E354.
-  - `setreg('a', 'x', 'q')` reports E475; Vim returns 0.
-- **Marks:**
-  - `setpos()` on `'a`, `'A`, `'<` and `'>` does nothing and returns -1.
-  - `:mark b` is parsed as `:marks`, `2mark d` is rejected, and `:k` is
-    missing.
-  - `''` and `'A` lose their column.
-  - Linewise `'>` and `']` should report column 2147483647.
-  - `getpos('x')` returns `[0, 0, 1, 0]` (Vim: all zeros).
+- After a linewise put, `']` is one column past Vim's. With `two words`
+  yanked by `:2yank`, `normal! ggp` gives `getpos("']")` `[0, 2, 9, 0]` in
+  Vim, on the last character, but `[0, 2, 10, 0]` in Viem, on the line ending.
+  `note_affected_range` in `src/core/command/marks.rs` takes the grapheme
+  before the range's end, and a linewise range ends after its line break. The
+  line is right, so `:'[,']` is unaffected. A characterwise change that ends
+  on a line break (`v$y`) and the linewise yank's maximum column follow
+  different rules in Vim, so a fix should apply only to linewise changes.
 
 ## Position and buffer builtins
 

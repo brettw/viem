@@ -1250,6 +1250,9 @@ pub(crate) struct BufferCommandState {
     last_command_line: Option<String>,
     last_expression: Option<String>,
     affected_insert_unit: Option<u64>,
+    /// Marks at Vim's maximum column: `']` after a linewise yank and `'>`
+    /// after a linewise Visual selection. `getpos()` reports that column.
+    line_end_marks: std::collections::BTreeSet<char>,
     expression_history: Vec<String>,
     ex_state: ExExecutionState,
     fileformats: Vec<FileFormat>,
@@ -1333,6 +1336,9 @@ pub struct CommandInterpreter {
     last_command_line: Option<String>,
     last_expression: Option<String>,
     affected_insert_unit: Option<u64>,
+    /// Marks at Vim's maximum column: `']` after a linewise yank and `'>`
+    /// after a linewise Visual selection. `getpos()` reports that column.
+    line_end_marks: std::collections::BTreeSet<char>,
     expression_history: Vec<String>,
     ex_state: ExExecutionState,
     wrap: bool,
@@ -1546,6 +1552,7 @@ impl CommandInterpreter {
             last_command_line: None,
             last_expression: None,
             affected_insert_unit: None,
+            line_end_marks: std::collections::BTreeSet::new(),
             expression_history: Vec::new(),
             ex_state: ExExecutionState::default(),
             wrap: false,
@@ -1631,6 +1638,7 @@ impl CommandInterpreter {
             last_command_line: self.last_command_line.clone(),
             last_expression: self.last_expression.clone(),
             affected_insert_unit: self.affected_insert_unit,
+            line_end_marks: self.line_end_marks.clone(),
             expression_history: self.expression_history.clone(),
             ex_state: self.ex_state.clone(),
             fileformats: self.fileformats.clone(),
@@ -1662,6 +1670,7 @@ impl CommandInterpreter {
         self.last_command_line.clone_from(&state.last_command_line);
         self.last_expression.clone_from(&state.last_expression);
         self.affected_insert_unit = state.affected_insert_unit;
+        self.line_end_marks.clone_from(&state.line_end_marks);
         self.expression_history.clone_from(&state.expression_history);
         self.ex_state.clone_from(&state.ex_state);
         self.fileformats.clone_from(&state.fileformats);
@@ -7975,6 +7984,7 @@ impl CommandInterpreter {
         if let Some(memory) = self.visual_block_memory() {
             self.marks.insert('<', memory.anchor.min(memory.active));
             self.marks.insert('>', memory.anchor.max(memory.active));
+            self.set_line_end_mark('>', false);
             self.last_visual = Some(memory);
         }
     }
@@ -9668,6 +9678,7 @@ impl CommandInterpreter {
                 }
                 self.yank_register(register, value);
                 self.note_affected_range(document, extent.range.clone(), false, false);
+                self.set_line_end_mark(']', extent.kind == MotionKind::Linewise);
                 self.cursor = if extent.kind != MotionKind::Linewise { extent.range.start }
                     else { yank_cursor_after_motion(document.text(), &lines, old_cursor, &extent) };
                 Ok(CommandOutput {
@@ -13428,6 +13439,7 @@ impl CommandInterpreter {
         if let Some(memory) = self.last_visual {
             self.marks.insert('<', memory.anchor.min(memory.active));
             self.marks.insert('>', memory.anchor.max(memory.active));
+            self.set_line_end_mark('>', memory.mode == Mode::VisualLine);
         }
     }
 
@@ -13435,6 +13447,7 @@ impl CommandInterpreter {
         if let Some(anchor) = self.visual_anchor {
             self.marks.insert('<', anchor.min(self.cursor));
             self.marks.insert('>', anchor.max(self.cursor));
+            self.set_line_end_mark('>', self.mode == Mode::VisualLine);
             self.last_visual = Some(VisualMemory {
                 exclusive: self.selection_exclusive,
                 mode: self.mode,
@@ -13696,6 +13709,16 @@ impl CommandInterpreter {
             Err(ex_addresses::ExAddressResolutionError::Layout(error)) => return layout_error(error),
         };
         let address_search = addresses.search.clone();
+        if let ExAction::Mark { name } = command.action {
+            // Vim marks the first non-blank of the range's last line.
+            let start = match &addresses.range {
+                Some(range) => range.end.content.start,
+                None => document.hard_line_snapshot().line_at_offset(self.cursor).map_or(self.cursor, |line| line.content_range().start),
+            };
+            let offset = first_nonblank_document(document, &document.hard_line_snapshot(), start);
+            self.set_named_mark_at(name, offset);
+            return CommandOutput { mode_changed: true, ..CommandOutput::complete() };
+        }
         if matches!(command.action, ExAction::Global { .. }) {
             return self.execute_ex_global(document, &command, &addresses);
         }
@@ -14225,6 +14248,7 @@ impl CommandInterpreter {
                 ExRegisterEffectKind::Yank => {
                     self.yank_register(effect.requested, value);
                     self.note_affected_range(document, effect.range.clone(), false, false);
+                    self.set_line_end_mark(']', true);
                 },
                 ExRegisterEffectKind::Delete => {
                     self.delete_register(effect.requested, value, DeletionClass::Large)

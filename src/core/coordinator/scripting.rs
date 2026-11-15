@@ -388,13 +388,30 @@ impl<P: TextMeasurementProvider> ScriptHost for CoreScriptHost<'_, P> {
             "cursor" | "setcharpos" | "setcursorcharpos" | "setpos" => (|| {
                 let args = if name == "setpos" || name == "setcharpos" {
                     let target = args.first().map(|value| value.to_text()).transpose()?.unwrap_or_default();
+                    let position = match args.get(1) {
+                        Some(Value::List(list)) => list.snapshot().into_iter().skip(1).collect::<Vec<_>>(),
+                        _ => return Ok(Value::Number(-1)),
+                    };
+                    let mark = target.strip_prefix('\'').filter(|name| name.chars().count() == 1).and_then(|name| name.chars().next());
+                    if let Some(mark) = mark {
+                        let Some((line, column)) = Self::cursor_target(&position)? else { return Ok(Value::Number(-1)) };
+                        let column = if name == "setcharpos" {
+                            self.commands().script_byte_column_for_character(&self.core.document, line, column)
+                        } else {
+                            column
+                        };
+                        let view_id = self.view_id;
+                        let core = &mut *self.core;
+                        let set = core.views.get_mut(&view_id).expect("script view").commands.script_set_mark(&core.document, mark, line, column);
+                        if set {
+                            core.publish_buffer_commands(view_id);
+                        }
+                        return Ok(Value::Number(if set { 0 } else { -1 }));
+                    }
                     if target != "." {
                         return Ok(Value::Number(-1));
                     }
-                    match args.get(1) {
-                        Some(Value::List(list)) => list.snapshot().into_iter().skip(1).collect::<Vec<_>>(),
-                        _ => return Ok(Value::Number(-1)),
-                    }
+                    position
                 } else {
                     args.to_vec()
                 };

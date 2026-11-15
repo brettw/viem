@@ -46,6 +46,7 @@ pub(super) fn allowed(action: &ExAction) -> bool {
             | ExAction::Retab { .. }
             | ExAction::Align { .. }
             | ExAction::DeleteMarks { .. }
+            | ExAction::Mark { .. }
     )
 }
 

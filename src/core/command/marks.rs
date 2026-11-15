@@ -28,6 +28,7 @@ impl CommandInterpreter {
         } else {
             range.start
         };
+        self.line_end_marks.remove(&']');
         let continuing_insert = continuing_insert
             && self.affected_insert_unit == Some(document.edit_group_generation());
         self.affected_insert_unit = change.then(|| document.edit_group_generation());
@@ -55,11 +56,24 @@ impl CommandInterpreter {
             _ => CommandOutput::unsupported("invalid mark name"),
         }
     }
+    /// Record whether mark `name` sits at Vim's maximum column.
+    pub(crate) fn set_line_end_mark(&mut self, name: char, line_end: bool) {
+        if line_end {
+            self.line_end_marks.insert(name);
+        } else {
+            self.line_end_marks.remove(&name);
+        }
+    }
     pub(super) fn set_named_mark(&mut self, name: char) {
+        self.set_named_mark_at(name, self.cursor);
+    }
+    /// Set mark `name` at text `offset`, as `m` does at the cursor.
+    pub(super) fn set_named_mark_at(&mut self, name: char, offset: usize) {
         if canonical_mark(name) == '\'' {
             self.previous_jump_anchor = None;
         }
-        self.marks.insert(canonical_mark(name), self.cursor);
+        self.set_line_end_mark(canonical_mark(name), false);
+        self.marks.insert(canonical_mark(name), offset);
         if name.is_ascii_uppercase() {
             let generation = NEXT_FILE_MARK
                 .fetch_update(

@@ -392,7 +392,9 @@ struct Header {
     arg: usize,
 }
 
-fn parse_header(src: &[u8], col: usize) -> Result<Option<Header>, VimError> {
+/// `legacy` enables legacy script's `:k`, which may be followed directly by
+/// its mark name (`:ka`); Vim9 script has no `:k`.
+fn parse_header(src: &[u8], col: usize, legacy: bool) -> Result<Option<Header>, VimError> {
     let mut modifiers = Modifiers::default();
     let at = parse_modifiers(src, col, &mut modifiers)?;
     let mut at = skip_white(src, at);
@@ -411,7 +413,10 @@ fn parse_header(src: &[u8], col: usize) -> Result<Option<Header>, VimError> {
     }
     at = skip_white(src, at);
     let name_start = at;
-    if at < src.len() && src[at].is_ascii_alphabetic() {
+    if legacy && src.get(at) == Some(&b'k') && !src[at..].starts_with(b"kee") && src.get(at + 1).is_some_and(u8::is_ascii_alphabetic) {
+        // Only the `:keep...` modifiers start with "kee".
+        at += 1;
+    } else if at < src.len() && src[at].is_ascii_alphabetic() {
         let upper = src[at].is_ascii_uppercase();
         while at < src.len() && (src[at].is_ascii_alphabetic() || (upper && src[at].is_ascii_digit())) {
             at += 1;
@@ -439,7 +444,7 @@ fn trim(bytes: &[u8]) -> &[u8] {
 /// The full name of the Ex command `src` starts with, after modifiers and
 /// a range: `Some("")` for a range alone, `None` when it does not parse.
 pub(crate) fn command_name(src: &[u8]) -> Option<String> {
-    let header = parse_header(src, 0).ok()??;
+    let header = parse_header(src, 0, false).ok()??;
     let name = String::from_utf8_lossy(&header.name).into_owned();
     Some(super::excmds::lookup(&name).map_or(name, str::to_owned))
 }
@@ -449,7 +454,7 @@ pub(crate) fn command_name(src: &[u8]) -> Option<String> {
 /// and `:substitute` looks for one only after its pattern and replacement.
 fn vim9_command_comment_end(src: &[u8], col: usize) -> usize {
     let generic = super::source::vim9_comment_end_from(src, col);
-    let Ok(Some(header)) = parse_header(src, col) else { return generic };
+    let Ok(Some(header)) = parse_header(src, col, false) else { return generic };
     let Some(full) = std::str::from_utf8(&header.name).ok().and_then(super::excmds::lookup) else { return generic };
     if full == "syntax" || super::excmds::sees_bar(full) {
         return src.len();
@@ -469,7 +474,7 @@ pub(crate) fn execute_command(rt: &mut Runtime, host: &mut dyn ScriptHost, line:
         &normalized
     } else {line};
     let src = line.as_bytes();
-    let header = match parse_header(src, col) {
+    let header = match parse_header(src, col, !rt.vim9()) {
         Ok(Some(header)) => header,
         Ok(None) => return outcome(Next::NextLine, Ok(())),
         Err(err) => return if executing { error(Next::NextLine, err) } else { outcome(Next::NextLine, Ok(())) },
@@ -629,7 +634,7 @@ fn host_command(src: &[u8], header: &Header, full: &'static str, argument: &[u8]
 /// the result is exactly the command the engine would give the host.
 pub fn single_host_command(state: &super::ScriptState, line: &str) -> Option<HostCommand> {
     let src = line.as_bytes();
-    let header = parse_header(src, 0).ok()??;
+    let header = parse_header(src, 0, true).ok()??;
     let orientation_only = Modifiers { vertical: false, horizontal: false, ..header.modifiers.clone() };
     if orientation_only != Modifiers::default() {
         return None;

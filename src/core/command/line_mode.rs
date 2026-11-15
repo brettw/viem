@@ -1082,7 +1082,8 @@ impl CommandInterpreter {
                 .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?;
             if operator == Operator::Yank {
                 self.yank_register(register, value);
-            self.note_affected_range(document, extent.text.clone(), false, false);
+                self.note_affected_range(document, extent.text.clone(), false, false);
+                self.set_line_end_mark(']', extent.whole);
                 return Ok(CommandOutput::complete());
             }
             let transform = match operator {
@@ -1198,7 +1199,8 @@ impl CommandInterpreter {
             };
             if operator == Operator::Yank {
                 self.yank_register(register, value);
-            self.note_affected_range(document, extent.text.clone(), false, false);
+                self.note_affected_range(document, extent.text.clone(), false, false);
+                self.set_line_end_mark(']', extent.whole);
                 return Ok(CommandOutput::complete());
             }
             if operator == Operator::Change

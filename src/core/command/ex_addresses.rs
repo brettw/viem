@@ -184,7 +184,8 @@ pub(super) fn ex_command_requires_visual_layout(command: &ExCommand, nested_glob
         | ExAction::Join { .. } | ExAction::Sort(_) | ExAction::Normal { .. }
         | ExAction::Substitute(_) | ExAction::RepeatSubstitute { .. }
         | ExAction::Print { .. } | ExAction::Shift { .. } | ExAction::Retab { .. }
-        | ExAction::Align { .. } | ExAction::Global { .. } | ExAction::Read { .. } => contextual_range,
+        | ExAction::Align { .. } | ExAction::Global { .. } | ExAction::Read { .. }
+        | ExAction::Mark { .. } => contextual_range,
         _ => false,
     }
 }
@@ -248,7 +249,7 @@ impl<'a> AddressResolver<'a> {
             | ExAction::Sort(_) | ExAction::Normal { .. } | ExAction::Substitute(_)
             | ExAction::RepeatSubstitute { .. } | ExAction::Print { .. }
             | ExAction::Shift { .. } | ExAction::Retab { .. } | ExAction::Align { .. }
-            | ExAction::Global { .. } | ExAction::Read { .. });
+            | ExAction::Global { .. } | ExAction::Read { .. } | ExAction::Mark { .. });
         // File/pane/byte-command pseudo-ranges are not line addresses.
         let uses_optional_range = matches!(&command.action,
             ExAction::Write { .. } | ExAction::WriteQuit { .. });

@@ -120,3 +120,11 @@ retain a physical file location, resolved against the reopened file; an invalid
 location fails instead of applying an old snapshot offset. The registry retains
 at most 26 locations and paths, without keeping closed documents alive. These
 marks last for the application session and are not persisted across restarts.
+
+`:mark x` and `:kx` set a mark at the first nonblank of the range's last line,
+and `setpos()` and `setcharpos()` set letter marks and `'<`, `'>`, `'[`, `']`
+and `''`. Because marks follow the text, `setpos()` cannot place one past the
+end: a line past the last fails with -1, and a column past the end of its line
+is clamped to the end, where Vim stores either as given. As in Vim,
+`getpos()` reports column 2147483647 for `'>` after a linewise Visual
+selection and for `']` after a linewise yank.

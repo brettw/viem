@@ -270,7 +270,8 @@ fn visual_mark_setting_and_script_positions_use_current_locations() {
     key(&mut core, view, Key::Escape);
     let output = ex(&mut core, view, "echo getpos(\"'A\") col(\"'A\")");
     assert!(
-        format!("{output:?}").contains("[0, 2, 3, 0] 3"),
+        // A file mark names its buffer, as in Vim.
+        format!("{output:?}").contains("[1, 2, 3, 0] 3"),
         "{output:?}"
     );
     ex(&mut core, view, "delmarks A");
@@ -509,6 +510,59 @@ fn getreginfo_and_setreg_dictionaries_round_trip_registers() {
     let outcome = ex(&mut core, view, "call setreg('x', {'regcontents': ['a'], 'regtype': 'q'})");
     assert!(matches!(outcome.command.as_ref().map(|command| &command.status), Some(CommandStatus::Error(text)) if text.contains("E475")), "{outcome:?}");
     assert_eq!(echo(&mut core, "echo getreginfo('x') string(getreginfo('='))"), ["{} {'isunnamed': v:false, 'regcontents': [''], 'regtype': 'v'}"]);
+}
+
+#[test]
+fn script_register_writes_reject_lists_and_invalid_names() {
+    let (mut core, view) = editor("one");
+    let error = |core: &mut Editor, line: &str| match ex(core, view, line).command.map(|command| command.status) {
+        Some(CommandStatus::Error(text)) => text,
+        other => panic!("{line}: expected an error, got {other:?}"),
+    };
+    assert!(error(&mut core, "let @a = ['x']").contains("E730"));
+    for name in ["!", "?", "$", ":", ".", "%", "~"] {
+        assert!(error(&mut core, &format!("call setreg('{name}', 'x')")).contains("E354"), "{name}");
+    }
+    assert!(error(&mut core, "let @: = 'x'").contains("E354"));
+    // Unknown setreg() options are ignored.
+    assert_eq!(messages(&ex(&mut core, view, "echo setreg('a', 'x', 'q') getreg('a') getregtype('a')")), ["0 x v"]);
+}
+
+#[test]
+fn setpos_sets_marks_and_mark_commands_use_the_first_nonblank() {
+    let (mut core, view) = editor("one\n  two words\nthree");
+    let echo = |core: &mut Editor, line: &str| messages(&ex(core, view, line));
+    assert_eq!(echo(&mut core, "echo setpos(\"'a\", [0, 2, 3, 0]) getpos(\"'a\")"), ["0 [0, 2, 3, 0]"]);
+    // A file mark names its buffer.
+    assert_eq!(echo(&mut core, "echo setpos(\"'A\", [0, 3, 2, 0]) getpos(\"'A\")"), ["0 [1, 3, 2, 0]"]);
+    assert_eq!(echo(&mut core, "echo setcharpos(\"'b\", [0, 2, 4, 0]) getpos(\"'b\")"), ["0 [0, 2, 4, 0]"]);
+    assert_eq!(echo(&mut core, "echo setpos(\"'<\", [0, 1, 2, 0]) setpos(\"'>\", [0, 2, 4, 0]) getpos(\"'<\") getpos(\"'>\")"),
+        ["0 0 [0, 1, 2, 0] [0, 2, 4, 0]"]);
+    // Marks follow the text, so they cannot be placed past its end.
+    assert_eq!(echo(&mut core, "echo setpos(\"'z\", [0, 9, 1, 0]) setpos(\"'y\", [0, 1, 99, 0]) getpos(\"'y\")"), ["-1 0 [0, 1, 4, 0]"]);
+    keys(&mut core, view, "G");
+    ex(&mut core, view, "mark c | 2mark d | 1k e | 2kf");
+    assert_eq!(echo(&mut core, "echo getpos(\"'c\") getpos(\"'d\") getpos(\"'e\") getpos(\"'f\")"),
+        ["[0, 3, 1, 0] [0, 2, 3, 0] [0, 1, 1, 0] [0, 2, 3, 0]"]);
+    assert_eq!(echo(&mut core, "echo getpos('x') getpos('nosuch') getpos(\"'Q\")"), ["[0, 0, 0, 0] [0, 0, 0, 0] [0, 0, 0, 0]"]);
+}
+
+#[test]
+fn linewise_visual_and_yank_marks_report_the_maximum_column() {
+    let (mut core, view) = editor("one\ntwo words\nthree");
+    let echo = |core: &mut Editor, line: &str| messages(&ex(core, view, line));
+    keys(&mut core, view, "Vjy");
+    assert_eq!(echo(&mut core, "echo getpos(\"'>\") getpos(\"']\") col(\"'>\") getcharpos(\"'>\") getpos(\"'<\")"),
+        ["[0, 2, 2147483647, 0] [0, 2, 2147483647, 0] 10 [0, 2, 9, 0] [0, 1, 1, 0]"]);
+    keys(&mut core, view, "ggyiw");
+    assert_eq!(echo(&mut core, "echo getpos(\"']\") getpos(\"'>\")"), ["[0, 1, 3, 0] [0, 2, 2147483647, 0]"]);
+    ex(&mut core, view, "2yank");
+    assert_eq!(echo(&mut core, "echo getpos(\"']\")"), ["[0, 2, 2147483647, 0]"]);
+    // A column given to setpos() replaces the maximum column.
+    ex(&mut core, view, "call setpos(\"'>\", [0, 2, 4, 0])");
+    assert_eq!(echo(&mut core, "echo getpos(\"'>\")"), ["[0, 2, 4, 0]"]);
+    keys(&mut core, view, "jVd");
+    assert_eq!(echo(&mut core, "echo getpos(\"']\")"), ["[0, 2, 1, 0]"]);
 }
 
 #[test]
