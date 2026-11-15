@@ -5,7 +5,7 @@
 //! undo grouping and nested replays (`:normal`) behave as for mappings.
 use super::*;
 use crate::command::ex_execute::ExInfoRequest;
-use crate::command::scripting::{fold_script_messages, split_set_command, status_error, ScriptAction, ScriptPlan};
+use crate::command::scripting::{fold_script_messages, script_line_source, split_set_command, status_error, ScriptAction, ScriptPlan};
 use crate::vimscript::value::Value;
 use crate::vimscript::{EvalResult, Fail, HostCommand, Message, OptionScope, RunState, Runtime, ScriptHost, VimError};
 
@@ -192,10 +192,12 @@ impl<P: TextMeasurementProvider> CoreScriptHost<'_, P> {
         Ok(Some((line as usize, column.max(1) as usize)))
     }
 
+    /// Line values for `setline()` and `append()`, as source text.
     fn lines_argument(value: Option<&Value>) -> EvalResult<Vec<String>> {
+        let line = |value: &Value| value.to_text().map(|text| script_line_source(&text));
         Ok(match value {
-            Some(Value::List(list)) => list.snapshot().iter().map(|item| item.to_text()).collect::<Result<_, _>>()?,
-            Some(value) => vec![value.to_text()?],
+            Some(Value::List(list)) => list.snapshot().iter().map(line).collect::<Result<_, _>>()?,
+            Some(value) => vec![line(value)?],
             None => Vec::new(),
         })
     }
@@ -223,7 +225,7 @@ impl<P: TextMeasurementProvider> CoreScriptHost<'_, P> {
         let commands = self.commands();
         let count = document.physical_source_line_number_count().max(1);
         let line_text = |line: usize| -> String {
-            document.physical_line(line - 1).map(|physical| physical.text.trim_end_matches(['\n', '\r']).to_string()).unwrap_or_default()
+            document.physical_line(line - 1).map(|physical| physical.content_text().to_string()).unwrap_or_default()
         };
         let cursor_line = (commands.script_cursor_line(document).max(1) as usize).min(count);
         let cursor_column = commands.script_cursor_column(document).max(1) as usize - 1;

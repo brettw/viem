@@ -8,30 +8,6 @@ There are 27 reproducer files: 25 safe probes and two isolated crash probes. **A
 
 Each snippet below is a separate script. Unless specified otherwise, line-oriented probes initialize their own content. P1 denotes crashes or silent content/state changes requiring early attention; P2 denotes other reproducible compatibility failures. The findings are ordered by impact, not by implementation sequence.
 
-**3. [P1] `getline()` drops literal carriage returns in Unix files**
-
-```vim
-set fileformat=unix
-call setline(1, "x\r")
-echo strlen(getline(1)) char2nr(getline(1)[1])
-```
-
-Vim prints `2 13`; Viem prints `1 0`. The source still contains the authored CR, but `getline()` trims every trailing CR and LF, rather than removing only the actual line delimiter. Consequently, the ordinary `setline(1, getline(1))` round trip would delete this content. The scripting search path applies the same trimming.
-
-Locations: [command/scripting.rs:300](src/core/command/scripting.rs#L300), [coordinator/scripting.rs:226](src/core/coordinator/scripting.rs#L226). Evidence: [reproducer](target/vimscript-audit/cases/editor_literal_cr.vim).
-
-**4. [P1] `setline()` changes line structure for embedded LF in a line value**
-
-```vim
-call setline(1, ['one', 'two', 'three'])
-call setline(1, "a\nb")
-echo line('$') strlen(getline(1)) char2nr(getline(1)[1])
-```
-
-Vim prints `3 3 10`; Viem prints `4 1 0`. Vim's line API represents an embedded NUL using LF inside the returned or supplied line string. Viem copies the string directly into source, treating that LF as a physical line delimiter. A script processing line values can therefore split one line into two.
-
-Locations: [command/scripting.rs:1110](src/core/command/scripting.rs#L1110), [coordinator/scripting.rs:195](src/core/coordinator/scripting.rs#L195). Evidence: [reproducer](target/vimscript-audit/cases/editor_newline_in_line.vim).
-
 **5. [P1] Vim9 comment stripping corrupts Ex command payloads**
 
 ```vim
@@ -273,6 +249,22 @@ echo Sum()
 Vim prints `3`; Viem reports E1017. The compiler validates `item: number` as a single variable name instead of parsing its type annotation. The runtime loop parser also lacks annotation handling, so compilation and execution need to agree on the corrected binding syntax.
 
 Locations: [compiler.rs:846](src/core/vimscript/compiler.rs#L846), [commands.rs:1243](src/core/vimscript/commands.rs#L1243). Evidence: [reproducer](target/vimscript-audit/cases/vim9_initial.vim).
+
+**22. [P1] Line values do not swap CR and LF in Mac-format files**
+
+```vim
+" Buffer read with fileformat=mac from the bytes  a LF b CR next CR
+echo line('$') strlen(getline(1)) char2nr(getline(1)[1])
+call setline(1, getline(1))
+call setline(2, "x\r")
+echo line('$') strlen(getline(2)) char2nr(getline(2)[1])
+```
+
+Vim prints `2 3 13`, then `2 2 13`, and writes `a LF b CR x LF CR`. In a Mac-format buffer Vim reads a literal LF inside a line as CR, and writes a CR from a line value back as LF, because CR is the line delimiter. Viem prints `2 3 10`. Its round trip then replaces the literal LF with NUL, because `setline()` reads every LF in a line value as Vim's spelling of NUL. That replacement was introduced by the fix for embedded LF in line values. `setline(2, "x\r")` changes nothing and reports no error, where Vim stores a one-line `x<CR>`.
+
+Line values need the file-format mapping both ways: in Mac format, source LF becomes CR in a value, and CR in a value becomes source LF; LF in a value still means NUL in every format.
+
+Locations: `script_line_value()` and `script_line_source()` in [command/scripting.rs](src/core/command/scripting.rs), used by `script_line_text()` and by `lines_argument()` in [coordinator/scripting.rs](src/core/coordinator/scripting.rs). Evidence: Vim was probed with `scripts/vimscript-oracle.sh`; Viem with a temporary `Core` test using `FileFormat::Mac`, since removed.
 
 **Additional confirmed gaps already covered by documented limitations**
 

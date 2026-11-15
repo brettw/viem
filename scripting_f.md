@@ -96,7 +96,6 @@ Some error numbers differ only because the oracle is 9.1 and the target is
 - Queries for a nonexistent buffer or window answer for the current one:
   `getbufline(99, 1)`, `getbufoneline(99, 1)`, `bufexists(99)`,
   `bufnr('nosuch')`, `getbufvar(99, …)`, `getcurpos(99)`, `winwidth(99)`.
-- `setline(1, "a\nb")` and `append(1, "a\nb")` make two lines; Vim makes one.
 - `setline(1, {})` raises E731; Vim returns 0.
 - `append(0, …)` does not shift the cursor line.
 - `feedkeys(…, 'x')` does not execute.

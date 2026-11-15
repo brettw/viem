@@ -297,7 +297,7 @@ impl CommandInterpreter {
         if line as usize > count {
             return None;
         }
-        document.physical_line(line as usize - 1).ok().map(|line| line.text.trim_end_matches(['\n', '\r']).to_string())
+        document.physical_line(line as usize - 1).ok().map(|line| script_line_value(line.content_text()))
     }
 
     /// Resolve a `line()`-style position: ".", "$", "'x", "v", or a number.
@@ -1184,6 +1184,18 @@ impl CommandInterpreter {
         fold_script_messages(&mut output, messages, failure);
         output
     }
+}
+
+/// A physical line as Vim script's line functions present it: Vim stores NUL
+/// as LF in a line value, so a literal U+0000 reads as LF.
+pub(crate) fn script_line_value(content: &str) -> String {
+    content.replace('\0', "\n")
+}
+
+/// The source text for a line value from `setline()` or `append()`: an LF
+/// inside one line value is Vim's spelling of NUL, never a line break.
+pub(crate) fn script_line_source(value: &str) -> String {
+    value.replace('\n', "\0")
 }
 
 /// Show a failed command line's error text in the frontend's output area:

@@ -10,6 +10,17 @@ pub struct PhysicalSourceLine {
     pub content_range: Range<usize>,
     pub text: String,
 }
+impl PhysicalSourceLine {
+    /// The decoded line without its delimiter. Only the line's own ending is
+    /// removed: a CR or LF that the file format reads as content remains.
+    pub fn content_text(&self) -> &str {
+        if self.content_range.end < self.source_range.end {
+            self.text.strip_suffix('\n').unwrap_or(&self.text)
+        } else {
+            &self.text
+        }
+    }
+}
 impl Document {
     /// An empty physical line owns source space even when its projected empty
     /// paragraph shares an ordinary typing boundary. Authoring there must not

@@ -299,3 +299,33 @@ fn vim9_source_and_legacy_calls_use_the_same_editor_transactions() {
     assert_eq!(core.document().text(), "first 1\n");
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn getline_keeps_carriage_returns_that_the_file_format_reads_as_content() {
+    let (mut core, view) = editor("x\r\nlast");
+    let outcome = ex(&mut core, view, "echo strlen(getline(1)) char2nr(getline(1)[1]) getline(2)");
+    assert_eq!(messages(&outcome), vec!["2 13 last".to_string()]);
+    // Round-tripping the value leaves the authored CR in place.
+    ex(&mut core, view, "call setline(1, getline(1))");
+    assert_eq!(core.document().text(), "x\r\nlast");
+
+    let document =
+        Document::from_bytes_with_file_format(b"x\r\ny\n".to_vec(), Encoding::Utf8, Format::PlainText, FileFormat::Dos).unwrap();
+    let mut core: Editor = Core::new(document);
+    let view = core.add_view(MockTextMeasurementProvider::new(), 700., 1200.);
+    let outcome = ex(&mut core, view, "echo strlen(getline(1)) strlen(getline(2))");
+    assert_eq!(messages(&outcome), vec!["1 1".to_string()]);
+}
+
+#[test]
+fn line_values_spell_nul_as_lf_without_splitting_lines() {
+    let (mut core, view) = editor("one\ntwo\nthree\n");
+    let outcome = ex(&mut core, view, "call setline(1, \"a\\nb\") | echo line('$') strlen(getline(1)) char2nr(getline(1)[1])");
+    assert_eq!(messages(&outcome), vec!["3 3 10".to_string()]);
+    assert_eq!(core.document().text(), "a\0b\ntwo\nthree\n");
+    let outcome = ex(&mut core, view, "call append(1, [\"c\\nd\"]) | echo line('$') string(getline(2))");
+    assert_eq!(messages(&outcome), vec!["4 'c\nd'".to_string()]);
+    assert_eq!(core.document().text(), "a\0b\nc\0d\ntwo\nthree\n");
+    keys(&mut core, view, "u");
+    assert_eq!(core.document().text(), "a\0b\ntwo\nthree\n");
+}
