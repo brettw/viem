@@ -25,11 +25,13 @@ Some error numbers differ only because the oracle is 9.1 and the target is
 
 ## Not covered
 
+These are audit coverage gaps, not a list of unsupported features.
+
 - About 115 probes in the last editor set never ran in Viem because the script
   aborted at an unsupported `:normal`: `fnamemodify`, `simplify`, file and
   glob functions, `strftime`, `getcompletion`, and the remaining window and
   syntax queries.
 - Vim9 script, autocommands, user commands, and options beyond the few used in
   probes were not probed.
-- Some differences may be deliberate under the host profile. Only the block
-  register width and the `nrformats` default were checked against the docs.
+- Deliberate file-effect and window-query differences are documented in the
+  permanent [host profile](docs/vimscript.md#host-differences-from-vim).

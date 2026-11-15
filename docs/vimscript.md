@@ -136,13 +136,8 @@ formatted-document model.
 
 The name catalogue also recognizes builtins without an implementation; calling
 one reports an unsupported-function error. Do not treat every familiar name as
-full Vim compatibility. Some buffer/window/tab introspection is a single-buffer
-compatibility view: identifiers and window dimensions are placeholders, not a
-query of native window geometry. Selectors still validate that compatibility
-view: nonexistent buffers and windows return Vim's empty, default or failure
-result. `getbufinfo`, `getwininfo` and `gettabinfo` describe this view, not the
-application's native window registry. There is no cross-buffer editing or
-buffer-creation API; `bufadd` remains deliberately unsupported.
+full Vim compatibility. Deliberate file and window limitations are described in
+[Host differences from Vim](#host-differences-from-vim).
 Interactive function definition is unsupported; define functions in sourced or
 startup scripts. Input/confirmation compatibility functions return defaults
 instead of opening prompts, and `strftime()` formats dates in UTC only.
@@ -166,6 +161,13 @@ E790 after undo or redo. `:@r` executes register contents as Ex script; a range
 buffer-local and controls Normal and Visual number changes, with Vim's
 `bin,octal,hex` default and explicit overrides for decimal-only editing.
 
+### Host differences from Vim
+
+These restrictions are deliberate parts of the current host profile. They are
+separate from missing builtin implementations or gaps in compatibility testing.
+
+**File and external effects.** File changes go through the native editor
+workflow, rather than direct filesystem mutations from expression builtins.
 Filesystem reads such as `readfile`, `filereadable`, `glob` and `executable` are
 available. Script builtins cannot write/delete/rename files, modify environment
 variables, start processes/jobs/timers, or call foreign libraries. `mkdir()`
@@ -173,6 +175,15 @@ returns 0 without creating a directory. Explicit supported editor commands such
 as `:write`, `:read` and `:edit` still use the normal native file workflow.
 Shell commands/filters, `:source!`, terminal jobs and plugin/runtime loading are
 unsupported.
+
+**Buffer, window and tab queries.** The scripting host exposes a single-buffer
+compatibility view, rather than the application's native window registry.
+Identifiers and window dimensions are placeholders, not a query of native window
+geometry. Selectors still validate that compatibility view: nonexistent buffers
+and windows return Vim's empty, default or failure result. `getbufinfo`,
+`getwininfo` and `gettabinfo` describe this view. There is no cross-buffer editing
+or buffer-creation API; `bufadd` remains deliberately unsupported. Scripts cannot
+use these queries to enumerate or navigate the application's actual windows.
 
 ## Errors, native effects and undo
 
