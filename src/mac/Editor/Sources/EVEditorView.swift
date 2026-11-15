@@ -228,6 +228,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     var customCaretPresentationForTesting: EVCustomCaretPresentation {
         customCaretBlinkController.presentation
     }
+    var isCustomCaretBlinkScheduledForTesting: Bool { customCaretBlinkController.isBlinkScheduled }
     var isInactiveCommandLineCaretOutlineVisible: Bool {
         !isCaretActive && commandLineRenderState() != nil
     }
@@ -458,6 +459,9 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     private func refreshCaretActivity() {
+        // Losing app/window activation does not resign first responder. A
+        // suspended drag must not keep scrolling after input moves elsewhere.
+        if !isCaretActive { stopDragAutoscroll() }
         updateCaretHover()
         surface?.completionFocusDidChange()
         updateCustomCaretPresentation()

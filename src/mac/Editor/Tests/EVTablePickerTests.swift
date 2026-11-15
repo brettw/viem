@@ -83,6 +83,41 @@ final class EVTablePickerTests: XCTestCase {
         _ = picker.handle(try event(.leftMouseUp, NSPoint(x: grid.minX - 5, y: grid.minY - 400)))
         XCTAssertFalse(picker.isOpen); XCTAssertEqual(accepts, 0)
     }
+
+    func testPickerSchedulesAutoscrollOnlyDuringAnEdgeDrag() throws {
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 200, width: 600, height: 500),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let button = NSButton(frame: NSRect(x: 20, y: 420, width: 28, height: 26))
+        let editor = NSView()
+        window.contentView?.addSubview(button); window.contentView?.addSubview(editor)
+        window.makeKeyAndOrderFront(nil)
+        let picker = EVTablePickerController()
+        defer { picker.close(); window.close() }
+        func event(_ type: NSEvent.EventType, _ point: NSPoint) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: window.convertPoint(fromScreen: point),
+                modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                eventNumber: 1, clickCount: 1, pressure: 1))
+        }
+        picker.open(from: button, editor: editor, event: nil) { _, _ in }
+        XCTAssertFalse(picker.isAutoscrollScheduled, "An open, idle picker has no timer")
+        let initial = picker.scrollScreenRect
+        let cell = NSPoint(x: initial.midX, y: initial.midY)
+        _ = picker.handle(try event(.leftMouseDown, cell))
+        XCTAssertFalse(picker.isAutoscrollScheduled, "An interior drag has no scrolling work")
+        let outside = NSPoint(x: initial.midX, y: initial.minY - 2_000)
+        _ = picker.handle(try event(.leftMouseDragged, outside))
+        XCTAssertTrue(picker.isAutoscrollScheduled)
+        let expanded = picker.scrollScreenRect
+        _ = picker.handle(try event(.leftMouseDragged, NSPoint(x: expanded.midX, y: expanded.midY)))
+        XCTAssertFalse(picker.isAutoscrollScheduled, "Reentry cancels the next scroll")
+        _ = picker.handle(try event(.leftMouseDragged, outside))
+        XCTAssertTrue(picker.isAutoscrollScheduled)
+        _ = picker.handle(try event(.leftMouseUp, outside))
+        XCTAssertFalse(picker.isOpen)
+        XCTAssertFalse(picker.isAutoscrollScheduled, "Closing cancels the next scroll")
+    }
+
     func testNativeMenuHostsTheSameInteractiveGridAndAcceptsPointerSize() async throws {
         try await chooseInNativeMenu(heldDrag: false)
     }
@@ -117,6 +152,7 @@ final class EVTablePickerTests: XCTestCase {
                 MainActor.assumeIsolated {
                     guard let host = content.window else { XCTFail("Native menu did not attach the picker"); menu.cancelTracking(); return }
                     XCTAssertTrue(picker.isOpen)
+                    XCTAssertFalse(picker.isAutoscrollScheduled, "An idle native submenu has no timer")
                     let grid = picker.scrollScreenRect
                     let point = NSPoint(x: grid.minX + 2 * 21 + 10, y: grid.maxY - 3 * 21 - 10)
                     let events: [NSEvent.EventType] = heldDrag
@@ -150,6 +186,7 @@ final class EVTablePickerTests: XCTestCase {
         XCTAssertEqual(dimensions?.0, 3)
         XCTAssertEqual(dimensions?.1, 4)
         XCTAssertFalse(picker.isOpen)
+        XCTAssertFalse(picker.isAutoscrollScheduled)
     }
 
 }

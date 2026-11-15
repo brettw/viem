@@ -19,6 +19,7 @@ internal static class RecoveryCleanupTests
         try
         {
             await fixture.BackupScheduling();
+            await fixture.AutomaticBackupDeadline();
             await fixture.EditDuringBackup();
             await fixture.RecoverAfterDurableReplacement();
             await fixture.DiscardSelectedSnapshots();
@@ -105,6 +106,28 @@ internal static class RecoveryCleanupTests
             check(recovery.BackupScheduledForTesting, "a later edit restarts the recovery deadline");
             recovery.Dispose();
             check(!recovery.BackupScheduledForTesting, "closing recovery cancels its pending deadline");
+        }
+
+        internal async Task AutomaticBackupDeadline()
+        {
+            string path = NewPath("automatic-backup-deadline");
+            byte[] disk = File.ReadAllBytes(path);
+            using var doc = new CoreDocument(disk, path);
+            using var view = new CoreView(doc, device, dispatcher, 500, 200);
+            Exception? failure = null;
+            using var recovery = DocumentRecovery.Claim(doc, path, profile, dispatcher, error => failure = error);
+            view.Command("i"); view.Text("automatic ");
+            check(await SelfTestRunner.Until(() => !recovery.BackupScheduledForTesting && recovery.Pending.IsCompleted, 10_000)
+                && await recovery.Pending && failure == null,
+                "the real recovery deadline publishes without an explicit flush or further input");
+            var saved = DocumentRecovery.Read(recovery.Slot);
+            check(saved?.snapshot != null && saved.snapshot.source.AsSpan().SequenceEqual(doc.Source(doc.State.document_revision))
+                && File.ReadAllBytes(path).AsSpan().SequenceEqual(disk),
+                "automatic recovery preserves current source in its slot without changing the original file");
+            var write = recovery.Pending;
+            await Task.Delay(200);
+            check(ReferenceEquals(write, recovery.Pending) && !recovery.BackupScheduledForTesting,
+                "a completed automatic recovery leaves no recurring timer or write");
         }
 
         internal async Task EditDuringBackup()

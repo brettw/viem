@@ -19,6 +19,8 @@ internal static class BackgroundWorkTests
     {
         await SettledDocument(device, dispatcher);
         await SyntaxCompletion(device, dispatcher);
+        await SharedLargeCodeSettles(device, dispatcher);
+        await MarkdownSyntaxAndPreparationSettle(device, dispatcher);
         await CompletionProgress(device, dispatcher);
         await SharedSearchProgress(device, dispatcher);
         await QueuedWakeAfterClose(device, dispatcher);
@@ -87,6 +89,114 @@ internal static class BackgroundWorkTests
         view.Key(VIEM_KEY_ESCAPE);
         Check(!view.PendingWorkScheduledForTesting && view.PendingWorkError == null,
             "completion leaves no pending-work timer after cancellation");
+    }
+
+    private static async Task SharedLargeCodeSettles(CanvasDevice device, DispatcherQueue dispatcher)
+    {
+        // Just beyond the 256 KiB complete-highlighting threshold. Each view
+        // must receive its own distant visible coverage from worker signals.
+        const string line = "fn item() { let value = 42; }\n";
+        byte[] source = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat(line, 10_000)));
+        using var document = new CoreDocument(source, path: "background.rs");
+        using var first = new CoreView(document, device, dispatcher, 400, 200);
+        using var second = new CoreView(document, device, dispatcher, 400, 200);
+        first.BackgroundLayout.Enabled = second.BackgroundLayout.Enabled = false;
+        second.GoToLine(8_001);
+        void RefreshViews()
+        {
+            // Match native panes' event-driven materialization. There is no
+            // syntax wait or explicit background collector in this fixture.
+            if (first.Id != 0) first.Resize(400, 200, notify: false);
+            if (second.Id != 0) second.Resize(400, 200, notify: false);
+        }
+        bool Colored(CoreView view, ulong at)
+        {
+            try { return view.Layout().PaintRuns.Any(run => run.text_start <= at && run.text_end >= at + 2
+                && (run.paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) == 0); }
+            catch (Viem.Windows.Interop.CoreException error) when (error.Status == VIEM_STATUS_LAYOUT_UNAVAILABLE) { return false; }
+        }
+        document.SyntaxChanged += RefreshViews;
+        try
+        {
+            Check(await SelfTestRunner.Until(() => Colored(first, 0) && Colored(second, (ulong)(8_000 * line.Length))
+                && !document.BackgroundWorkScheduledForTesting, 10_000),
+                "distant shared Code views receive current syntax through worker notifications");
+            int drains = document.BackgroundWorkDrainsForTesting;
+            await Task.Delay(600);
+            Check(document.BackgroundWorkDrainsForTesting == drains && !document.BackgroundWorkScheduledForTesting
+                && !first.PendingWorkScheduledForTesting && !second.PendingWorkScheduledForTesting,
+                "settled shared Code regions schedule no recurring maintenance callbacks");
+            first.Dispose();
+            second.GoToLine(9_501);
+            Check(await SelfTestRunner.Until(() => Colored(second, (ulong)(9_500 * line.Length))
+                && !document.BackgroundWorkScheduledForTesting, 10_000),
+                "closing one shared Code view preserves completion delivery to the surviving view");
+            Check(document.BackgroundWorkError == null && document.Source(document.State.document_revision).AsSpan().SequenceEqual(source),
+                "shared Code notification delivery preserves exact source and reports no collection errors");
+        }
+        finally { document.SyntaxChanged -= RefreshViews; }
+    }
+
+    private static async Task MarkdownSyntaxAndPreparationSettle(CanvasDevice device, DispatcherQueue dispatcher)
+    {
+        byte[] source = "before\n\n```rust\nfn main() { let value = 42; }\n```\n\n```vim\nset number\n```\n\nafter"u8.ToArray();
+        using var document = new CoreDocument(source, path: "background.md", format: VIEM_FORMAT_MARKDOWN);
+        using var view = new CoreView(document, device, dispatcher, 500, 600);
+        view.BackgroundLayout.Enabled = false;
+        string formatted = view.FormattedText();
+        ulong rust = (ulong)formatted.IndexOf("fn main", StringComparison.Ordinal);
+        ulong vim = (ulong)formatted.IndexOf("set number", StringComparison.Ordinal);
+        void RefreshView() => view.Resize(500, 600, notify: false);
+        bool Colored(params ulong[] offsets)
+        {
+            try
+            {
+                var runs = view.Layout().PaintRuns;
+                return offsets.All(at => runs.Any(run => run.text_start <= at && run.text_end >= at + 2
+                    && (run.paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) == 0));
+            }
+            catch (Viem.Windows.Interop.CoreException error) when (error.Status == VIEM_STATUS_LAYOUT_UNAVAILABLE) { return false; }
+        }
+        async Task BecomesQuiet(string message)
+        {
+            var deadline = System.Diagnostics.Stopwatch.StartNew();
+            while (deadline.Elapsed.TotalSeconds < 10)
+            {
+                if (!await SelfTestRunner.Until(() => !document.BackgroundWorkScheduledForTesting && !view.PendingWorkScheduledForTesting, 10_000)) break;
+                int drains = document.BackgroundWorkDrainsForTesting;
+                // Visible syntax is already ready. Alternate preparation can
+                // still complete once after its deadline; require eventual
+                // silence longer than that 400 ms deadline, without forcing
+                // collection or claiming a private preparation-ready state.
+                await Task.Delay(600);
+                if (document.BackgroundWorkDrainsForTesting == drains && !document.BackgroundWorkScheduledForTesting)
+                { Check(true, message); return; }
+            }
+            Check(false, message);
+        }
+        document.SyntaxChanged += RefreshView;
+        try
+        {
+            Check(await SelfTestRunner.Until(() => Colored(rust, vim), 10_000),
+                "Markdown Rust and Vim fences receive syntax through worker notifications");
+            await BecomesQuiet("Markdown syntax and delayed preparation leave no recurring background callbacks");
+            view.SetDisplay(VIEM_VIEW_DISPLAY_SOURCE);
+            RefreshView();
+            ulong sourceRust = (ulong)Encoding.UTF8.GetString(source).IndexOf("fn main", StringComparison.Ordinal);
+            Check(await SelfTestRunner.Until(() => Colored(sourceRust), 10_000),
+                "switching Markdown to Code receives syntax without manual background collection");
+            await BecomesQuiet("Markdown source view settles after its presentation switch");
+            view.SetDisplay(VIEM_VIEW_DISPLAY_PREVIEW);
+            RefreshView();
+            Check(await SelfTestRunner.Until(() => Colored(rust, vim), 10_000),
+                "returning to Markdown Preview restores both fenced syntax regions");
+            await BecomesQuiet("returning to Markdown Preview leaves no recurring background callbacks");
+            Check((document.State.flags & (VIEM_DOCUMENT_STATE_CAN_UNDO | VIEM_DOCUMENT_STATE_CAN_REDO)) == 0
+                && !document.IsDirty && document.BackgroundWorkError == null
+                && document.Source(document.State.document_revision).AsSpan().SequenceEqual(source),
+                "Markdown background work and toggles preserve source, empty history and clean state");
+        }
+        finally { document.SyntaxChanged -= RefreshView; }
     }
 
     private static async Task QueuedWakeAfterClose(CanvasDevice device, DispatcherQueue dispatcher)

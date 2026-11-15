@@ -159,6 +159,15 @@ fn skipped_expression_commands_keep_quoted_strings_and_bar_boundaries() {
     assert_eq!(run_script("if 0 | throw \"quoted | bar\" | endif\nif 0 | return \"quoted | bar\" | endif\necho 'done'\n"), "\ndone");
 }
 
+#[test]
+fn shellescape_uses_host_quotes_for_special_newlines() {
+    let output = run_script("echo shellescape(\"a\\nb\", 1)");
+    #[cfg(windows)]
+    assert_eq!(output, "\n\"a\\\nb\"");
+    #[cfg(not(windows))]
+    assert_eq!(output, "\n'a\\\nb'");
+}
+
 pub(crate) fn run_with(host: &mut MemoryHost, text: &str) -> Runtime {
     let mut rt = Runtime::new(ScriptState::new());
     rt.push_script("test.vim", text.as_bytes()).unwrap();

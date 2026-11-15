@@ -112,7 +112,7 @@ internal sealed class TablePicker
         AutomationProperties.SetName(grid, "Table dimensions");
         AutomationProperties.SetHelpText(grid, "Use arrow keys to choose columns and body rows. Press Enter to insert or Escape to cancel.");
         AutomationProperties.SetLiveSetting(grid, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
-        timer = button.DispatcherQueue.CreateTimer(); timer.Interval = TimeSpan.FromMilliseconds(50);
+        timer = button.DispatcherQueue.CreateTimer(); timer.Interval = TimeSpan.FromMilliseconds(50); timer.IsRepeating = false;
         timer.Tick += (_, _) => Autoscroll();
         popup.Closed += (_, _) => { timer.Stop(); ReleaseCapture(); accept = null; State = new(); restoreFocus(); Closed?.Invoke(); };
     }
@@ -136,9 +136,8 @@ internal sealed class TablePicker
             press = e.GetCurrentPoint(button.XamlRoot.Content).Position;
             if (!Capture(button, e)) { Close(); return; }
         }
-        timer.Start();
     }
-    internal void Close() { if (popup.IsOpen) popup.IsOpen = false; }
+    internal void Close() { timer.Stop(); if (popup.IsOpen) popup.IsOpen = false; }
     private void Commit()
     {
         var result = State; var completion = accept;
@@ -150,6 +149,7 @@ internal sealed class TablePicker
     }
     private void ReleaseCapture()
     {
+        timer.Stop();
         releasingCapture = true;
         if (pointer != null) captured?.ReleasePointerCapture(pointer);
         pointer = null; captured = null; dragging = false; releasingCapture = false;
@@ -168,6 +168,7 @@ internal sealed class TablePicker
     {
         lastPoint = e.GetCurrentPoint(scroll).Position;
         PointAt(lastPoint, grow);
+        SynchronizeAutoscroll();
     }
     private void PointAt(Point point, bool grow)
     {
@@ -209,13 +210,39 @@ internal sealed class TablePicker
         }
         if (reveal) scroll.ChangeView(Math.Max(0, State.SelectedColumns * Cell - scroll.Width), Math.Max(0, State.SelectedRows * Cell - scroll.Height), null, true);
     }
-    private void Autoscroll()
+    private (double X, double Y) AutoscrollDelta()
     {
-        if (!dragging || !popup.IsOpen) return;
+        if (!dragging || !popup.IsOpen) return (0, 0);
         double dx = lastPoint.X > scroll.Width - 12 ? 14 : lastPoint.X < 12 ? -14 : 0;
         double dy = lastPoint.Y > scroll.Height - 12 ? 14 : lastPoint.Y < 12 ? -14 : 0;
-        if (dx == 0 && dy == 0) return;
-        scroll.ChangeView(Math.Clamp(scroll.HorizontalOffset + dx, 0, Math.Max(0, grid.Width - scroll.Width)), Math.Clamp(scroll.VerticalOffset + dy, 0, Math.Max(0, grid.Height - scroll.Height)), null, true);
-        PointAt(lastPoint, true);
+        return (Math.Clamp(scroll.HorizontalOffset + dx, 0, Math.Max(0, grid.Width - scroll.Width)) - scroll.HorizontalOffset,
+            Math.Clamp(scroll.VerticalOffset + dy, 0, Math.Max(0, grid.Height - scroll.Height)) - scroll.VerticalOffset);
     }
+    private void SynchronizeAutoscroll()
+    {
+        var (dx, dy) = AutoscrollDelta();
+        if (dx != 0 || dy != 0) { if (!timer.IsRunning) timer.Start(); }
+        else timer.Stop();
+    }
+    private void Autoscroll()
+    {
+#if DEBUG
+        AutoscrollCallbacksForTesting++;
+#endif
+        var (dx, dy) = AutoscrollDelta();
+        if (dx == 0 && dy == 0) { timer.Stop(); return; }
+        scroll.ChangeView(scroll.HorizontalOffset + dx, scroll.VerticalOffset + dy, null, true);
+        PointAt(lastPoint, true);
+        SynchronizeAutoscroll();
+    }
+#if DEBUG
+    internal bool AutoscrollScheduledForTesting => timer.IsRunning;
+    internal int AutoscrollCallbacksForTesting { get; private set; }
+    internal double VerticalOffsetForTesting => scroll.VerticalOffset;
+    internal void TrackForTesting(Point point, bool drag)
+    {
+        dragging = drag; lastPoint = point; PointAt(point, drag); SynchronizeAutoscroll();
+    }
+    internal void ReleaseForTesting() => ReleaseCapture();
+#endif
 }

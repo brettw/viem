@@ -184,3 +184,48 @@ fn completion_wakes_the_owner_after_releasing_every_worker_lock() {
     assert!(!wake.is_pending());
     wake.replace_callback(None);
 }
+
+fn superseded_active_request_is_requeued_without_owner_retries(explicit_cancel: bool) {
+    let _registry = super::super::treesitter::package_registry_test_guard();
+    let gate = Gate::new();
+    let (started, starting) = mpsc::channel();
+    let mut service = SyntaxService::with_factory({
+        let gate = gate.0.clone();
+        Arc::new(move || Box::new(Blocked { started: started.clone(), gate: gate.clone() }))
+    });
+    let wake = crate::background::WorkWake::default();
+    let (completed, completions) = mpsc::channel();
+    wake.replace_callback(Some(Arc::new(move || { let _ = completed.send(()); })));
+    service.set_work_wake(wake.clone());
+    let input = tests::input(1);
+    service.request(input.clone(), 0..100);
+    starting.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    if explicit_cancel {
+        service.cancel();
+    } else {
+        service.request(tests::input(2), 0..100);
+    }
+    service.request(input.clone(), 0..100);
+    gate.release();
+
+    // Returning to the canceled input must queue replacement work while the
+    // first provider is still running. No owner poll or second request may
+    // be needed to restart it after the canceled result is discarded.
+    starting.recv_timeout(Duration::from_secs(5)).expect("replacement request starts");
+    completions.recv_timeout(Duration::from_secs(5)).expect("replacement completion wakes its owner");
+    assert!(service.poll(input.identity()));
+    assert!(service.covers(&input, 0..100));
+    assert!(!service.has_pending_work());
+    wake.replace_callback(None);
+}
+
+#[test]
+fn canceled_active_request_can_restart_before_the_worker_exits() {
+    superseded_active_request_is_requeued_without_owner_retries(true);
+}
+
+#[test]
+fn returning_to_an_active_input_after_supersession_requeues_it() {
+    superseded_active_request_is_requeued_without_owner_retries(false);
+}

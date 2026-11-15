@@ -62,8 +62,8 @@ charclass-cjk 19968
 iconv-latin1 [233, 191, 63]
 glob-pattern '\.txt$'
 filename-leading-dash '\-'
-shell-special-newline '''a\
-b'''
+shell-special-newline 'a\
+b'
 float-hex 16.0
 string-tab-width 3
 submatch-outside []

@@ -30,6 +30,8 @@ internal static class BackgroundLayoutTests
             FrontendSmokeTests.UiChecks.Add(message);
         }
         await TableWidthRefinement(device, dispatcher);
+        await DisconnectedCompletion(device, dispatcher, throws: false);
+        await DisconnectedCompletion(device, dispatcher, throws: true);
         int uiThread = Environment.CurrentManagedThreadId;
         byte[] source = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Range(0, 3_000).Select(i =>
             $"Paragraph {i}: **office** and *words* مرحبا 👩‍💻 that wrap into multiple visual rows.\n\n")));
@@ -75,6 +77,39 @@ internal static class BackgroundLayoutTests
 
         GlyphInkCache(device, dispatcher);
 
+    }
+
+    private static async Task DisconnectedCompletion(CanvasDevice device, DispatcherQueue dispatcher, bool throws)
+    {
+        byte[] source = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Range(0, 2_000)
+            .Select(i => $"Line {i}: background layout owns these shaped words.\n")));
+        using var document = new CoreDocument(source, format: VIEM_FORMAT_PLAIN_TEXT);
+        using var view = new CoreView(document, device, dispatcher, 400, 200);
+        using var release = new ManualResetEventSlim();
+        var computed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        view.BackgroundLayout.DispatchCompletionForTesting = _ =>
+        {
+            computed.TrySetResult();
+            if (!release.Wait(TimeSpan.FromSeconds(10))) throw new TimeoutException("Completion release was not signalled.");
+            if (throws) throw new System.Runtime.InteropServices.COMException("Dispatcher disconnected.");
+            return false;
+        };
+        view.BackgroundLayout.Enabled = true;
+        view.BackgroundLayout.Update();
+        try
+        {
+            if (!await SelfTestRunner.Until(() => computed.Task.IsCompleted, 10_000))
+                throw new InvalidOperationException("Background layout never reached its completion dispatcher.");
+            // The computed result retains native resources until the failed
+            // dispatch is cleaned up, even though its original view is closed.
+            view.Dispose();
+        }
+        finally { release.Set(); }
+        if (!await SelfTestRunner.Until(() => view.BackgroundLayout.IsIdle && view.Provider.LiveResourceCount == 0, 10_000))
+            throw new InvalidOperationException("Disconnected layout completion retained its work or native resources.");
+        FrontendSmokeTests.UiChecks.Add(throws
+            ? "a throwing disconnected dispatcher releases completed layout resources without an owner callback"
+            : "a rejecting disconnected dispatcher releases completed layout resources without an owner callback");
     }
 
     private static async Task TableWidthRefinement(CanvasDevice device, DispatcherQueue dispatcher)

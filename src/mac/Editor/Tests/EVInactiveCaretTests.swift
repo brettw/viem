@@ -37,6 +37,7 @@ final class EVInactiveCaretTests: XCTestCase {
             XCTAssertEqual(surface.editorView.customCaretPresentationForTesting,
                 .inactiveOutline, file: file, line: line)
             XCTAssertFalse(surface.editorView.isDocumentInsertionIndicatorVisible, file: file, line: line)
+            XCTAssertFalse(surface.editorView.isCustomCaretBlinkScheduledForTesting, file: file, line: line)
         }
 
         for command in ["", "i", "R", "v", "V", "block"] {
@@ -77,6 +78,47 @@ final class EVInactiveCaretTests: XCTestCase {
             assertActive(insertMode: command == "i")
         }
         withExtendedLifetime((window, other)) {}
+    }
+
+    func testWindowAndApplicationDeactivationCancelDragAutoscroll() throws {
+        let backend = EVCoreDocumentBackend()
+        try backend.readUntitled(source: Data(String(repeating: "line\n", count: 80).utf8),
+            typeName: "public.plain-text")
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        surface.view.frame = NSRect(x: 0, y: 0, width: 400, height: 200)
+        let window = EVTestFocusWindow(contentRect: surface.view.bounds,
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = surface.view
+        surface.viewDidLayout()
+        let view = surface.editorView
+        var applicationActive = true
+        view.applicationIsActive = { applicationActive }
+        window.setKeyWindowForTesting(true)
+        XCTAssertTrue(window.makeFirstResponder(view))
+        func beginDrag() throws {
+            let outside = NSPoint(x: view.bounds.midX, y: view.bounds.maxY + 30)
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDragged,
+                location: view.convert(outside, to: nil), modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+            view.mouseDragged(with: event)
+            XCTAssertTrue(view.isDragAutoscrollActive)
+        }
+        try beginDrag()
+        window.setKeyWindowForTesting(false)
+        XCTAssertTrue(window.firstResponder === view)
+        XCTAssertFalse(view.isDragAutoscrollActive)
+        XCTAssertFalse(view.performDragAutoscrollStep())
+        window.setKeyWindowForTesting(true)
+        XCTAssertFalse(view.isDragAutoscrollActive, "Activation does not resurrect a cancelled drag")
+        try beginDrag()
+        applicationActive = false
+        NotificationCenter.default.post(name: NSApplication.didResignActiveNotification, object: NSApp)
+        XCTAssertTrue(window.firstResponder === view)
+        XCTAssertFalse(view.isDragAutoscrollActive)
+        XCTAssertFalse(view.performDragAutoscrollStep())
     }
 
     func testInactiveOutlineRetainsModeGeometry() {

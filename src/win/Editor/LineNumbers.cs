@@ -114,6 +114,19 @@ internal sealed partial class EditorPane
         UpdatePointerRegion(args.GetCurrentPoint(Canvas).Position); args.Handled = true;
     }
 
+    private void CancelPointerSelection()
+    {
+        // Activation and replacement must retire the gesture immediately,
+        // even if the native capture-lost notification has not arrived yet.
+        pressedPointer = null; checkboxPress = null;
+        gutterSelectionDragging = dragging = wordSelectionDragging = false;
+        tableColumnGesture = null; tableCellDrag = false;
+        tableDragAnchor = null; tableDragIdentity = null;
+        dragScroll.Stop();
+        Canvas.ReleasePointerCaptures(); lineNumberCanvas.ReleasePointerCaptures();
+        UpdatePointerCursor();
+    }
+
     private void RefreshLineNumbers()
     {
         if (View == null || snapshot == null) return;

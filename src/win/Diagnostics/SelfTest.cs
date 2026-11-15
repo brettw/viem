@@ -138,7 +138,7 @@ internal sealed partial class EditorWindow
             new("ToolbarShortcuts", () => FormattingToolbarTests.RunShortcuts(preferences)),
             new("TablePicker", () => {
                 TablePickerTests.Run();
-                return Task.CompletedTask;
+                return TablePickerTests.Scheduling(pane);
             }),
             new("TableInteraction", () => TableInteractionTests.Run(preferences)),
             new("CheckboxInteraction", () => CheckboxInteractionTests.Run(preferences)),
@@ -162,6 +162,7 @@ internal sealed partial class EditorWindow
             new("VimRuntime", () => VimRuntimeTests.Run(device, DispatcherQueue, profile)),
             new("BackgroundLayout", () => BackgroundLayoutTests.Run(device, DispatcherQueue)),
             new("BackgroundWork", () => BackgroundWorkTests.Run(device, DispatcherQueue)),
+            new("BackgroundInteraction", () => BackgroundInteractionTests.Run(preferences)),
             new("SaveLifecycle", () => SaveLifecycle(pane)),
             new("Reload", TestReloadPositions),
             new("HtmlExport", () => HtmlExportTests.Run(this, pane, profile)),

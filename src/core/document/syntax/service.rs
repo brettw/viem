@@ -643,6 +643,10 @@ impl SyntaxService {
     pub fn cancel(&mut self) {
         let mut slot = self.mailbox.lock().unwrap_or_else(|e| e.into_inner());
         slot.cancellation.store(true, Ordering::Release);
+        // A canceled worker cannot satisfy a later identical request. Keep
+        // `running` until it exits, but retire its deduplication identity now:
+        // without polling, its discarded result sends no completion wake.
+        slot.active = None;
         slot.pending = None;
         slot.ready = None;
         slot.progress.notify_all();
@@ -783,6 +787,7 @@ impl SyntaxService {
                 || r.configuration != request.configuration
         }) {
             slot.cancellation.store(true, Ordering::Release);
+            slot.active = None;
             slot.cancellation = Arc::new(AtomicBool::new(false));
         } else if slot.cancellation.load(Ordering::Acquire) {
             slot.cancellation = Arc::new(AtomicBool::new(false));

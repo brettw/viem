@@ -65,7 +65,10 @@ waiting and is not recurring idle work.
 
 Windows search and completion use per-view one-shot callbacks only while work
 is pending. Shared search changes notify every affected view. Drag autoscroll
-runs only during an out-of-bounds drag; caret blinking only while focused.
+runs only during an out-of-bounds drag and is cancelled on pane/window
+deactivation. Table-size pickers schedule autoscroll only while an edge drag
+can move their viewport; an open, untouched picker needs no timer. Caret
+blinking runs only while focused.
 Recovery backup delays are armed by changes rather than sampled on an idle
 clock.
 
@@ -97,6 +100,11 @@ the worker wait predicate. Cleanup does not infer closure from the mailbox's
 reference count: a detached syntax wait may still hold it. This prevents a
 notification before parking from losing cleanup forever. Native providers are
 destroyed on workers outside mailbox, scheduler and cache locks.
+
+Cancellation also retires the active request's deduplication identity: an
+identical request must be able to restart before its cancelled worker exits.
+On Windows, a rejected or disconnected layout dispatcher releases completed
+work and native resources on the worker, without waiting for an owner callback.
 
 ## Validation
 

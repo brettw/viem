@@ -107,7 +107,9 @@ final class EVBackgroundWork {
         deadline?.invalidate()
         deadline = nil
         serviceCount += 1
-        guard let status = service() else { return }
+        // Publishing results can synchronously close/reload the owner. Never
+        // arm a deadline from the retired service after those callbacks return.
+        guard let status = service(), !cancelled else { return }
         if status.more_ready != 0 || status.next_deadline_ms == 0 {
             wake.request()
         } else if status.next_deadline_ms != UInt32.max {

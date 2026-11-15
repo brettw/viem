@@ -119,6 +119,7 @@ final class EVTablePickerController {
     var didOpen: (() -> Void)?
     private(set) var isOpen = false
     var state: EVTablePickerState { grid.state }
+    var isAutoscrollScheduled: Bool { timer?.isValid == true }
 
     init() {
         panel.isReleasedWhenClosed = false
@@ -174,11 +175,6 @@ final class EVTablePickerController {
             guard let self, self.isOpen else { return event }
             return self.handle(event) ? nil : event
         }
-        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.autoscroll() }
-        }
-        self.timer = timer
-        RunLoop.main.add(timer, forMode: .eventTracking)
         didOpen?()
     }
 
@@ -212,9 +208,6 @@ final class EVTablePickerController {
         windowObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: panel, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.close() }
         }
-        timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.autoscroll() }
-        }
     }
 
     func close(accepting: Bool = false) {
@@ -243,6 +236,7 @@ final class EVTablePickerController {
     }
 
     func handle(_ event: NSEvent) -> Bool {
+        defer { synchronizeAutoscroll() }
         if event.type == .keyDown {
             switch event.keyCode {
             case 53: close()
@@ -329,15 +323,38 @@ final class EVTablePickerController {
             NSAccessibility.post(element: grid, notification: .valueChanged)
         }
     }
-    private func autoscroll() {
-        guard dragging, let lastPointer else { return }
+    private func autoscrollTarget() -> NSPoint? {
+        guard isOpen, dragging, let lastPointer else { return nil }
         let viewport = scrollScreenRect
         let dx: CGFloat = lastPointer.x > viewport.maxX - 12 ? 14 : lastPointer.x < viewport.minX + 12 ? -14 : 0
         let dy: CGFloat = lastPointer.y < viewport.minY + 12 ? 14 : lastPointer.y > viewport.maxY - 12 ? -14 : 0
-        guard dx != 0 || dy != 0 else { return }
+        guard dx != 0 || dy != 0 else { return nil }
         let old = scroll.contentView.bounds.origin
         let next = NSPoint(x: min(max(0, old.x + dx), max(0, grid.frame.width - scroll.contentSize.width)),
                            y: min(max(0, old.y + dy), max(0, grid.frame.height - scroll.contentSize.height)))
+        return next == old ? nil : next
+    }
+
+    private func synchronizeAutoscroll() {
+        guard autoscrollTarget() != nil else {
+            timer?.invalidate(); timer = nil
+            return
+        }
+        guard timer == nil else { return }
+        let timer = Timer(timeInterval: 0.05, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.timer = nil
+                self.autoscroll()
+                self.synchronizeAutoscroll()
+            }
+        }
+        self.timer = timer
+        RunLoop.main.add(timer, forMode: embeddedInMenu ? .eventTracking : .common)
+    }
+
+    private func autoscroll() {
+        guard let next = autoscrollTarget(), let lastPointer else { return }
         scroll.contentView.scroll(to: next); scroll.reflectScrolledClipView(scroll.contentView)
         pointAt(lastPointer, growing: true)
     }

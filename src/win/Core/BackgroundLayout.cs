@@ -27,6 +27,9 @@ internal sealed class BackgroundLayout(CoreView view, DispatcherQueue dispatcher
     private ulong publishedLayoutRevision;
     private Work? active;
     public bool IsIdle => !queued && active == null;
+#if DEBUG
+    internal Func<DispatcherQueueHandler, bool>? DispatchCompletionForTesting { get; set; }
+#endif
     public string? LastError { get; private set; }
     public int Started { get; private set; }
     public int Installed { get; private set; }
@@ -127,10 +130,29 @@ internal sealed class BackgroundLayout(CoreView view, DispatcherQueue dispatcher
         // at Low can make the next Page Down synchronously shape work that is
         // already finished. Capture remains low priority; installation is a
         // bounded cache-only update and never shapes or redraws.
-        if (!dispatcher.TryEnqueue(DispatcherQueuePriority.Normal, () => Complete(work, result, failure)))
+        bool delivered = false;
+        try
         {
-            if (result != 0) viem_layout_work_release(result);
-            work.Dispose();
+            DispatcherQueueHandler complete = () => Complete(work, result, failure);
+#if DEBUG
+            delivered = DispatchCompletionForTesting is { } dispatch
+                ? dispatch(complete)
+                : dispatcher.TryEnqueue(DispatcherQueuePriority.Normal, complete);
+#else
+            delivered = dispatcher.TryEnqueue(DispatcherQueuePriority.Normal, complete);
+#endif
+        }
+        catch { /* A disconnected WinRT dispatcher may throw instead of rejecting. */ }
+        finally
+        {
+            if (!delivered)
+            {
+                // The owner thread is gone. Release on this worker without
+                // requiring a final dispatcher callback or a maintenance clock.
+                if (result != 0) viem_layout_work_release(result);
+                work.Dispose();
+                Interlocked.CompareExchange(ref active, null, work);
+            }
         }
     }
 
@@ -190,12 +212,31 @@ internal sealed class BackgroundLayout(CoreView view, DispatcherQueue dispatcher
 
     private sealed class Work(ulong request, Func<DirectWriteProvider> provider) : IDisposable
     {
+        private int references = 1;
         public ulong Request { get; } = request;
         public Func<DirectWriteProvider> Provider { get; } = provider;
         public CancellationTokenSource Cancellation { get; } = new();
         public double WaitMilliseconds, ComputeMilliseconds;
         public long Computed;
-        public void Cancel() { Cancellation.Cancel(); viem_layout_work_cancel(Request); }
-        public void Dispose() { viem_layout_work_release(Request); Cancellation.Dispose(); }
+        public void Cancel()
+        {
+            // Shutdown can reject the completion while the owner closes its
+            // view. Keep the request and cancellation source alive through a
+            // concurrent cancel, without holding a lock across cancellation.
+            int current = Volatile.Read(ref references);
+            while (current != 0)
+            {
+                int observed = Interlocked.CompareExchange(ref references, current + 1, current);
+                if (observed != current) { current = observed; continue; }
+                try { Cancellation.Cancel(); viem_layout_work_cancel(Request); }
+                finally { Dispose(); }
+                return;
+            }
+        }
+        public void Dispose()
+        {
+            if (Interlocked.Decrement(ref references) != 0) return;
+            viem_layout_work_release(Request); Cancellation.Dispose();
+        }
     }
 }

@@ -143,6 +143,24 @@ final class EVBackgroundWorkTests: XCTestCase {
         XCTAssertEqual(services, 1)
     }
 
+    func testCancellationDuringServiceCannotArmItsReturnedDeadline() {
+        let queue = ManualQueue()
+        let clock = ManualClock()
+        let work = EVBackgroundWork(enqueue: queue.enqueue, makeDeadline: clock.makeDeadline) {
+            self.status()
+        }
+        work.service = { [weak work] in
+            work?.cancel()
+            return self.status(deadline: 250)
+        }
+        work.wake.request()
+        XCTAssertTrue(queue.runNext())
+        XCTAssertEqual(work.serviceCount, 1)
+        XCTAssertFalse(work.hasScheduledService)
+        XCTAssertTrue(clock.timers.isEmpty)
+        XCTAssertFalse(queue.runNext())
+    }
+
     func testReloadRebindsTheTransferredSchedulerAndRejectsOldQueuedWork() async throws {
         let backend = makeBackend()
         let oldWork = try XCTUnwrap(backend.backgroundWork)
