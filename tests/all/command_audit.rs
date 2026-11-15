@@ -316,9 +316,9 @@ fn resolved_vim_block_uppercase_operators_keep_rectangle_and_end_of_line_distinc
 fn resolved_vim_number_changes_follow_default_bases_width_sign_cursor_and_overflow() {
     for (source, at, input, expected, cursor) in [
         ("é 009 end", 0, Key::Ctrl('a'), "é 010 end", 5),
-        ("007", 0, Key::Ctrl('a'), "008", 2),
-        ("-001", 0, Key::Ctrl('a'), "000", 2),
-        ("-001", 0, Key::Ctrl('x'), "-002", 3),
+        ("007", 0, Key::Ctrl('a'), "010", 2),
+        ("-001", 0, Key::Ctrl('a'), "-002", 3),
+        ("-001", 0, Key::Ctrl('x'), "-000", 3),
         ("-0x00f", 0, Key::Ctrl('a'), "-0x010", 5),
         ("0x100", 0, Key::Ctrl('x'), "0x0ff", 4),
         ("0b0011", 0, Key::Ctrl('a'), "0b0100", 5),

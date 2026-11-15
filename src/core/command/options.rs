@@ -514,7 +514,6 @@ const IGNORED: &[&str] = &[
 const MATCHING: &[(&str, Option<&str>)] = &[
     ("compatible", Some("0")),
     ("encoding", Some("utf-8")),
-    ("nrformats", Some("bin,hex")),
     ("splitbelow", Some("0")),
     ("splitright", Some("0")),
     ("linebreak", Some("1")),
@@ -595,7 +594,7 @@ const MAPPED: &[&str] = &[
 /// Implemented by Viem's own command code; see docs/vimscript.md#options-and-native-settings.
 const FEATURES: &[&str] = &[
     "clipboard", "gdefault", "shiftround", "joinspaces", "whichwrap", "startofline", "history", "iskeyword",
-    "filetype", "syntax", "sections", "keywordprg", "modifiable",
+    "filetype", "syntax", "sections", "keywordprg", "modifiable", "nrformats",
 ];
 
 /// Comma-separated list options, whose `+=`, `^=` and `-=` work on items.
@@ -932,6 +931,7 @@ fn validate(name: &str, value: &VimOptionValue) -> Result<(), String> {
         }),
         "whichwrap" => items().all(|item| matches!(item, "b" | "s" | "h" | "l" | "<" | ">" | "~" | "[" | "]")),
         "iskeyword" => KeywordSet::parse(&text).is_ok(),
+        "nrformats" => items().all(|item| matches!(item, "bin" | "octal" | "hex" | "alpha" | "unsigned" | "blank")),
         "filetype" | "syntax" => text.bytes().all(|b| b.is_ascii_alphanumeric() || b"_+.#-".contains(&b)),
         "history" => (0..=10000).contains(&value.number()),
         "timeoutlen" => (0..=i32::MAX as i64).contains(&value.number()),

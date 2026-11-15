@@ -13,6 +13,8 @@ pub enum HistoryTimeAmount {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HistoryTimelineEntry {
     pub location: HistoryLocation,
+    pub parent: Option<HistoryLocation>,
+    pub preferred: bool,
     /// Number of parent edges from the currently retained root.
     pub changes: usize,
     /// Unix timestamp in seconds at the beginning of the undo unit.
@@ -48,6 +50,8 @@ impl<T, M> History<T, M> {
             .filter(|(_, node)| node.children.is_empty() && node.parent.is_some())
             .map(|(index, node)| HistoryTimelineEntry {
                 location: self.location(index),
+                parent: node.parent.map(|parent| self.location(parent)),
+                preferred: node.parent.is_some_and(|parent| self.nodes[parent].preferred_child == Some(index)),
                 changes: self.root_path(index).len().saturating_sub(1),
                 timestamp: node.timestamp,
                 saved_write: node.saved_write,
@@ -55,6 +59,14 @@ impl<T, M> History<T, M> {
             .collect::<Vec<_>>();
         entries.sort_unstable_by_key(|entry| entry.location.change);
         entries
+    }
+
+    pub(crate) fn timeline_entries(&self) -> Vec<HistoryTimelineEntry> {
+        self.nodes.iter().enumerate().map(|(index, node)| HistoryTimelineEntry {
+            location: self.location(index), parent: node.parent.map(|parent| self.location(parent)),
+            preferred: node.parent.is_some_and(|parent| self.nodes[parent].preferred_child == Some(index)),
+            changes: 0, timestamp: node.timestamp, saved_write: node.saved_write,
+        }).collect()
     }
 
     pub(crate) fn time_target(&self, later: bool, amount: HistoryTimeAmount) -> HistoryLocation {

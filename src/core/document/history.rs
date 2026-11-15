@@ -425,6 +425,8 @@ pub(crate) struct History<T, M = ()> {
     change_indexes: HashMap<HistoryChangeNumber, usize>,
     current: usize,
     group_node: Option<usize>,
+    join_next: bool,
+    navigated: bool,
     next_change_number: u64,
     next_write_number: u64,
     save_point: HistoryNodeId,
@@ -456,6 +458,8 @@ struct HistoryCommandCheckpoint<T, M> {
     change_indexes_capacity: usize,
     current: usize,
     group_node: Option<usize>,
+    join_next: bool,
+    navigated: bool,
     next_change_number: u64,
     next_write_number: u64,
     save_point: HistoryNodeId,
@@ -680,6 +684,8 @@ impl<T, M> History<T, M> {
             change_indexes,
             current: 0,
             group_node: None,
+            join_next: false,
+            navigated: false,
             next_change_number: 1,
             next_write_number: 1,
             save_point: root_id,
@@ -872,6 +878,8 @@ impl<T, M> History<T, M> {
             change_indexes_capacity: self.change_indexes.capacity(),
             current: self.current,
             group_node: self.group_node,
+            join_next: self.join_next,
+            navigated: self.navigated,
             next_change_number: self.next_change_number,
             next_write_number: self.next_write_number,
             save_point: self.save_point,
@@ -1014,6 +1022,8 @@ impl<T, M> History<T, M> {
             .shrink_to(checkpoint.change_indexes_capacity);
         self.current = checkpoint.current;
         self.group_node = checkpoint.group_node;
+        self.join_next = checkpoint.join_next;
+        self.navigated = checkpoint.navigated;
         self.next_change_number = checkpoint.next_change_number;
         self.next_write_number = checkpoint.next_write_number;
         self.save_point = checkpoint.save_point;
@@ -1023,6 +1033,22 @@ impl<T, M> History<T, M> {
         // Both memory ledgers are frozen while a command checkpoint is active. Their
         // roots already describe the restored state; refreshing here would
         // publish lazy caches created by the failed command into its status.
+    }
+
+    pub(crate) fn group_is_active(&self) -> bool { self.group_node.is_some() }
+    pub(crate) fn last_change_number(&self) -> u64 { self.next_change_number - 1 }
+
+    pub(crate) fn join_next_change(&mut self) -> bool {
+        if self.navigated { return false; }
+        self.join_next = self.nodes[self.current].parent.is_some();
+        true
+    }
+
+    fn consume_join(&mut self, grouping: bool) -> bool {
+        let join = std::mem::take(&mut self.join_next) && self.nodes[self.current].parent.is_some();
+        if join { self.group_node = Some(self.current); }
+        self.navigated = false;
+        grouping || join
     }
 
     pub(crate) fn begin_group(&mut self) {
@@ -1410,6 +1436,8 @@ impl<T, M> History<T, M> {
 
     fn move_to_index(&mut self, target: usize) -> HistoryNavigation {
         self.refresh_node_memory(self.current);
+        self.navigated = true;
+        self.join_next = false;
         let from = self.location(self.current);
         if target == self.current {
             return HistoryNavigation { from, to: from };
@@ -1610,6 +1638,7 @@ impl<T> History<T> {
     pub(crate) fn commit(&mut self, state: T, grouping: bool) {
         self.refresh_node_memory(self.current);
         let source_roots = capture_source(&mut self.source, self.accounting.as_ref(), &state);
+        let grouping = self.consume_join(grouping);
         if grouping {
             if let Some(group) = self.group_node {
                 debug_assert_eq!(group, self.current);
@@ -1725,15 +1754,19 @@ impl<T, M: HistoryEdgeMap> History<T, M> {
         let reverse = forward.inverted()?;
         forward.check_then(&reverse)?;
         reverse.check_then(&forward)?;
+        let join = self.join_next && self.nodes[self.current].parent.is_some();
+        let grouping = grouping || join;
+        let group = if join { Some(self.current) } else { self.group_node };
 
         if grouping {
-            if let Some(group) = self.group_node {
+            if let Some(group) = group {
                 debug_assert_eq!(group, self.current);
                 let edge = self.nodes[group]
                     .incoming
                     .as_ref()
                     .expect("a non-root group node has an incoming edge");
                 let composed_forward = edge.map.then(&forward)?;
+                self.consume_join(grouping);
                 let source_roots = capture_source(&mut self.source, self.accounting.as_ref(), &state);
                 self.checkpoint_node_content(group);
                 let previous_state = std::mem::replace(&mut self.nodes[group].state, Arc::new(state));
@@ -1752,6 +1785,7 @@ impl<T, M: HistoryEdgeMap> History<T, M> {
             }
         }
 
+        self.consume_join(grouping);
         let source_roots = capture_source(&mut self.source, self.accounting.as_ref(), &state);
         let parent = self.current;
         self.checkpoint_node(parent);
@@ -1907,6 +1941,16 @@ mod tests {
         assert!(branches[0].preferred);
         assert!(!branches[1].preferred);
         assert_eq!(history.redo_exact().unwrap().to, first);
+    }
+
+    #[test]
+    fn pending_undo_join_does_not_retain_a_pruned_parent() {
+        let mut history = History::new("root");
+        history.commit("a", false);
+        assert!(history.join_next_change());
+        history.set_retention_policy(HistoryRetentionPolicy::new(1, usize::MAX));
+        history.commit("b", false);
+        assert_eq!(**history.current(), "b");
     }
 
     #[test]

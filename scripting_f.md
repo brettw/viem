@@ -23,47 +23,6 @@ differs.
 Some error numbers differ only because the oracle is 9.1 and the target is
 9.2 (E896 against E1531, for example). Those are not listed.
 
-## Position and buffer builtins
-
-- `col([l, c])`, `virtcol([l, c])` and `charcol([l, c])` return 0,
-  `line([2, 1])` errors, and `line(2)` returns 2 instead of 0. `col(1)` should
-  be E1222.
-- The `curswant` argument of `cursor()` and `setpos()` is dropped.
-- `cursor(-1, -1)` returns -1 instead of E475, and `setpos('.', [1, 1])`
-  returns 0 instead of -1.
-- `search()`:
-  - ignores `smartcase`;
-  - returns the wrong sub-pattern number for `'p'`, and `searchpos()` omits
-    it;
-  - accepts invalid flags and treats an empty pattern as a match (Vim: E35);
-  - cannot match across lines with `\n`.
-- Queries for a nonexistent buffer or window answer for the current one:
-  `getbufline(99, 1)`, `getbufoneline(99, 1)`, `bufexists(99)`,
-  `bufnr('nosuch')`, `getbufvar(99, …)`, `getcurpos(99)`, `winwidth(99)`.
-- `setline(1, {})` raises E731; Vim returns 0.
-- `feedkeys(…, 'x')` does not execute.
-- `setbufvar()` and `setwinvar()` reject `&option`, and
-  `setwinvar(0, 'wv', 7)` does not create `w:wv`.
-- `wordcount()` lacks the `cursor_*` keys, and `byte2line(9999)` returns a
-  line.
-- `histnr('nosuch')` returns 0 (Vim: -1), `histadd('nosuch', 'x')` returns 1
-  (Vim: 0), and `histnr('/')` does not count an added entry.
-- `expand('nosuch*glob')` returns an empty string (Vim: the pattern), and
-  `expand('<slnum>')` is empty inside a sourced script.
-- `echo 'a' search('two') 'b'` arrives as two messages.
-- A two-key mapping `zq` is not applied by `:normal zq`, though single-key `Q`
-  is. Cause not investigated.
-- `nrformats` defaults to `bin,hex`, so Ctrl-A on `007` gives `008` (Vim
-  without `defaults.vim`: `010`), and `set nrformats=…` is refused.
-- Missing:
-  - `deletebufline` (which [Vim script support](docs/vimscript.md) lists as
-    supported), `appendbufline`, `setbufline`;
-  - `getcursorcharpos`, `searchpair`, `searchpairpos`, `searchcount`,
-    `searchdecl`;
-  - `getmarklist`, `getjumplist`, `undotree`;
-  - `getbufinfo`, `getwininfo`, `gettabinfo`, `win_id2win`, `bufadd`;
-  - `:@q`, `:*@q` and `:undojoin`.
-
 ## Language engine
 
 - **Regex:**

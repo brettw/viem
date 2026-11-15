@@ -1,4 +1,4 @@
-//! Normal and Visual number changes using Vim's default `bin,hex` number formats.
+//! Normal and Visual number changes using the buffer's `nrformats`.
 
 use super::*;
 
@@ -8,22 +8,31 @@ struct NumberToken {
     digits: Range<usize>,
     radix: u32,
     negative: bool,
+    saturating: bool,
 }
 
 fn byte(snapshot: &HardLineSnapshot, at: usize) -> Option<u8> {
     snapshot.byte_chunk_at(at).first().copied()
 }
 
-fn radix_at(snapshot: &HardLineSnapshot, at: usize, end: usize) -> u32 {
-    if at + 2 >= end || byte(snapshot, at) != Some(b'0') { return 10; }
+fn radix_at(snapshot: &HardLineSnapshot, at: usize, end: usize, formats: &str) -> u32 {
+    if at + 1 >= end || byte(snapshot, at) != Some(b'0') { return 10; }
     match (byte(snapshot, at + 1), byte(snapshot, at + 2)) {
-        (Some(b'x' | b'X'), Some(digit)) if digit.is_ascii_hexdigit() => 16,
-        (Some(b'b' | b'B'), Some(b'0' | b'1')) => 2,
+        (Some(b'x' | b'X'), Some(digit)) if digit.is_ascii_hexdigit() && formats.split(',').any(|item| item == "hex") => 16,
+        (Some(b'b' | b'B'), Some(b'0' | b'1')) if formats.split(',').any(|item| item == "bin") => 2,
+        _ if formats.split(',').any(|item| item == "octal") => {
+            let mut scan = at + 1;
+            while scan < end && byte(snapshot, scan).is_some_and(|c| c.is_ascii_digit()) {
+                if byte(snapshot, scan).unwrap() > b'7' { return 10; }
+                scan += 1;
+            }
+            if scan > at + 1 { 8 } else { 10 }
+        }
         _ => 10,
     }
 }
 
-fn token_at(snapshot: &HardLineSnapshot, line: &Range<usize>, at: usize) -> Option<NumberToken> {
+fn numeric_token_at(snapshot: &HardLineSnapshot, line: &Range<usize>, at: usize, formats: &str) -> Option<NumberToken> {
     let current = byte(snapshot, at)?;
     let mut start = at;
     if current.is_ascii_hexdigit() {
@@ -31,39 +40,50 @@ fn token_at(snapshot: &HardLineSnapshot, line: &Range<usize>, at: usize) -> Opti
         while hex_start > line.start && byte(snapshot, hex_start - 1).is_some_and(|c| c.is_ascii_hexdigit()) {
             hex_start -= 1;
         }
-        if hex_start >= line.start + 2 && radix_at(snapshot, hex_start - 2, line.end) == 16 {
+        if hex_start >= line.start + 2 && radix_at(snapshot, hex_start - 2, line.end, formats) == 16 {
             start = hex_start - 2;
         } else if current.is_ascii_digit() {
             while start > line.start && byte(snapshot, start - 1).is_some_and(|c| c.is_ascii_digit()) { start -= 1; }
-            if start >= line.start + 2 && radix_at(snapshot, start - 2, line.end) == 2 { start -= 2; }
+            if start >= line.start + 2 && radix_at(snapshot, start - 2, line.end, formats) == 2 { start -= 2; }
         } else if matches!(current, b'b' | b'B') && at > line.start
-            && radix_at(snapshot, at - 1, line.end) == 2 {
+            && radix_at(snapshot, at - 1, line.end, formats) == 2 {
             start -= 1;
         } else { return None; }
     } else if matches!(current, b'x' | b'X') && at > line.start
-        && radix_at(snapshot, at - 1, line.end) == 16 {
+        && radix_at(snapshot, at - 1, line.end, formats) == 16 {
         start -= 1;
     } else { return None; }
-    let radix = radix_at(snapshot, start, line.end);
-    let digits_start = start + if radix == 10 { 0 } else { 2 };
+    let radix = radix_at(snapshot, start, line.end, formats);
+    let digits_start = start + if matches!(radix, 2 | 16) { 2 } else { 0 };
     let mut end = digits_start;
     while end < line.end && byte(snapshot, end).is_some_and(|c| (c as char).is_digit(radix)) { end += 1; }
     if end == digits_start { return None; }
-    let negative = radix == 10 && start > line.start && byte(snapshot, start - 1) == Some(b'-');
+    let unsigned = formats.split(',').any(|item| item == "unsigned");
+    let blank = formats.split(',').any(|item| item == "blank");
+    let negative = radix == 10 && !unsigned && start > line.start && byte(snapshot, start - 1) == Some(b'-')
+        && (!blank || start == line.start + 1 || matches!(byte(snapshot, start - 2), Some(b' ' | b'\t')));
     if negative { start -= 1; }
-    Some(NumberToken { range: start..end, digits: digits_start..end, radix, negative })
+    Some(NumberToken { range: start..end, digits: digits_start..end, radix, negative, saturating: unsigned || blank })
 }
 
-fn find_number(snapshot: &HardLineSnapshot, line: Range<usize>, cursor: usize) -> Option<NumberToken> {
+fn token_at(snapshot: &HardLineSnapshot, line: &Range<usize>, at: usize, formats: &str) -> Option<NumberToken> {
+    numeric_token_at(snapshot, line, at, formats).or_else(|| {
+        (formats.split(',').any(|item| item == "alpha") && byte(snapshot, at)?.is_ascii_alphabetic()).then_some(NumberToken {
+            range: at..at + 1, digits: at..at + 1, radix: 26, negative: false, saturating: true,
+        })
+    })
+}
+
+fn find_number(snapshot: &HardLineSnapshot, line: Range<usize>, cursor: usize, formats: &str) -> Option<NumberToken> {
     if cursor >= line.end { return None; }
-    if let Some(token) = token_at(snapshot, &line, cursor) { return Some(token); }
+    if let Some(token) = token_at(snapshot, &line, cursor, formats) { return Some(token); }
     let mut at = cursor;
     while at < line.end {
         let chunk = snapshot.byte_chunk_at(at);
         let available = chunk.len().min(line.end - at);
         if available == 0 { return None; }
-        if let Some(relative) = chunk[..available].iter().position(u8::is_ascii_digit) {
-            return token_at(snapshot, &line, at + relative);
+        if let Some(relative) = chunk[..available].iter().position(|c| c.is_ascii_digit() || formats.split(',').any(|item| item == "alpha") && c.is_ascii_alphabetic()) {
+            return token_at(snapshot, &line, at + relative, formats);
         }
         at += available;
     }
@@ -72,12 +92,21 @@ fn find_number(snapshot: &HardLineSnapshot, line: Range<usize>, cursor: usize) -
 
 fn replacement(snapshot: &HardLineSnapshot, token: &NumberToken, count: usize, subtract: bool) -> Result<String, DocumentError> {
     let digits = snapshot.slice_utf8(token.digits.clone()).map_err(DocumentError::FormattedTextStorage)?;
+    if token.radix == 26 {
+        let letter = digits.as_bytes()[0];
+        let (low, high) = if letter.is_ascii_lowercase() { (b'a', b'z') } else { (b'A', b'Z') };
+        let letter = if subtract { letter.saturating_sub(count.min(255) as u8).max(low) }
+            else { letter.saturating_add(count.min(255) as u8).min(high) };
+        return Ok((letter as char).to_string());
+    }
     let parsed = u64::from_str_radix(&digits, token.radix);
     let magnitude = parsed.as_ref().copied().unwrap_or(u64::MAX);
     let count = count as u64;
     let mut negative = token.negative;
     let magnitude = if parsed.is_err() { magnitude }
-        else if token.radix != 10 {
+        else if token.saturating && !negative {
+            if subtract { magnitude.saturating_sub(count) } else { magnitude.saturating_add(count) }
+        } else if token.radix != 10 {
             if subtract { magnitude.wrapping_sub(count) } else { magnitude.wrapping_add(count) }
         } else {
             let bound = i128::from(u64::MAX);
@@ -85,8 +114,11 @@ fn replacement(snapshot: &HardLineSnapshot, token: &NumberToken, count: usize, s
             value += if subtract { -i128::from(count) } else { i128::from(count) };
             // Vim's decimal domain includes both signs of the full unsigned
             // magnitude. Crossing either end wraps to the opposite sign.
-            if value > bound { value -= bound * 2 + 1; }
-            if value < -bound { value += bound * 2 + 1; }
+            if token.saturating { value = value.clamp(-bound, bound); }
+            else {
+                if value > bound { value -= bound * 2 + 1; }
+                if value < -bound { value += bound * 2 + 1; }
+            }
             negative = value < 0;
             value.unsigned_abs() as u64
         };
@@ -95,6 +127,7 @@ fn replacement(snapshot: &HardLineSnapshot, token: &NumberToken, count: usize, s
     let width = if token.radix != 10 || digits.starts_with('0') { digits.len() } else { 0 };
     let number = match token.radix {
         2 => format!("{magnitude:0width$b}"),
+        8 => format!("0{magnitude:0width$o}", width = width.saturating_sub(1)),
         16 => {
             let upper = digits.bytes().rev().find(u8::is_ascii_alphabetic)
                 .map_or(prefix.ends_with('X'), |letter| letter.is_ascii_uppercase());
@@ -106,13 +139,13 @@ fn replacement(snapshot: &HardLineSnapshot, token: &NumberToken, count: usize, s
         else if negative { format!("-{number}") } else { number })
 }
 
-fn first_digit(snapshot: &HardLineSnapshot, region: &Range<usize>) -> Option<usize> {
+fn first_digit(snapshot: &HardLineSnapshot, region: &Range<usize>, formats: &str) -> Option<usize> {
     let mut at = region.start;
     while at < region.end {
         let chunk = snapshot.byte_chunk_at(at);
         let available = chunk.len().min(region.end - at);
         if available == 0 { return None; }
-        if let Some(relative) = chunk[..available].iter().position(u8::is_ascii_digit) {
+        if let Some(relative) = chunk[..available].iter().position(|c| c.is_ascii_digit() || formats.split(',').any(|item| item == "alpha") && c.is_ascii_alphabetic()) {
             return Some(at + relative);
         }
         at += available;
@@ -146,11 +179,12 @@ fn visual_number_edits(
     count: usize,
     subtract: bool,
     progressive: bool,
+    formats: &str,
 ) -> Result<Vec<TextEdit>, DocumentError> {
     let mut amount = count;
     let mut edits = Vec::new();
     for region in regions {
-        let Some(token) = first_digit(snapshot, region).and_then(|digit| token_at(snapshot, region, digit)) else { continue };
+        let Some(token) = first_digit(snapshot, region, formats).and_then(|digit| token_at(snapshot, region, digit, formats)) else { continue };
         edits.push(number_edit(snapshot, &token, amount, subtract)?);
         if progressive {
             amount = amount.saturating_add(count);
@@ -188,7 +222,7 @@ impl CommandInterpreter {
         progressive: bool,
     ) -> Result<bool, DocumentError> {
         let snapshot = document.hard_line_snapshot();
-        let edits = visual_number_edits(&snapshot, regions, count, subtract, progressive)?;
+        let edits = visual_number_edits(&snapshot, regions, count, subtract, progressive, &self.vim_options.text("nrformats"))?;
         let before = document.revision();
         let cursor = if edits.is_empty() { start } else {
             commit_model_with_cursor(document, ModelRequest::ApplyTextEdits {
@@ -203,7 +237,7 @@ impl CommandInterpreter {
         self.requested_register = None;
         let snapshot = document.hard_line_snapshot();
         let line = snapshot.line_at_offset(self.cursor).map_err(|_| DocumentError::AmbiguousProjection)?.content_range();
-        let Some(token) = find_number(&snapshot, line, self.cursor) else { return Ok(CommandOutput::complete()); };
+        let Some(token) = find_number(&snapshot, line, self.cursor, &self.vim_options.text("nrformats")) else { return Ok(CommandOutput::complete()); };
         let edit = number_edit(&snapshot, &token, count, subtract)?;
         let start = edit.range.start;
         let before = document.revision();

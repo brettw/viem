@@ -229,6 +229,7 @@ mod list_item_paragraph_input;
 mod list_item_paragraph_integration;
 mod list_paragraph_indent;
 mod vimscript_core;
+mod vimscript_positions;
 
 mod vimscript_abbreviations;
 mod vimscript_events;

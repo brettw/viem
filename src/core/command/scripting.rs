@@ -4,6 +4,7 @@
 //! implement come back here as host commands and execute through the
 //! ordinary Ex machinery.
 use super::*;
+use super::script_queries::script_window_matches;
 use super::ex_execute::ExInfoRequest;
 use crate::vimscript::{self, EvalResult, Fail, HostCommand, Message, OptionScope, Runtime, ScriptHost, ScriptState, VimError};
 use crate::vimscript::value::Value;
@@ -24,12 +25,13 @@ pub(crate) enum ScriptAction {
         visual_range: Option<ex_addresses::ResolvedExRange>,
     },
     /// Move the cursor to a one-based physical source line and byte column.
-    SetCursor { line: usize, column: usize },
+    SetCursor { line: usize, column: usize, want: Option<usize> },
     /// Replace physical source lines starting at `first` (one-based); lines
     /// beyond the end are appended.
     SetLines { first: usize, lines: Vec<String> },
     /// Insert lines after physical line `after` (zero inserts at the top).
     AppendLines { after: usize, lines: Vec<String> },
+    DeleteLines { first: usize, last: usize },
 }
 
 /// Immutable TextYankPost payload, retained with its replay frame.
@@ -355,6 +357,9 @@ impl CommandInterpreter {
 
     /// One-based byte column of the cursor in its physical line, counted in
     /// UTF-8 as in Vim whatever the file's encoding.
+    pub(crate) fn script_search_pattern(&self) -> Option<&str> { self.last_search.as_ref().map(|(_, pattern)| pattern.as_str()) }
+    pub(crate) fn script_smartcase(&self) -> bool { self.search_options.smartcase }
+
     pub(crate) fn script_cursor_column(&self, document: &Document) -> i64 {
         self.script_cursor_position(document).map_or(1, |(_, column)| column.byte())
     }
@@ -487,15 +492,46 @@ impl CommandInterpreter {
 
     /// Read-only editor builtins shared by every host.
     pub(crate) fn script_function(&mut self, document: &Document, buffer_name: Option<&str>, name: &str, args: &[Value]) -> Option<EvalResult<Value>> {
+        if let Some(result) = self.script_buffer_query(document, buffer_name, name, args) { return Some(result); }
         let number = |index: usize| -> EvalResult<i64> { Ok(args.get(index).map(|value| value.to_number()).transpose()?.unwrap_or(0)) };
         Some(match name {
-            "line" => args.first().map_or(Ok(Value::Number(0)), |value| Ok(Value::Number(self.script_position_line(document, value)?))),
+            "line" => (|| {
+                let Some(value) = args.first() else { return Ok(0.into()) };
+                if let Value::List(list) = value {
+                    let list = list.snapshot();
+                    let line = list.first().map(Value::to_number).transpose()?.unwrap_or(0);
+                    return Ok(if list.len() >= 2 && line >= 1 && line as usize <= document.physical_source_line_number_count() { line } else { 0 }.into());
+                }
+                Ok(if matches!(value, Value::String(_)) {
+                    let text = value.to_text()?;
+                    if text.chars().next().is_some_and(|c| c.is_ascii_digit()) { 0.into() }
+                    else { self.script_position_line(document, value)?.into() }
+                } else { 0.into() })
+            })(),
             "col" | "virtcol" | "charcol" => (|| {
-                let Some(position) = args.first() else { return Ok(Value::Number(0)) };
-                let text = position.to_text().unwrap_or_default();
-                Ok(Value::Number(self.script_column_position(document, &text).map_or(0, |(_, column)| match name {
-                    "col" => column.byte(),
-                    "charcol" => column.character(),
+                let Some(position) = args.first() else { return Ok(0.into()) };
+                let resolved = match position {
+                    Value::List(list) => {
+                        let list = list.snapshot();
+                        let line = list.first().map(Value::to_number).transpose()?.unwrap_or(0);
+                        let Some(text) = self.script_line_text(document, line) else { return Ok(0.into()) };
+                        let column = match list.get(1) {
+                            Some(Value::String(value)) if value.as_bytes() == b"$" => if name == "charcol" { text.graphemes(true).count() as i64 + 1 } else { text.len() as i64 + 1 },
+                            Some(value) => value.to_number()?,
+                            None => 0,
+                        };
+                        if column < 1 || column as usize > text.len() + 1 { return Ok(0.into()) }
+                        if name == "col" { return Ok(column.into()); }
+                        if name == "charcol" { return Ok(if column as usize <= text.graphemes(true).count() + 1 { column } else { 0 }.into()); }
+                        let mut offset = column as usize - 1;
+                        while !text.is_char_boundary(offset) { offset -= 1; }
+                        Some((line, LineColumn { text, offset, line_end: false }))
+                    }
+                    Value::String(_) => self.script_column_position(document, &position.to_text()?),
+                    _ => return Err(VimError::new(1222, "String or List required for argument 1").into()),
+                };
+                Ok(Value::Number(resolved.map_or(0, |(_, column)| match name {
+                    "col" => column.byte(), "charcol" => column.character(),
                     _ => column.virtual_end(self.script_tabstop()),
                 })))
             })(),
@@ -519,9 +555,13 @@ impl CommandInterpreter {
                     }
                 }
             })(),
-            "getpos" | "getcurpos" | "getcharpos" => (|| {
+            "getpos" | "getcurpos" | "getcharpos" | "getcursorcharpos" => (|| {
+                let current = matches!(name, "getcurpos" | "getcursorcharpos");
+                if current && !script_window_matches(args.first())? {
+                    return Ok(Value::list(vec![0.into(); 5]));
+                }
                 let text = match args.first() {
-                    Some(position) if name != "getcurpos" => position.to_text()?,
+                    Some(position) if !current => position.to_text()?,
                     _ => ".".into(),
                 };
                 // A file mark names its buffer; Viem has only buffer 1.
@@ -532,7 +572,7 @@ impl CommandInterpreter {
                             _ if column.line_end && name != "getcharpos" => MAXIMUM_COLUMN,
                             // Vim reads the maximum column as the last character.
                             _ if column.line_end => column.character() - 1,
-                            "getcharpos" => column.character(),
+                            "getcharpos" | "getcursorcharpos" => column.character(),
                             _ => column.byte(),
                         };
                         (line, number)
@@ -546,9 +586,9 @@ impl CommandInterpreter {
                 };
                 let buffer = if line == 0 { 0 } else { buffer };
                 let mut items = vec![Value::Number(buffer), line.into(), column.into(), Value::Number(0)];
-                if name == "getcurpos" {
+                if current {
                     let want = self.script_cursor_position(document).map_or(1, |(_, column)| column.cursor_want(self.script_tabstop()));
-                    items.push(want.into());
+                    items.push(self.preferred_column.map_or(want, |column| if column == usize::MAX { MAXIMUM_COLUMN } else { column as i64 + 1 }).into());
                 }
                 Ok(Value::list(items))
             })(),
@@ -594,20 +634,7 @@ impl CommandInterpreter {
                 Some(_) => "v",
                 None => "",
             })),
-            "bufnr" | "winnr" | "tabpagenr" | "winbufnr" | "bufwinnr" | "tabpagewinnr" => Ok(Value::Number(1)),
-            "win_getid" | "bufwinid" => Ok(Value::Number(1000)),
-            "bufname" | "expand_file" => Ok(Value::String(buffer_name.unwrap_or("").into())),
-            "bufexists" | "buflisted" | "bufloaded" => Ok(Value::Number(1)),
             "changenr" => Ok(Value::Number(document.history_status().current.change.as_u64() as i64)),
-            "wordcount" => (|| {
-                let text = document.text();
-                let words = text.split_whitespace().count() as i64;
-                Ok(Value::Dict(vimscript::Dict::from_pairs([
-                    ("words".into(), words.into()),
-                    ("chars".into(), (text.chars().count() as i64).into()),
-                    ("bytes".into(), (text.len() as i64).into()),
-                ])))
-            })(),
             "line2byte" => (|| {
                 let line = number(0)?;
                 if line < 1 || line as usize > document.physical_source_line_number_count() + 1 {
@@ -620,7 +647,7 @@ impl CommandInterpreter {
             })(),
             "byte2line" => (|| {
                 let byte = number(0)?;
-                if byte < 1 {
+                if byte < 1 || byte as usize > document.source_byte_len() {
                     return Ok(Value::Number(-1));
                 }
                 Ok(Value::Number(document.physical_line_index_at_source((byte as usize - 1).min(document.source_byte_len())).map_or(-1, |index| index as i64 + 1)))
@@ -755,32 +782,11 @@ impl CommandInterpreter {
             "foldclosed" | "foldclosedend" => Ok(Value::Number(-1)),
             "synIDattr" | "getcmdline" | "getcmdtype" | "state" => Ok(Value::str("")),
             "getcmdpos" => Ok(Value::Number(0)),
-            "histget" => (|| {
-                let history = match args.first().map(|value| value.to_text()).transpose()?.as_deref() {
-                    Some("/" | "?" | "search" | "s") => &self.search_history,
-                    _ => &self.ex_history,
-                };
-                let index = args.get(1).map(|value| value.to_number()).transpose()?.unwrap_or(-1);
-                let item = if index < 0 { history.len().checked_sub(index.unsigned_abs() as usize) } else { (index as usize).checked_sub(1) };
-                Ok(Value::String(item.and_then(|i| history.get(i)).cloned().unwrap_or_default().into()))
-            })(),
-            "histnr" => Ok(Value::Number(self.ex_history.len() as i64)),
-            "histadd" => (|| {
-                let entry = args.get(1).map(|value| value.to_text()).transpose()?.unwrap_or_default();
-                match args.first().map(|value| value.to_text()).transpose()?.as_deref() {
-                    Some("/" | "?" | "search" | "s") => push_history(&mut self.search_history, entry, self.vim_options.number("history") as usize),
-                    _ => push_history(&mut self.ex_history, entry, self.vim_options.number("history") as usize),
-                }
-                Ok(Value::Number(1))
-            })(),
-            "histdel" => {
-                self.ex_history.clear();
-                Ok(Value::Number(1))
-            }
             "maparg" | "mapcheck" | "hasmapto" => Ok(self.mappings.script_query(name, args)),
-            "winheight" | "winwidth" => Ok(Value::Number(if name == "winheight" { 40 } else { 80 })),
-            "winline" | "wincol" => Ok(Value::Number(1)),
             "getbufvar" | "getwinvar" | "gettabvar" | "gettabwinvar" => (|| {
+                let valid = if name == "getbufvar" { super::script_queries::script_buffer_matches(args.first(), buffer_name)? }
+                    else { super::script_queries::script_window_matches(args.first())? };
+                if !valid { return Ok(args.get(if name == "gettabwinvar" { 3 } else { 2 }).cloned().unwrap_or_else(|| "".into())); }
                 let variable = args.get(if name == "gettabwinvar" { 2 } else { 1 }).map(|value| value.to_text()).transpose()?.unwrap_or_default();
                 let default = args.get(if name == "gettabwinvar" { 3 } else { 2 }).cloned();
                 if let Some(option) = variable.strip_prefix('&') {
@@ -809,23 +815,6 @@ impl CommandInterpreter {
                 };
                 dict.insert(variable, value);
                 Ok(Value::Number(0))
-            })(),
-            "getbufline" | "getbufoneline" => (|| {
-                let first = args.get(1).map(|value| self.script_position_line(document, value)).transpose()?.unwrap_or(1);
-                let last = args.get(2).map(|value| self.script_position_line(document, value)).transpose()?.unwrap_or(first);
-                if name == "getbufoneline" {
-                    return Ok(Value::String(self.script_line_text(document, first).unwrap_or_default().into()));
-                }
-                let mut lines = Vec::new();
-                let mut line = first.max(1);
-                while line <= last {
-                    match self.script_line_text(document, line) {
-                        Some(text) => lines.push(Value::String(text.into())),
-                        None => break,
-                    }
-                    line += 1;
-                }
-                Ok(Value::list(lines))
             })(),
             "expand" => (|| {
                 let text = args.first().map(|value| value.to_text()).transpose()?.unwrap_or_default();
@@ -870,6 +859,7 @@ impl CommandInterpreter {
     pub(crate) fn script_resolve_range(&self, document: &Document, range: &str) -> Result<(i64, i64), VimError> {
         let count = document.physical_source_line_number_count() as i64;
         let current = self.script_cursor_line(document);
+        if range.trim() == "*" { return self.script_resolve_range(document, "'<,'>"); }
         if range.trim() == "%" {
             return Ok((1, count));
         }
@@ -1234,7 +1224,9 @@ pub(crate) const SCRIPT_FUNCTIONS: &[&str] = &[
     "histnr", "histadd", "histdel", "maparg", "mapcheck", "hasmapto", "winheight", "winwidth", "winline", "wincol",
     "getbufvar", "getwinvar", "gettabvar", "gettabwinvar", "setbufvar", "setwinvar", "settabvar", "getbufline",
     "getbufoneline", "cursor", "setpos", "setline", "append", "winsaveview", "winrestview", "search", "searchpos",
-    "feedkeys", "setcharpos", "setcursorcharpos",
+    "feedkeys", "setcharpos", "setcursorcharpos", "getcursorcharpos", "deletebufline", "setbufline", "appendbufline",
+    "searchpair", "searchpairpos", "searchcount", "searchdecl", "getmarklist", "getjumplist", "undotree",
+    "getbufinfo", "getwininfo", "gettabinfo", "win_id2win",
 ];
 
 /// Host answers for `has()`.
@@ -1247,7 +1239,7 @@ pub(crate) fn script_feature(name: &str) -> Option<bool> {
 
 /// Whether the host implements the full Vim command `name`.
 pub(crate) fn host_command_exists(name: &str) -> bool {
-    super::options::HOST_COMMANDS.contains(&name)
+    matches!(name, "@" | "undojoin") || super::options::HOST_COMMANDS.contains(&name)
         || ex::is_supported_command(name)
         || mappings::is_mapping_command(name)
         || abbreviations::is_abbreviation_command(name)
@@ -1270,6 +1262,10 @@ impl CommandInterpreter {
 
     /// Execute one host command from a script directly (no coordinator).
     pub(crate) fn execute_host_command(&mut self, document: &mut Document, text: &str, command: &HostCommand) -> CommandOutput {
+        if command.name == Some("undojoin") {
+            return if document.join_next_change() { CommandOutput::complete() }
+                else { CommandOutput { status: CommandStatus::Error("E790: undojoin is not allowed after undo".into()), ..CommandOutput::complete() } };
+        }
         if let Some(name) = command.name.filter(|name| mappings::is_mapping_command(name)) {
             return self.execute_mapping_command(name, command.bang, &command.argument, command.sid);
         }
@@ -1355,6 +1351,10 @@ impl CommandInterpreter {
     ) -> CommandOutput {
         match action {
             ScriptAction::Command { text, name, bang, argument, sid, .. } => {
+                if name == Some("undojoin") {
+                    return if document.join_next_change() { CommandOutput::complete() }
+                        else { CommandOutput { status: CommandStatus::Error("E790: undojoin is not allowed after undo".into()), ..CommandOutput::complete() } };
+                }
                 if let Some(name) = name.filter(|name| mappings::is_mapping_command(name)) {
                     return self.execute_mapping_command(name, bang, &argument, sid);
                 }
@@ -1366,7 +1366,11 @@ impl CommandInterpreter {
                 }
                 self.execute_ex_command_with_visual_range(document, &text, visual_range)
             }
-            ScriptAction::SetCursor { line, column } => self.script_set_cursor(document, line, column),
+            ScriptAction::SetCursor { line, column, want } => {
+                let output = self.script_set_cursor(document, line, column);
+                self.preferred_column = want;
+                output
+            },
             ScriptAction::SetLines { first, lines } => self.script_edit_lines(document, None, |document, ending| {
                 let count = document.physical_source_line_number_count();
                 let existing = count.saturating_sub(first - 1).min(lines.len());
@@ -1378,6 +1382,26 @@ impl CommandInterpreter {
                 // ends with a line ending depends only on the last of them.
                 append_source_lines(document, first - 1 + existing, &lines[existing..], ending)
             }),
+            ScriptAction::DeleteLines { first, last } => {
+                let line = self.script_cursor_line(document).max(1) as usize;
+                let column = self.script_cursor_column(document).max(1) as usize;
+                let last = last.min(document.physical_source_line_number_count());
+                let mut output = self.script_edit_lines(document, None, |document, _| {
+                    let count = document.physical_source_line_number_count();
+                    let first_line = document.physical_line(first - 1)?;
+                    let last_line = document.physical_line(last - 1)?;
+                    let mut range = first_line.source_range.start..last_line.source_range.end;
+                    if last >= count && first > 1 && last_line.content_range.end == last_line.source_range.end {
+                        range.start = document.physical_line(first - 2)?.content_range.end;
+                    }
+                    document.replace_physical_source_literal(range, "").map(|_| ())
+                });
+                if output.status == CommandStatus::Complete {
+                    let line = if line > last { line - (last - first + 1) } else if line >= first { first } else { line };
+                    output.merge(self.script_set_cursor(document, line, column));
+                }
+                output
+            },
             ScriptAction::AppendLines { after, lines } => {
                 let inserted = Some((after, lines.len()));
                 self.script_edit_lines(document, inserted, |document, ending| append_source_lines(document, after, &lines, ending))

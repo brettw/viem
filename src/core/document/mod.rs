@@ -2219,6 +2219,15 @@ impl Document {
         self.try_redo().is_ok()
     }
 
+    /// Join the next successful source change to the current undo node.
+    /// History navigation invalidates the request, as with Vim's :undojoin.
+    pub(crate) fn join_next_change(&mut self) -> bool { self.history.join_next_change() }
+    pub(crate) fn history_group_is_active(&self) -> bool { self.history.group_is_active() }
+    pub(crate) fn history_last_change_number(&self) -> u64 { self.history.last_change_number() }
+
+    /// Lightweight retained-node metadata, without source or transaction copies.
+    pub fn history_timeline_entries(&self) -> Vec<HistoryTimelineEntry> { self.history.timeline_entries() }
+
     /// Read-only state of the branching undo tree.
     pub fn history_status(&self) -> HistoryStatus {
         let mut status = self.history.status();

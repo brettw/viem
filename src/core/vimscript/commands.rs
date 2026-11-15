@@ -28,7 +28,7 @@ pub fn skip_range(src: &[u8], mut at: usize) -> usize {
         at = skip_white(src, at);
         let Some(&byte) = src.get(at) else { return at };
         match byte {
-            b'0'..=b'9' | b'.' | b'$' | b'%' | b'+' | b'-' | b',' | b';' => at += 1,
+            b'0'..=b'9' | b'.' | b'$' | b'%' | b'*' | b'+' | b'-' | b',' | b';' => at += 1,
             b'\'' => {
                 at += 1;
                 if at < src.len() {
@@ -370,7 +370,7 @@ fn script_command(full: &str) -> Option<ScriptCommand> {
 
 /// Whether the engine implements the full command name `full`.
 pub(crate) fn engine_command(full: &str) -> bool {
-    script_command(full).is_some()
+    script_command(full).is_some() || full == "@"
 }
 
 fn structural(command: ScriptCommand) -> bool {
@@ -534,6 +534,32 @@ pub(crate) fn execute_command(rt: &mut Runtime, host: &mut dyn ScriptHost, line:
         }
         return error(Next::NextLine, VimError::new(492, format!("Not an editor command: {}", String::from_utf8_lossy(&src[header.start..]))));
     };
+    if full == "@" {
+        let (argument, next) = host_argument(src, &header, full);
+        if !executing { return outcome(next, Ok(())); }
+        let register = trim(&argument).first().copied().unwrap_or(b'@') as char;
+        let result = (|| {
+            let value = host.get_register(register)?;
+            let text = value.to_bytes()?;
+            let mut frame = Frame::new(FrameKind::Execute, super::source::script_lines(&text).into(), rt.current_sid());
+            frame.scope = rt.current_scope();
+            frame.vim9 = rt.vim9();
+            // A range puts the cursor on its last line before executing the
+            // register once; it does not run a register on every line.
+            if !header.range.is_empty() {
+                let range = if header.range == b"*" { "'<,'>".to_owned() } else { String::from_utf8_lossy(&header.range).into_owned() };
+                let resolved = host.call_function(rt, "__viem_resolve_range", &[range.into()])
+                    .ok_or_else(|| VimError::new(481, "No range allowed"))??;
+                if let Value::List(lines) = resolved {
+                    let last = lines.snapshot().last().cloned().unwrap_or(1.into());
+                    host.call_function(rt, "cursor", &[last, 1.into()]).ok_or_else(|| VimError::new(481, "No range allowed"))??;
+                }
+            }
+            rt.frames.push(frame);
+            Ok(())
+        })();
+        return outcome(next, result);
+    }
     if let Some(command) = script_command(full) {
         if !executing && !structural(command) {
             return outcome(skip_script_command(rt, host, src, &header, command), Ok(()));
@@ -660,7 +686,7 @@ pub fn single_host_command(state: &super::ScriptState, line: &str) -> Option<Hos
         command.name = None;
         return Some(command);
     };
-    if script_command(full).is_some() || super::excmds::is_map_like(full) || matches!(full, "colorscheme" | "setfiletype" | "set" | "setlocal" | "setglobal") {
+    if script_command(full).is_some() || super::excmds::is_map_like(full) || matches!(full, "@" | "undojoin" | "colorscheme" | "setfiletype" | "set" | "setlocal" | "setglobal") {
         return None;
     }
     let (argument, next) = host_argument(src, &header, full);

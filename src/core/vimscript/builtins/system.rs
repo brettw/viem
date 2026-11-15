@@ -249,6 +249,13 @@ fn expand(rt: &mut Runtime, host: &mut dyn ScriptHost, args: &[Value]) -> EvalRe
     let source = text(args, 0)?;
     let as_list = opt_bool(args, 2, false)?;
     let trimmed = source.trim();
+    if matches!(trimmed, "<slnum>" | "<sflnum>") {
+        let number = rt.frames.iter().rev().find_map(|frame| {
+            if matches!(frame.kind, crate::vimscript::exec::FrameKind::CommandLine) { return None; }
+            frame.lines.get(frame.command_line).map(|line| line.lnum)
+        }).unwrap_or(0).to_string();
+        return Ok(if as_list { Value::list(vec![number.into()]) } else { number.into() });
+    }
     // Words under the cursor and similar editor values come from the host.
     let lower = trimmed.to_ascii_lowercase();
     if ["<cword>", "<cword>", "<cfile>", "<cexpr>", "<slnum>", "<sflnum>"].iter().any(|tag| lower.starts_with(tag)) || trimmed.starts_with("<cWORD>") {
@@ -264,7 +271,11 @@ fn expand(rt: &mut Runtime, host: &mut dyn ScriptHost, args: &[Value]) -> EvalRe
         Err(other) => return Err(other),
     };
     let wildcard = expanded.contains(['*', '?', '[']);
-    let results = if wildcard { glob(rt, &expanded, &mut GlobBudget::default())? } else { vec![expanded] };
+    let results = if wildcard {
+        let mut matches = glob(rt, &expanded, &mut GlobBudget::default())?;
+        if matches.is_empty() { matches.push(expanded); }
+        matches
+    } else { vec![expanded] };
     Ok(if as_list { Value::list(results.into_iter().map(Value::from).collect()) } else { Value::String(results.join("\n").into()) })
 }
 

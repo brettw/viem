@@ -129,8 +129,8 @@ Builtins cover arithmetic, string/Unicode handling, Lists/Dictionaries/Blobs,
 conversion, JSON, formatting, regular expressions, callbacks, assertions and
 read-only environment/filesystem queries. Editor operations include `getline`,
 `getbufline`, `line`, `col`, `getpos`, `cursor`, `setpos`, `setline`, `append`,
-`deletebufline`, register access, search, history and mapping queries. Editing
-uses the same verified document transactions as ordinary commands. Line-based
+`setbufline`, `appendbufline`, `deletebufline`, register access, search, history
+and mapping queries. Editing uses the same verified document transactions as ordinary commands. Line-based
 buffer builtins address physical source lines; they do not manufacture a second
 formatted-document model.
 
@@ -138,7 +138,11 @@ The name catalogue also recognizes builtins without an implementation; calling
 one reports an unsupported-function error. Do not treat every familiar name as
 full Vim compatibility. Some buffer/window/tab introspection is a single-buffer
 compatibility view: identifiers and window dimensions are placeholders, not a
-query of native window geometry. There is no cross-buffer editing API.
+query of native window geometry. Selectors still validate that compatibility
+view: nonexistent buffers and windows return Vim's empty, default or failure
+result. `getbufinfo`, `getwininfo` and `gettabinfo` describe this view, not the
+application's native window registry. There is no cross-buffer editing or
+buffer-creation API; `bufadd` remains deliberately unsupported.
 Interactive function definition is unsupported; define functions in sourced or
 startup scripts. Input/confirmation compatibility functions return defaults
 instead of opening prompts, and `strftime()` formats dates in UTC only.
@@ -146,6 +150,21 @@ instead of opening prompts, and `strftime()` formats dates in UTC only.
 Script regular-expression functions use the bounded legacy Vim pattern engine.
 Ordinary editor search retains Viem's documented regex dialect; scripting does
 not replace that search contract.
+
+`search`, `searchpos`, paired searches, match counts and declaration lookup
+operate on physical source. Multiline script searches use the legacy matcher's
+256 KiB input budget and fail explicitly when that context cannot fit, rather
+than returning a result from truncated text. Pair searches also have a finite
+candidate budget and evaluate skip callbacks with the cursor on each candidate.
+
+`getcursorcharpos`, mark and jump lists, and `undotree` expose current editor
+state. Undo-tree queries copy lightweight metadata, never document snapshots.
+`:undojoin` joins the next successful edit to the current undo node and reports
+E790 after undo or redo. `:@r` executes register contents as Ex script; a range
+(including `*` for the last Visual range) positions its cursor before execution.
+`feedkeys(..., 'x')` consumes queued keys before returning. `nrformats` is
+buffer-local and controls Normal and Visual number changes, with Vim's
+`bin,octal,hex` default and explicit overrides for decimal-only editing.
 
 Filesystem reads such as `readfile`, `filereadable`, `glob` and `executable` are
 available. Script builtins cannot write/delete/rename files, modify environment

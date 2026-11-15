@@ -53,6 +53,7 @@ pub mod mappings;
 mod abbreviations;
 pub(crate) mod options;
 pub(crate) mod scripting;
+pub(crate) mod script_queries;
 
 mod command_line_completion;
 mod command_line_edit;
@@ -2357,6 +2358,7 @@ impl CommandInterpreter {
         self.mode == Mode::Normal
             && self.pending == Pending::None
             && !self.register_pending
+            && self.mapping_pending.is_empty()
             && *event == InputEvent::Key(Key::Char('q'))
     }
 
