@@ -600,6 +600,9 @@ pub struct ExNormalRequest {
     /// `:normal!` requests literal built-in commands. Mappings are currently
     /// deferred, but retaining this bit avoids changing the interface later.
     pub literal: bool,
+    /// Without a range, `:normal` runs at the cursor rather than at the start
+    /// of each line of its range.
+    pub at_cursor: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1313,6 +1316,7 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
                     range,
                     commands: commands.clone(),
                     literal: command.bang,
+                    at_cursor: command.range.is_none(),
                 }));
         }
         ExAction::Substitute(substitute) => {
@@ -3985,7 +3989,7 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(&normal.outcome.frontend_requests[0],
-            ExFrontendRequest::Normal(ExNormalRequest { range, commands, literal: true })
+            ExFrontendRequest::Normal(ExNormalRequest { range, commands, literal: true, .. })
                 if range.start.index == 0 && range.end.index == 1 && commands == "A!"));
 
         let goto = prepare_ex(

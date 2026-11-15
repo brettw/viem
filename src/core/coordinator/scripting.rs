@@ -25,6 +25,9 @@ pub(super) struct ScriptFrame {
     event_context: Option<Value>,
     previous_event_context: Option<Value>,
     started: bool,
+    /// The failure of the nested replay (a `:normal`) this script waited for,
+    /// delivered to the script when it resumes.
+    pub(super) resume_failure: Option<CommandStatus>,
 }
 
 impl std::fmt::Debug for ScriptFrame {
@@ -59,6 +62,7 @@ impl ScriptFrame {
             event_context,
             previous_event_context: None,
             started: false,
+            resume_failure: None,
         }
     }
 }
@@ -463,7 +467,13 @@ impl<P: TextMeasurementProvider> ScriptHost for CoreScriptHost<'_, P> {
                 let core = &mut *self.core;
                 let buffer = core.buffer_filename().to_owned();
                 let buffer = (!buffer.is_empty()).then_some(buffer);
-                return core.views.get_mut(&view_id).expect("script view").commands.script_function(&core.document, buffer.as_deref(), name, args);
+                let result = core.views.get_mut(&view_id).expect("script view").commands.script_function(&core.document, buffer.as_deref(), name, args);
+                // Like `:let @r`, a function that changes registers or history
+                // publishes it, so a later command in the same run sees it.
+                if matches!(name, "setreg" | "histadd" | "histdel") && result.as_ref().is_some_and(Result::is_ok) {
+                    core.publish_buffer_commands(view_id);
+                }
+                return result;
             }
         };
         Some(result)
@@ -512,6 +522,43 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
     }
 
+    /// A command inside replays a script started (its `:normal`) failed.
+    /// Like Vim, end only those replays and let the script handle the error;
+    /// without a script frame the caller stops the whole replay.
+    pub(super) fn fail_into_script(
+        &mut self,
+        view_id: ViewId,
+        clipboard: Option<&ClipboardCommandContext>,
+        frames: &mut Vec<ReplayFrame>,
+        accumulator: &mut CoreOutcomeAccumulator,
+        status: CommandStatus,
+    ) -> Result<Option<CommandStatus>, CoreError> {
+        let Some(script) = frames.iter().rposition(|frame| matches!(frame, ReplayFrame::Script(_))) else {
+            return Ok(Some(status));
+        };
+        if script + 1 == frames.len() {
+            return Ok(Some(status));
+        }
+        while frames.len() > script + 1 {
+            let frame = frames.pop();
+            if matches!(&frame, Some(ReplayFrame::ExNormal { plan, .. }) if plan.global) {
+                self.views.get_mut(&view_id).expect("replay view").commands.global_replay_depth -= 1;
+            }
+            self.release_replay_frame(view_id, frame);
+            self.views.get_mut(&view_id).expect("replay view").commands.end_replay_frame();
+        }
+        self.queued_replay = None;
+        if self.views.get(&view_id).expect("replay view").commands.replay_needs_abort() {
+            let cleanup = self.dispatch_replay_input(view_id, InputEvent::Key(Key::Escape), clipboard);
+            accumulator.merge(cleanup)?;
+        }
+        accumulator.command_mut().status = CommandStatus::Complete;
+        if let Some(ReplayFrame::Script(frame)) = frames.last_mut() {
+            frame.resume_failure = Some(status);
+        }
+        Ok(None)
+    }
+
     pub(super) fn release_replay_frame(&mut self, view_id: ViewId, frame: Option<ReplayFrame>) {
         if let Some(ReplayFrame::Script(script)) = frame {
             self.release_script_frame(view_id, &script);
@@ -544,6 +591,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         let visual_range = frame.visual_range.take();
         let last_failure = frame.last_failure.take();
         let fed_keys = std::mem::take(&mut frame.fed_keys);
+        let resume_failure = frame.resume_failure.take();
         let mut host = CoreScriptHost {
             core: &mut *self,
             view_id,
@@ -560,6 +608,10 @@ impl<P: TextMeasurementProvider> Core<P> {
             awaiting_host: false,
             suppress_child_events: false,
         };
+        if let Some(error) = resume_failure.as_ref().and_then(status_error) {
+            host.last_failure = Some((error.text(), resume_failure.clone().unwrap_or(CommandStatus::Complete)));
+            runtime.fail_suspended_command(&mut host, Fail::Error(error));
+        }
         let state = runtime.run(&mut host);
         let CoreScriptHost { messages, emitted_error, visual_range, last_failure, fed_keys, suspend, awaiting_host, suppress_child_events, .. } = host;
         let Some(ReplayFrame::Script(frame)) = frames.last_mut() else {

@@ -23,27 +23,6 @@ differs.
 Some error numbers differ only because the oracle is 9.1 and the target is
 9.2 (E896 against E1531, for example). Those are not listed.
 
-## Serious: wrong edits or lost control flow
-
-1. **`setreg()` is invisible to puts in the same run.**
-   `let @a = 'L1' | call setreg('a', 'word') | put a` inserts `L1`.
-   `getreg('a')` returns `word` in between, and `"ap` behaves the same way. A
-   put on a later command line sees the new value, and `let @a = …` is not
-   affected. Confirmed across command lines.
-2. **`:normal` ignores the current column.** `:call cursor(1, 5)` then
-   `:normal! w` leaves the cursor at column 5 (Vim: 9). Two separate
-   `:normal! w` lines also end at 5, while `:normal! ww` reaches 9. Puts and
-   inserts after an earlier `:normal` therefore land in the wrong place.
-   Confirmed across command lines.
-3. **Unsupported Normal commands abort the whole script and bypass `try`.**
-   `try | normal! "a]p | catch | … | endtry | echo 'after'` runs neither the
-   catch nor the echo. The same happens for `normal! qaq` and
-   `i<C-R><C-R>a`. A sourced file stops at the first one.
-4. **`setline()` and `append()` drop empty lines when the buffer has no final
-   newline.** `%d _ | call setline(1, ['a', '', 'b'])` yields `['a', 'b']`.
-   `append(1, ['', 'b', '', ''])` on a one-line unterminated buffer loses the
-   last empty line.
-
 ## Registers and marks
 
 - **Value forms:**

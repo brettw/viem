@@ -7672,9 +7672,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                                 .commands
                                 .rejects_ex_normal_macro_recording(&event)
                         {
-                            terminal_status = Some(CommandStatus::Unsupported(
-                                ":normal macro recording is not supported".into(),
-                            ));
+                            terminal_status = self.fail_into_script(view_id, clipboard.as_ref(), &mut frames, &mut accumulator,
+                                CommandStatus::Unsupported(":normal macro recording is not supported".into()))?;
                             continue;
                         }
 
@@ -7721,7 +7720,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                                 if let ReplayFrame::ExNormal { plan, event, .. } = &mut frames[global] { *event = plan.events.len(); }
                                 accumulator.command_mut().status = CommandStatus::Complete;
                                 self.queued_replay = None;
-                            } else { terminal_status = Some(status); }
+                            } else {
+                                terminal_status = self.fail_into_script(view_id, clipboard.as_ref(), &mut frames, &mut accumulator, status)?;
+                            }
                             continue;
                         }
                         if host_action {

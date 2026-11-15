@@ -123,6 +123,7 @@ impl CommandInterpreter {
                     },
                     commands: String::new(),
                     literal: true,
+                    at_cursor: false,
                 };
                 let bound = self
                     .ex_normal_targets(document, &request)

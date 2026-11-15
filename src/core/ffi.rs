@@ -10515,6 +10515,7 @@ mod tests {
                 range: fixture_range(8, 9),
                 commands: "gUiwé".into(),
                 literal: true,
+                at_cursor: false,
             }),
         ];
         let portable =

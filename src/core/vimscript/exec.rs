@@ -527,6 +527,20 @@ impl Runtime {
         }
     }
 
+    /// Deliver the failure of the command a suspended script last ran, once
+    /// the host has run it (a top-level `:normal`), as if that command had
+    /// returned it: `:try` catches it, and otherwise it is reported and the
+    /// script continues.
+    pub fn fail_suspended_command(&mut self, host: &mut dyn ScriptHost, fail: Fail) {
+        let Some(index) = self.frames.len().checked_sub(1) else { return };
+        self.did_emsg = false;
+        let result = self.handle_failure(host, index, fail);
+        let result = if result.is_ok() && self.did_emsg { self.after_error(index) } else { result };
+        if let Err(fail) = result {
+            self.abort_with(host, fail);
+        }
+    }
+
     /// Discard all frames, e.g. when the host cancels a suspended script.
     pub fn cancel(&mut self) {
         while !self.frames.is_empty() {

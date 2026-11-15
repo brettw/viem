@@ -1125,8 +1125,9 @@ mod tests {
         let (mut core, view) = setup("abc def ghi", "nmap l w");
         keys(&mut core, view, ":normal l<CR>");
         assert_eq!(core.command_state(view).unwrap().cursor(), 4);
+        // A range-less :normal continues from the cursor, as in Vim.
         keys(&mut core, view, ":normal! l<CR>");
-        assert_eq!(core.command_state(view).unwrap().cursor(), 1);
+        assert_eq!(core.command_state(view).unwrap().cursor(), 5);
     }
     #[test]
     fn startup_protects_file_policies_case_insensitively_and_atomically() {

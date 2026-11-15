@@ -14048,6 +14048,28 @@ impl CommandInterpreter {
         document: &Document,
         request: &ExNormalRequest,
     ) -> Option<Vec<Option<ExNormalTarget>>> {
+        if request.at_cursor {
+            // Vim runs a range-less :normal where the cursor is.
+            let line = request.range.lines.first().or(Some(&request.range.start))?;
+            let cursor = self.cursor.min(document.projection().text_tree().byte_len());
+            let hard_line = document.hard_line_at_offset(cursor)?;
+            let source = document.projection().source_insertion_point(cursor, true)
+                .and_then(|offset| document.source_point(offset).ok());
+            return Some(vec![Some(ExNormalTarget {
+                anchor: document
+                    .text_anchor(
+                        document.text_point(cursor).ok()?,
+                        Association::AfterInsertion,
+                        self.boundary_affinity,
+                        DeletionRecovery::PreferFollowingThenPreceding,
+                    )
+                    .ok()?,
+                hard_line_id: document.projection().hard_line_id(hard_line)?,
+                domain: line.domain,
+                source,
+                source_end: None,
+            })]);
+        }
         self.resolved_ex_range_units(document, &request.range).ok()?.into_iter()
             .map(|line| {
                 let start = line.position.text_offset;

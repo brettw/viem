@@ -882,17 +882,26 @@ fn append_source_lines(document: &mut Document, after: usize, lines: &[String], 
         return Ok(());
     }
     let body = lines.join(ending);
-    if after == 0 {
-        return document.replace_physical_source_literal(0..0, &format!("{body}{ending}")).map(|_| ());
-    }
     let count = document.physical_source_line_number_count();
+    if after == 0 {
+        // An empty file's only line is empty and unterminated; inserted lines
+        // before it would turn it into the end of the file, so it needs an
+        // ending to remain.
+        let first = document.physical_line(0)?;
+        let keep = if count == 1 && first.text.is_empty() { ending } else { "" };
+        return document.replace_physical_source_literal(first.source_range.start..first.source_range.start, &format!("{body}{ending}{keep}")).map(|_| ());
+    }
     let physical = document.physical_line(after.min(count).max(1) - 1)?;
     if physical.source_range.end > physical.content_range.end {
         let at = physical.source_range.end;
         document.replace_physical_source_literal(at..at, &format!("{body}{ending}")).map(|_| ())
     } else {
+        // After an unterminated last line the new lines stay unterminated,
+        // but an empty last line needs its ending to remain a line, as for
+        // `o` at the end of such a file.
         let at = physical.content_range.end;
-        document.replace_physical_source_literal(at..at, &format!("{ending}{body}")).map(|_| ())
+        let keep = if lines.last().is_some_and(String::is_empty) { ending } else { "" };
+        document.replace_physical_source_literal(at..at, &format!("{ending}{body}{keep}")).map(|_| ())
     }
 }
 
@@ -1296,16 +1305,14 @@ impl CommandInterpreter {
             ScriptAction::SetCursor { line, column } => self.script_set_cursor(document, line, column),
             ScriptAction::SetLines { first, lines } => self.script_edit_lines(document, None, |document, ending| {
                 let count = document.physical_source_line_number_count();
-                for (index, text) in lines.iter().enumerate() {
-                    let line = first - 1 + index;
-                    if line < count {
-                        let physical = document.physical_line(line)?;
-                        document.replace_physical_source_literal(physical.content_range, text)?;
-                    } else {
-                        append_source_lines(document, line, std::slice::from_ref(text), ending)?;
-                    }
+                let existing = count.saturating_sub(first - 1).min(lines.len());
+                for (index, text) in lines[..existing].iter().enumerate() {
+                    let physical = document.physical_line(first - 1 + index)?;
+                    document.replace_physical_source_literal(physical.content_range, text)?;
                 }
-                Ok(())
+                // Lines past the end are added together, so whether the file
+                // ends with a line ending depends only on the last of them.
+                append_source_lines(document, first - 1 + existing, &lines[existing..], ending)
             }),
             ScriptAction::AppendLines { after, lines } => {
                 let inserted = Some((after, lines.len()));
@@ -1338,6 +1345,9 @@ impl CommandInterpreter {
             cursor
         };
         self.boundary_affinity = BoundaryAffinity::Downstream;
+        // A layout position from before the move would win over the new
+        // cursor in the next Normal command, such as `:normal! w`.
+        self.visual_position = None;
         self.remember_physical_cursor(document, source);
         self.preferred_column = None;
         self.desired_x = None;

@@ -464,3 +464,67 @@ fn appended_script_lines_use_one_dos_line_ending() {
     keys(&mut core, view, "u");
     assert_eq!(core.document().source_bytes(), b"a\r\nb\r\n");
 }
+
+/// Source `script` into a fresh editor holding `text` and return the editor
+/// with the outcome.
+fn source_script(name: &str, text: &str, script: &str) -> (Editor, ViewId, CoreOutcome) {
+    let directory = std::env::temp_dir().join(format!("viem-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("script.vim");
+    std::fs::write(&path, script).unwrap();
+    let (mut core, view) = editor(text);
+    let outcome = ex(&mut core, view, &format!("source {}", path.display()));
+    std::fs::remove_dir_all(directory).unwrap();
+    (core, view, outcome)
+}
+
+#[test]
+fn setreg_writes_are_visible_to_later_commands_in_the_same_script() {
+    let (core, _, outcome) = source_script(
+        "setreg-visible",
+        "one\n",
+        "let @a = 'L1' | call setreg('a', 'word') | put a\ncall setreg('b', 'B1')\ncall setreg('b', 'B2')\nnormal! gg\"bp\n",
+    );
+    assert_eq!(status(&outcome), CommandStatus::Complete, "{outcome:?}");
+    assert_eq!(core.document().text(), "oB2ne\nword\n");
+}
+
+#[test]
+fn normal_without_a_range_runs_at_the_cursor() {
+    let (mut core, view, outcome) = source_script(
+        "normal-cursor",
+        "one two three four\nnext line\n",
+        "call cursor(1, 5)\nnormal! w\nlet g:first = col('.')\nnormal! w\nlet g:second = col('.')\ncall cursor(1, 5)\nnormal! iX\n",
+    );
+    assert_eq!(status(&outcome), CommandStatus::Complete, "{outcome:?}");
+    assert_eq!(messages(&ex(&mut core, view, "echo g:first g:second")), ["9 15"]);
+    assert_eq!(core.document().text(), "one Xtwo three four\nnext line\n");
+    // A range still starts each line at its beginning.
+    ex(&mut core, view, "call cursor(2, 4) | 2normal! iY");
+    assert_eq!(core.document().text(), "one Xtwo three four\nYnext line\n");
+}
+
+#[test]
+fn failures_inside_normal_reach_try_and_let_the_script_continue() {
+    let (core, _, outcome) = source_script(
+        "normal-failure",
+        "abc\n",
+        "try\n  normal! qaq\ncatch\n  let g:caught = 1\nendtry\nnormal! qaq\ncall setline(1, 'after ' .. g:caught)\n",
+    );
+    // The uncaught failure is reported, and the rest of the script runs.
+    assert!(matches!(status(&outcome), CommandStatus::Error(text) if text.contains("macro recording")), "{outcome:?}");
+    assert_eq!(core.document().text(), "after 1\n");
+}
+
+#[test]
+fn setline_and_append_keep_empty_lines_at_an_unterminated_end() {
+    let (mut core, view) = editor("");
+    ex(&mut core, view, "call setline(1, ['a', '', 'b'])");
+    assert_eq!(core.document().source_bytes(), b"a\n\nb");
+    ex(&mut core, view, "%d _ | call setline(1, 'z') | call append(1, ['', 'b', '', ''])");
+    assert_eq!(messages(&ex(&mut core, view, "echo string(getline(1, '$'))")), ["['z', '', 'b', '', '']"]);
+    ex(&mut core, view, "%d _ | call append(0, ['p', ''])");
+    assert_eq!(messages(&ex(&mut core, view, "echo string(getline(1, '$'))")), ["['p', '', '']"]);
+    ex(&mut core, view, "%d _ | call setline(1, 'z') | call append(1, ['', 'b'])");
+    assert_eq!(core.document().source_bytes(), b"z\n\nb");
+}

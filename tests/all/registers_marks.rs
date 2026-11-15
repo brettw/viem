@@ -256,8 +256,10 @@ fn expression_register_macro_and_normal_execution_keep_one_undo_unit() {
     assert_eq!(core.document().text(), "a7bc");
     ex(&mut core, view, "normal! \"/p"); // Empty search register is a no-op.
     ex(&mut core, view, "let @/ = 'search'");
+    // Like Vim, a range-less :normal puts after the cursor, which undo left
+    // on the 7.
     ex(&mut core, view, "normal! \"/p");
-    assert_eq!(core.document().text(), "asearch7bc");
+    assert_eq!(core.document().text(), "a7searchbc");
     keys(&mut core, view, "u");
     assert_eq!(core.document().text(), "a7bc");
 }

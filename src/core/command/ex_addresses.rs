@@ -1083,7 +1083,7 @@ mod domain_tests {
         let rows = interpreter.line_layout.as_ref().unwrap().rows[..3].to_vec();
         let range = resolve(&interpreter, &document, ":.,.+2normal iX").unwrap().range.unwrap();
         let output = interpreter.execute_ex_normal(&mut document, &super::super::ExNormalRequest {
-            range, commands: "iX".into(), literal: true,
+            range, commands: "iX".into(), literal: true, at_cursor: false,
         });
         assert_eq!(output.status, super::super::CommandStatus::Complete);
         let mut expected = original.to_owned();
