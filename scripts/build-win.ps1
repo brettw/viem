@@ -13,10 +13,8 @@ try {
     & cargo @cargoArguments
     if ($LASTEXITCODE -ne 0) { throw 'Rust build failed.' }
 
-    # dotnet starts its global.json search in the working directory.
-    Set-Location -LiteralPath 'src/win'
     $executableDirectory = Join-Path $projectRoot "target/windows/Viem.Windows/bin/x64/$Configuration/net10.0-windows10.0.26100.0/win-x64"
-    $dotnetArguments = @('build', 'Viem.Windows.csproj', '-c', $Configuration, '--nologo', '-p:RestoreLockedMode=true')
+    $dotnetArguments = @('build', 'src/win/Viem.Windows.csproj', '-c', $Configuration, '--nologo')
     if ($Configuration -eq 'Release') {
         # NativeAOT is a publish step. Keep the existing executable location so
         # launch scripts and user shortcuts run the native Release build.
@@ -26,7 +24,7 @@ try {
     if ($Offline) { $dotnetArguments += '--no-restore' }
     & dotnet @dotnetArguments
     if ($LASTEXITCODE -ne 0) { throw 'Windows frontend build failed.' }
-    $launcherArguments = @('publish', 'Blocking/BlockingViem.csproj', '-c', $Configuration, '--nologo', '--output', $executableDirectory)
+    $launcherArguments = @('publish', 'src/win/Blocking/BlockingViem.csproj', '-c', $Configuration, '--nologo', '--output', $executableDirectory)
     if ($Offline) { $launcherArguments += '--no-restore' }
     & dotnet @launcherArguments
     if ($LASTEXITCODE -ne 0) { throw 'Blocking editor launcher build failed.' }

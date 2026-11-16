@@ -18,8 +18,8 @@
     <WinUISDKReferences>false</WinUISDKReferences>
     <WindowsPackageType>None</WindowsPackageType>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
-    <!-- Define this at restore time in every configuration so the locked
-         dependency graph also supports publishing Debug native UI tests.
+    <!-- Restore the NativeAOT toolchain in every configuration so Debug
+         native UI tests can publish from the same restore as a managed build.
          Ordinary dotnet build remains managed and debuggable. -->
     <PublishAot Condition="'$(PublishAot)' == ''">true</PublishAot>
     <CsWinRTAotOptimizerEnabled>true</CsWinRTAotOptimizerEnabled>
@@ -28,6 +28,11 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <!-- The checked-in lock and license inventory were captured with this SDK.
+         Other patches request different ILCompiler and ILLink versions. -->
+    <ReferenceSdkVersion>10.0.402</ReferenceSdkVersion>
+    <RestoreLockedMode Condition="'$(NETCoreSdkVersion)' == '$(ReferenceSdkVersion)'">true</RestoreLockedMode>
+    <NuGetLockFilePath Condition="'$(NETCoreSdkVersion)' != '$(ReferenceSdkVersion)' and '$(RestoreLockedMode)' != 'true'">$(BaseIntermediateOutputPath)packages.lock.json</NuGetLockFilePath>
     <RustProfile Condition="'$(Configuration)' == 'Release'">release</RustProfile>
     <RustProfile Condition="'$(RustProfile)' == ''">debug</RustProfile>
     <VimRuntimePython Condition="'$(VimRuntimePython)' == ''">python</VimRuntimePython>

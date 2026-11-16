@@ -89,8 +89,8 @@ repository's license to every binary.
 
 ## Updating
 
-When the Windows lockfile or SDK version changes, refresh the affected package
-from its exact NuGet archive, retain every license and third-party notice, and
-update this table and `inventory.json`. Compare the final published file inventory
-with its actual restore graph when changing the SDK, architecture, or deployment
-mode. Preserve component-specific notices and original license bytes.
+Before distributing a Windows build, compare its actual restore graph and
+published files with this inventory. A different SDK patch can change the
+NativeAOT packages even when the checked-in lockfile is unchanged. Refresh each
+affected package from its exact NuGet archive, retain every license and
+third-party notice in its original bytes, and update this table and `inventory.json`.

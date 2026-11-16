@@ -14,7 +14,7 @@ try {
         $rustProfile = if ($Optimized -or $NativeAot) { 'release' } else { 'native-test' }
         & cargo build --locked --profile $rustProfile
         if ($LASTEXITCODE -ne 0) { throw "Rust $rustProfile build failed." }
-        $testBuild = @('build', 'src/win/Viem.Windows.csproj', '-c', 'Debug', '--nologo', '-p:RestoreLockedMode=true', '-p:Optimize=true', "-p:RustProfile=$rustProfile")
+        $testBuild = @('build', 'src/win/Viem.Windows.csproj', '-c', 'Debug', '--nologo', '-p:Optimize=true', "-p:RustProfile=$rustProfile")
         if ($NativeAot) {
             $testBuild[0] = 'publish'
             $testBuild += @('-p:PublishAot=true', '--output', $testOutput,

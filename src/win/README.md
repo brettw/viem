@@ -39,7 +39,7 @@ Prerequisites:
 - Windows x64; development was verified on Windows 10 build 19045.
 - Visual Studio 2026 with WinUI development, MSVC x64 tools, and Windows SDK
   10.0.26100.0.
-- .NET SDK 10.0.402 (NativeAOT/linker 10.0.13) and a current
+- A stable .NET SDK in the 10.0.4xx feature band and a current
   `x86_64-pc-windows-msvc` Rust toolchain.
 - Python 3.9+ for packaging/verifying the bundled Vim runtime and for the C ABI
   declarations and icon tools.
@@ -104,20 +104,29 @@ bundled files relative to the executable. Both paths retain the same portable
 names, presets, and separate italic designs in rendering, previews, and whitespace
 markers. No systemwide font installation is required.
 
-The first build restores the locked Cargo/NuGet dependencies. After restoration,
-`-Offline` uses cached dependencies and skips NuGet restore. If compiling native
-Rust dependencies cannot find MSVC, run from a VS 2026 Developer PowerShell.
+The first build restores Cargo and NuGet dependencies. After installing a new
+.NET SDK patch, build once online so NuGet can restore its matching compiler,
+linker and runtime packs. Subsequent `-Offline` builds reuse that restore.
+If compiling native Rust dependencies cannot find MSVC, run from a VS 2026
+Developer PowerShell.
 Open `Viem.Windows.csproj` in Visual Studio to debug the C# frontend, after
 building the Rust library. All intermediate output stays under `target/windows`.
 `scripts/clean-win.ps1` removes every build output, like `make clean` on macOS:
 `target` (including test output and consistency baselines) and the fuzz builds.
 Close Viem first; Windows cannot delete a running executable.
 
-The NuGet lock file includes the SDK-selected NativeAOT compiler and linker.
-When upgrading the .NET SDK's servicing version, refresh it with
-`dotnet restore src/win/Viem.Windows.csproj --force-evaluate`, review the dependency
-changes, and refresh the affected [license and notice copies](../../docs/licenses/native/README.md#updating).
-Then verify the ordinary locked build; keep locked restore enabled in build scripts.
+The root `global.json` selects the latest installed 10.0.4xx patch in
+`.dotnet` if available, then searches the system installation. SDK 10.0.402
+uses the editor's checked-in NuGet lock file. Other patches keep their lock
+file in the intermediate output under `target`, so each computer can use the
+NativeAOT tools selected by its SDK without changing the checkout.
+
+For distribution, use the reference SDK in `Viem.Windows.csproj` to reproduce
+the checked-in graph. To adopt a new reference SDK, update `ReferenceSdkVersion`,
+select that SDK, and run
+`dotnet restore src/win/Viem.Windows.csproj --force-evaluate -p:RestoreLockedMode=false`.
+Review the lock file, refresh the affected [license and notice copies](../../docs/licenses/native/README.md#updating),
+and verify a Release build with that SDK.
 
 Examples:
 

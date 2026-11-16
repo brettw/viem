@@ -39,7 +39,7 @@ try {
     # Run WinUI's XAML preparation and isolate NativeAOT's build cleanup from
     # the managed executable that is also tested below.
     & dotnet publish src/win/Viem.Windows.csproj -c Debug --nologo -o $publish `
-        -p:RestoreLockedMode=true "-p:BaseIntermediateOutputPath=$testRoot/publish-obj/" `
+        "-p:BaseIntermediateOutputPath=$testRoot/publish-obj/" `
         "-p:BaseOutputPath=$testRoot/publish-build/"
     if ($LASTEXITCODE -ne 0) { throw 'Windows publish failed.' }
     Verify-Output $publish
