@@ -714,3 +714,78 @@ fn code_exit_and_empty_deletion_do_not_scan_unrelated_following_prose() {
         }
     }
 }
+
+fn set_paragraph_style(editor: &mut Editor, style: &str) {
+    let expected = editor.core.list_selection_identity(editor.view).unwrap();
+    editor.core.handle(editor.view, CoreEvent::SetParagraphStyle { expected, style: style.into() }).unwrap();
+}
+
+#[test]
+fn code_block_button_puts_selected_paragraphs_in_one_block() {
+    for (source, expected) in [
+        ("a\n\nb\n\nc", "```\na\nb\nc\n```"),
+        ("a\r\n\r\n`b`", "```\r\na\r\nb\r\n```"),
+        ("> a\n>\n> b", "> ```\n> a\n> b\n> ```"),
+        ("before\n\na\n\nb\n\nafter", "before\n\n```\na\nb\n```\n\nafter"),
+    ] {
+        let mut editor = Editor::open(source, Format::Markdown);
+        let text = editor.document().text().to_owned();
+        if source.starts_with("before") {
+            editor.place_at("a");
+            editor.type_keys("vj");
+        } else {
+            editor.type_keys("vG");
+        }
+        set_paragraph_style(&mut editor, "Code Block");
+        assert_eq!(editor.source(), expected, "{source:?}");
+        assert_eq!(editor.document().text(), text, "{source:?}: Preview text is unchanged");
+        assert_eq!(editor.document().projection().blocks().iter().filter(|block| is_code(block)).count(), 1, "{source:?}");
+        assert_reopens_as_displayed(editor.document(), source);
+        assert_exact_undo_redo(&mut editor, source, expected, source);
+    }
+    // A selected list first loses its treatment, then joins the same block.
+    let mut editor = Editor::open("- a\n- b", Format::Markdown);
+    editor.type_keys("vj");
+    set_paragraph_style(&mut editor, "Code Block");
+    assert_eq!(editor.source(), "```\na\nb\n```");
+    // Paragraphs of a partly selected list or beside a list keep the rest.
+    for (source, range, expected) in [
+        ("1. a\n2. b\n3. c", 0..4, "```\na\nb\n```\n\n1. c"),
+        ("# Title\n\nPara **bold**.\n\n- a\n- b\n\n> q", 6..20, "# Title\n\n```\nPara bold.\na\nb\n```\n\n> q"),
+    ] {
+        let mut editor = Editor::open(source, Format::Markdown);
+        let text = editor.document().text().to_owned();
+        editor.key(Key::Char('i'));
+        editor.place(range.start);
+        let revision = editor.document().revision();
+        editor.core.handle(editor.view, CoreEvent::PlaceCursor { document_revision: revision, text_offset: range.end,
+            affinity: BoundaryAffinity::Downstream, extend_selection: true }).unwrap();
+        set_paragraph_style(&mut editor, "Code Block");
+        assert_eq!(editor.source(), expected, "{source:?}");
+        assert_eq!(editor.document().text(), text, "{source:?}");
+        assert_reopens_as_displayed(editor.document(), source);
+        assert_exact_undo_redo(&mut editor, source, expected, source);
+    }
+}
+
+#[test]
+fn code_block_button_on_a_final_blank_row_ends_the_block_like_enter() {
+    for (source, expected) in [
+        ("```\ncode\n\n```", "```\ncode\n```\n\nX"),
+        ("```rust\ncode\n\n```\n\nNext", "```rust\ncode\n```\n\nX\n\nNext"),
+        ("> ```\n> code\n>\n> ```", "> ```\n> code\n> ```\n>\n> X<span></span>"),
+        // A block of only one blank row loses its treatment instead.
+        ("```\n\n```", "X"),
+    ] {
+        let mut editor = Editor::open(source, Format::Markdown);
+        let original = code(&editor);
+        insert_at(&mut editor, original.range.end);
+        set_paragraph_style(&mut editor, "Paragraph");
+        if !original.range.is_empty() {
+            assert_exited(&mut editor, &original, "code", source);
+        }
+        editor.type_keys("X");
+        assert_eq!(editor.source(), expected, "{source:?}");
+        assert_reopens_as_displayed(editor.document(), source);
+    }
+}

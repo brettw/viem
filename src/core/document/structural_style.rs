@@ -220,6 +220,9 @@ impl Document {
         &self,
         range: Range<usize>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        if let Some(prepared) = self.prepare_code_block_final_row_exit(&range)? {
+            return Ok(prepared);
+        }
         let selected = selected_blocks(self, &range);
         let empty_list_reset = selected.len() == 1 && selected[0].range.is_empty()
             && matches!(selected[0].kind, super::super::BlockKind::ListItem { item_start: true, .. });

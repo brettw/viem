@@ -1,6 +1,7 @@
 //! Markdown-looking text typed or pasted into Markdown Preview keeps the
-//! structure a reader expects. Paste interprets external text as Markdown:
-//! complete pasted blocks keep their own top-level structure, a partial
+//! structure a reader expects. Paste and `*`/`+` register puts interpret
+//! external text as Markdown: complete pasted blocks keep their own structure
+//! inside the destination's quote (otherwise at the top level), a partial
 //! paragraph joins the destination, and code keeps literal text. Paste and
 //! Match Style keeps every line literal.
 use crate::support::{assert_exact_undo_redo, assert_reopens_as_displayed, assert_regional, shape, Editor};
@@ -166,6 +167,7 @@ fn a_nested_item_sharing_its_empty_parents_line_can_be_lifted() {
 const REPORT: &str = "## Work\n\n- **Tests:** pass.\n- **Memory:** two limits fail.\n  - nested detail\n\nA closing *paragraph*.\n\n1. first\n2. second\n";
 
 /// Every heading is top level, and the pasted lists remain their own lists.
+/// Outside quotes, pasted blocks leave the destination's lists.
 fn assert_report_structure(editor: &Editor, context: &str) {
     let document = editor.document();
     let text = document.text();
@@ -194,7 +196,8 @@ fn pasted_markdown_blocks_keep_their_own_top_level_structure() {
         ("- one\n- ", "", 4, format!("- one\n\n{}", REPORT.trim_end())),
         ("- one\n- two", "two", 0, format!("- one\n\n{}\n\n- two", REPORT.trim_end())),
         ("- one\n- two", "two", 3, format!("- one\n- two\n\n{}", REPORT.trim_end())),
-        ("> quoted here", "here", 0, format!("> quoted \n\n{}\n\n>\n> here", REPORT.trim_end())),
+        // A quote inside a list item keeps the pasted blocks at the top level.
+        ("- > quoted here", "here", 0, format!("- > quoted \n\n{}\n\n- > here", REPORT.trim_end())),
         // Same-kind lists join, as CommonMark requires; the join stays tight.
         ("1. a\n2. b\n3. c", "b", 1, format!("1. a\n2. b\n\n{}\n3. c", REPORT.trim_end())),
         ("- a\n  - b\n    - c\n    - e\n", "c", 1, format!("- a\n  - b\n    - c\n\n{}\n\n- e\n", REPORT.trim_end())),
@@ -388,5 +391,120 @@ fn literal_continuation_lines_stay_literal_inside_lists_and_quotes() {
         assert_reopens_as_displayed(editor.document(), &context);
         let after = editor.source();
         assert_exact_undo_redo(&mut editor, source, &after, &context);
+    }
+}
+
+const BLOCKS: &str = "## H\n\npara\n\n- a\n- b\n";
+
+/// Each pasted block's text, quote depth and whether its first container is
+/// an alert.
+fn pasted_blocks(editor: &Editor) -> Vec<(String, usize, bool)> {
+    let document = editor.document();
+    document.projection().blocks().iter()
+        .filter(|block| ["H", "para", "a", "b"].contains(&&document.text()[block.range.clone()]))
+        .map(|block| (document.text()[block.range.clone()].to_owned(), block.quote_depth,
+            block.containers.first().is_some_and(|member| member.container.alert.is_some())))
+        .collect()
+}
+
+#[test]
+fn pasted_markdown_blocks_go_inside_the_destination_quote() {
+    // (destination, caret needle and offset, expected source, quote depth, alert)
+    for (source, needle, offset, expected, depth, alert) in [
+        ("> here", "here", 4, "> here\n>\n> ## H\n>\n> para\n>\n> - a\n> - b", 1, false),
+        ("> here", "here", 0, "> ## H\n>\n> para\n>\n> - a\n> - b\n>\n> here", 1, false),
+        ("> quoted here", "here", 0, "> quoted \n>\n> ## H\n>\n> para\n>\n> - a\n> - b\n>\n> here", 1, false),
+        ("> first\n>\n> ", "first", 6, "> first\n>\n> ## H\n>\n> para\n>\n> - a\n> - b", 1, false),
+        ("> here\n\nafter", "here", 4, "> here\n>\n> ## H\n>\n> para\n>\n> - a\n> - b\n\nafter", 1, false),
+        ("> [!NOTE]\n> body here", "here", 0,
+            "> [!NOTE]\n> body \n>\n> ## H\n>\n> para\n>\n> - a\n> - b\n>\n> here", 1, true),
+        ("> outer\n>\n> > inner here", "here", 0,
+            "> outer\n>\n> > inner \n> >\n> > ## H\n> >\n> > para\n> >\n> > - a\n> > - b\n> >\n> > here", 2, false),
+        ("> x\r\n>\r\n> here", "here", 4, "> x\r\n>\r\n> here\r\n>\r\n> ## H\r\n>\r\n> para\r\n>\r\n> - a\r\n> - b", 1, false),
+    ] {
+        let mut editor = Editor::open(source, Format::Markdown);
+        editor.type_keys("i");
+        let at = editor.document().text().find(needle).unwrap() + offset;
+        editor.place(at);
+        editor.paste_plain(BLOCKS);
+        let context = format!("{source:?} at {needle:?}+{offset}");
+        assert_eq!(editor.source(), expected, "{context}");
+        assert_eq!(pasted_blocks(&editor), ["H", "para", "a", "b"].map(|text| (text.to_owned(), depth, alert)), "{context}");
+        assert_reopens_as_displayed(editor.document(), &context);
+        assert_exact_undo_redo(&mut editor, source, expected, &context);
+    }
+}
+
+#[test]
+fn clipboard_register_puts_interpret_markdown_like_native_paste() {
+    // `"*P` and `"+P` put where Native Paste does in Normal mode (gVim's
+    // `gP`), so their results are identical.
+    for (source, needle) in [("Intro here.", "here"), ("> quoted here", "here"), ("- one\n- two", "two"), ("```\ncode\n```", "code")] {
+        for text in [BLOCKS, "**bold** words", "x\n```\ny"] {
+            let mut native = Editor::open(source, Format::Markdown);
+            native.place_at(needle);
+            native.paste_plain(text);
+            for register in ['*', '+'] {
+                let mut put = Editor::open(source, Format::Markdown);
+                put.place_at(needle);
+                put.put_clipboard(&format!("\"{register}P"), text);
+                let context = format!("{source:?} {text:?} {register}");
+                assert_eq!(put.source(), native.source(), "{context}");
+                assert_eq!(put.document().text(), native.document().text(), "{context}");
+                assert_reopens_as_displayed(put.document(), &context);
+                let after = put.source();
+                assert_exact_undo_redo(&mut put, source, &after, &context);
+            }
+        }
+    }
+    // `p` puts linewise text below the current line and characterwise text
+    // after the caret's character.
+    for (source, keys, text, expected) in [
+        ("> first\n>\n> last", "\"*p", BLOCKS, "> first\n>\n> ## H\n>\n> para\n>\n> - a\n> - b\n>\n> last"),
+        ("Hello world", "0\"+p", "**ey**", "H**ey**ello world"),
+    ] {
+        let mut editor = Editor::open(source, Format::Markdown);
+        editor.put_clipboard(keys, text);
+        assert_eq!(editor.source(), expected, "{source:?} {keys}");
+        assert_reopens_as_displayed(editor.document(), source);
+        assert_exact_undo_redo(&mut editor, source, expected, source);
+    }
+}
+
+#[test]
+fn clipboard_register_put_over_a_selection_interprets_markdown() {
+    for (keys, unnamed) in [("v$\"*p", Some("here")), ("v$\"*P", None)] {
+        let mut editor = Editor::open("> quoted here", Format::Markdown);
+        editor.place_at("here");
+        editor.put_clipboard(keys, BLOCKS);
+        assert_eq!(editor.source(), "> quoted \n>\n> ## H\n>\n> para\n>\n> - a\n> - b", "{keys}");
+        assert_eq!(pasted_blocks(&editor).len(), 4, "{keys}");
+        let state = editor.core.command_state(editor.view).unwrap();
+        assert_eq!(state.mode(), Mode::Normal, "{keys}");
+        assert_eq!(state.register('"').map(|value| value.text.as_str()).filter(|text| !text.is_empty()), unnamed, "{keys}: unnamed register");
+        assert_reopens_as_displayed(editor.document(), keys);
+    }
+}
+
+#[test]
+fn pasting_into_code_shows_the_pasted_text_literally() {
+    for (source, text) in [
+        ("```\ncode here\n```", "x\n```\ny"),
+        ("> ```\n> code here\n> ```", "# a\n````\n- b"),
+        ("    code here", "a\n\n*b*"),
+        ("Text `span here` end", "a ` b"),
+    ] {
+        for native in [true, false] {
+            let mut editor = Editor::open(source, Format::Markdown);
+            let before = editor.document().text().to_owned();
+            let at = before.find("here").unwrap();
+            editor.place(at);
+            if native { editor.paste_plain(text) } else { editor.put_clipboard("\"*P", text) }
+            let context = format!("{source:?} {text:?} native={native}");
+            assert_eq!(editor.document().text(), format!("{}{text}{}", &before[..at], &before[at..]), "{context}");
+            assert_reopens_as_displayed(editor.document(), &context);
+            let after = editor.source();
+            assert_exact_undo_redo(&mut editor, source, &after, &context);
+        }
     }
 }

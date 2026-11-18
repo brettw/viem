@@ -95,16 +95,14 @@ impl super::CommandInterpreter {
             // External text in Markdown Preview is Markdown; Paste and Match
             // Style and every fallback insert it literally, without typing
             // assistance recognizing its markup.
-            let markdown = key == Key::PasteClipboard
-                && document.format() == crate::document::Format::Markdown
-                && value.clipboard_fragment().is_none()
-                && value.kind != RegisterKind::Blockwise
-                && self.mode != Mode::VisualBlock;
+            let markdown = key == Key::PasteClipboard && self.puts_clipboard_markdown(document, &value);
             self.native_paste = true;
             let output = if let Some(output) = self.paste_table_matrix(document, &value, 1)? {
                 output
             } else if let Some(output) = (markdown && self.table_selection(document).is_none())
-                .then(|| self.paste_platform_markdown(document, &value, selected, editing))
+                .then(|| self.paste_platform_markdown(document, &value, MarkdownPut {
+                    selected, editing, after: false, replaced: Some(Some('-')),
+                }))
                 .transpose()?
                 .flatten()
             {
@@ -213,31 +211,56 @@ impl super::CommandInterpreter {
         }
     }
 
-    /// Interpret external text as Markdown at the native paste position: the
-    /// selection, the insertion boundary, or (for linewise text in Normal)
-    /// above the current line. `None` keeps the literal paste path.
-    fn paste_platform_markdown(
+    /// Clipboard text that Markdown Preview interprets as Markdown, whether
+    /// Native Paste or a `*`/`+` register put inserts it: plain text, not a
+    /// copied rich fragment or block.
+    pub(super) fn puts_clipboard_markdown(
+        &self,
+        document: &mut crate::document::Document,
+        value: &RegisterValue,
+    ) -> bool {
+        document.format() == crate::document::Format::Markdown
+            && value.clipboard_fragment().is_none()
+            && value.kind != super::RegisterKind::Blockwise
+            && self.mode != super::Mode::VisualBlock
+            && self.table_selection(document).is_none()
+    }
+
+    /// Interpret clipboard text as Markdown at the put position: the
+    /// selection, the insertion boundary, or the caret. Linewise text goes
+    /// above the current line, or below it for `p`. `None` keeps the literal
+    /// put path.
+    pub(super) fn paste_platform_markdown(
         &mut self,
         document: &mut crate::document::Document,
         value: &RegisterValue,
-        selected: bool,
-        editing: bool,
+        put: MarkdownPut,
     ) -> Result<Option<super::CommandOutput>, crate::document::DocumentError> {
         use super::*;
+        let MarkdownPut { selected, editing, after, replaced: replaced_register } = put;
         let lines = document.hard_line_snapshot();
         let extent = selected.then(|| self.visual_extent(document));
+        let mut text = std::borrow::Cow::Borrowed(value.text.as_str());
         let (range, affinity) = if let Some(extent) = &extent {
             (extent.range.clone(), BoundaryAffinity::Downstream)
         } else if editing {
             (self.cursor..self.cursor, self.markdown_typing_affinity(document))
+        } else if value.kind == RegisterKind::Linewise && after {
+            // A leading break keeps the first pasted line off the current one.
+            text = std::borrow::Cow::Owned(format!("\n{}", value.text));
+            let at = line_end(&lines, self.cursor);
+            (at..at, BoundaryAffinity::Downstream)
         } else if value.kind == RegisterKind::Linewise {
             let at = line_start(&lines, self.cursor);
             (at..at, BoundaryAffinity::Downstream)
+        } else if after && self.cursor < line_end(&lines, self.cursor) {
+            let at = document.next_grapheme_boundary(self.cursor).unwrap_or(self.cursor);
+            (at..at, BoundaryAffinity::Upstream)
         } else {
             (self.cursor..self.cursor, BoundaryAffinity::Downstream)
         };
         let Some((prepared, caret)) = document
-            .prepare_markdown_paste(range, affinity, &value.text, self.typing_style.is_empty())
+            .prepare_markdown_paste(range, affinity, &text, self.typing_style.is_empty())
             .map_err(command_document_error)?
         else {
             return Ok(None);
@@ -247,7 +270,9 @@ impl super::CommandInterpreter {
         });
         document.commit_model_transaction(prepared).map_err(command_document_error)?;
         if let Some((replaced, class)) = replaced {
-            self.delete_register(Some('-'), replaced, class);
+            if let Some(register) = replaced_register {
+                self.delete_register(register, replaced, class);
+            }
             self.visual_anchor = None;
             self.pointer_word_origin = None;
             self.pointer_character_origin = None;
@@ -266,6 +291,19 @@ impl super::CommandInterpreter {
         }))
     }
 
+}
+
+/// How [`CommandInterpreter::paste_platform_markdown`] places its text and
+/// where replaced selected text goes (`None` keeps every register).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct MarkdownPut {
+    pub(super) selected: bool,
+    pub(super) editing: bool,
+    pub(super) after: bool,
+    pub(super) replaced: Option<Option<char>>,
+}
+
+impl super::CommandInterpreter {
     /// Place block rows against the lines surviving the change. In particular,
     /// a character selection crossing lines joins its retained prefix/suffix;
     /// subsequent donor rows belong to the following surviving layout rows.

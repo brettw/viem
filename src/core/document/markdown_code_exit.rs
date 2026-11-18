@@ -3,7 +3,7 @@
 use super::*;
 
 impl Document {
-    fn code_block_exit_tail(&self, at: usize) -> Result<Option<(super::super::Block, Range<usize>)>, DocumentError> {
+    fn code_block_exit_tail(&self, at: usize, blank_lines: Option<usize>) -> Result<Option<(super::super::Block, Range<usize>)>, DocumentError> {
         if self.format() != Format::Markdown { return Ok(None); }
         let Some(block) = super::super::edit_boundary::paragraph_at(self, at)? else { return Ok(None) };
         if at != block.range.end || block.markdown_html
@@ -13,7 +13,7 @@ impl Document {
         let lines = self.hard_line_snapshot();
         let current = lines.line_at_offset(at).map_err(|_| DocumentError::AmbiguousProjection)?;
         let mut first_blank = at;
-        for distance in 0..block.code_kind.exit_blank_lines() {
+        for distance in 0..blank_lines.unwrap_or(block.code_kind.exit_blank_lines()) {
             let Some(line) = current.index().checked_sub(distance).and_then(|index| lines.line(index))
                 else { return Ok(None) };
             let range = line.content_range();
@@ -35,13 +35,37 @@ impl Document {
     }
 
     pub(crate) fn code_block_exit_request(&self, at: usize) -> Result<Option<ModelRequest>, DocumentError> {
-        Ok(self.code_block_exit_tail(at)?.map(|_| ModelRequest::ExitCodeBlock {
+        Ok(self.code_block_exit_tail(at, None)?.map(|_| ModelRequest::ExitCodeBlock {
             document: self.id(), revision: self.revision(), at,
         }))
     }
 
     pub(super) fn prepare_code_block_exit(&self, at: usize) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        let (block, tail) = self.code_block_exit_tail(at)?.ok_or(DocumentError::UnsupportedFormatting)?;
+        let exit = self.code_block_exit_tail(at, None)?.ok_or(DocumentError::UnsupportedFormatting)?;
+        self.prepare_code_block_exit_tail(exit)
+    }
+
+    /// Removing code treatment at a caret on the final blank row of a code
+    /// owner with other rows ends the owner before that row, as Enter's exit
+    /// does, instead of turning the whole body into prose.
+    pub(super) fn prepare_code_block_final_row_exit(
+        &self,
+        range: &Range<usize>,
+    ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
+        if !range.is_empty() {
+            return Ok(None);
+        }
+        let Some(exit) = self.code_block_exit_tail(range.start, Some(1))? else { return Ok(None) };
+        if exit.1.start <= exit.0.range.start {
+            return Ok(None);
+        }
+        self.prepare_code_block_exit_tail(exit).map(Some)
+    }
+
+    fn prepare_code_block_exit_tail(
+        &self,
+        (block, tail): (super::super::Block, Range<usize>),
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         let fence = super::super::markdown_code::fenced_source(self, &block)?
             .ok_or(DocumentError::UnsupportedFormatting)?;
         let source_tail = self.projection().source_range(tail.clone())

@@ -5336,13 +5336,15 @@ impl Document {
                 .projection
                 .install_unchanged_text_storage(self.projection())
                 .map_err(DocumentError::FormattedTextStorage)?;
-            if preserves_current_hard_lines {
-                {
-                    candidate
-                        .projection
-                        .install_unchanged_block_ids(self.projection())
-                        .map_err(super::block_identity_document_error)?;
-                }
+            // Paragraphs joining one code block keep their text and hard
+            // lines but not their owners, so their identities are new.
+            if preserves_current_hard_lines
+                && candidate.projection.block_count() == self.projection().block_count()
+            {
+                candidate
+                    .projection
+                    .install_unchanged_block_ids(self.projection())
+                    .map_err(super::block_identity_document_error)?;
             }
         }
         Ok(candidate)

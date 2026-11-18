@@ -1,7 +1,8 @@
 //! External text pasted into Markdown Preview is interpreted as Markdown.
-//! Complete pasted blocks keep their own structure at the document's top
-//! level; only a leading or trailing partial paragraph joins the destination
-//! paragraph's inline content. Every step is prepared on a scratch document
+//! Complete pasted blocks keep their own structure inside the destination's
+//! innermost quote (or at the top level outside quotes); only a leading or
+//! trailing partial paragraph joins the destination paragraph's inline
+//! content. Every step is prepared on a scratch document
 //! and the composed source patches are verified as one transaction.
 use super::replacement::PatchComposition;
 use super::*;
@@ -178,6 +179,7 @@ impl Document {
             apply(&mut scratch, deleted)?;
         }
         let destination = scratch.paragraph_at(at)?;
+        let outer = quote_owner(&destination);
         let before = at > destination.range.start;
         let after = at < destination.range.end;
         let units = &paste.units;
@@ -221,7 +223,7 @@ impl Document {
                 return Ok(None);
             };
             apply(&mut scratch, prepared)?;
-            if !scratch.inserted_blocks_match(start, &expected)? {
+            if !scratch.inserted_blocks_match(start, &expected, &outer)? {
                 return Ok(None);
             }
             let end = start + expected.projection().text_tree().byte_len();
@@ -382,7 +384,7 @@ impl Document {
             return Ok(None);
         };
         let candidate = self.prepared_candidate_document(&reprojected)?;
-        if !candidate.inserted_blocks_match(start, &expected)? {
+        if !candidate.inserted_blocks_match(start, &expected, &quote_owner(&block))? {
             return Ok(None);
         }
         let patches = reprojected.summary.source_patches.clone();
@@ -412,9 +414,10 @@ impl Document {
         self.prepare_formatted_payload_edits(vec![FormattedPayloadEdit::new(at..at, payload)])
     }
 
-    /// Insert complete Markdown blocks outside every container: after the
-    /// paragraph ending at `at` when `leading`, otherwise before (or, when it
-    /// is empty and nothing follows, in place of) the paragraph at `at`.
+    /// Insert complete Markdown blocks inside the innermost quote around the
+    /// paragraph at `at`, outside every other container: after that paragraph
+    /// when `leading`, otherwise before (or, when it is empty and nothing
+    /// follows, in place of) it.
     fn prepare_top_level_block_insertion(
         &self,
         at: usize,
@@ -425,6 +428,7 @@ impl Document {
     ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
         let block = self.paragraph_at(at)?;
         let Some(source) = self.paragraph_source_lines(&block)? else { return Ok(None) };
+        let Some(quote) = self.quote_continuation(&block, source.start)? else { return Ok(None) };
         // Same-kind lists join across a blank line anyway; keep them tight.
         let neighbor = |at: Option<usize>| -> Result<Option<(bool, char)>, DocumentError> {
             let Some(block) = at.map(|at| self.paragraph_at(at)).transpose()? else { return Ok(None) };
@@ -447,10 +451,17 @@ impl Document {
         let blank = |line: usize| -> Result<Option<bool>, DocumentError> {
             let Some(range) = lines.get(line) else { return Ok(None) };
             let bytes = self.state().source.bytes_in(range.clone()).ok_or(DocumentError::AmbiguousProjection)?;
-            Ok(Some(self.encoding().decode_region(&bytes, range.start)?.text.trim().is_empty()))
+            let text = self.encoding().decode_region(&bytes, range.start)?.text;
+            let body = if quote.is_empty() { &text[..] } else { &text[super::super::markdown_quotes::prefix(&text)..] };
+            Ok(Some(body.trim().is_empty()))
         };
         let ending = self.file_format().spelling();
-        let body = markdown.replace('\n', ending);
+        // Inside a quote every pasted line, and every separating blank line,
+        // continues that quote.
+        let blank_line = quote.trim_end_matches([' ', '\t']);
+        let body = markdown.split('\n').map(|line| {
+            if line.trim().is_empty() { blank_line.to_owned() } else { format!("{quote}{line}") }
+        }).collect::<Vec<_>>().join(ending);
         if !leading && following && join_previous
             && source.start.checked_sub(1).map(&blank).transpose()?.flatten() == Some(true)
         {
@@ -480,16 +491,18 @@ impl Document {
         let mut text = String::new();
         if leading {
             text.push_str(ending);
-            if !join_previous { text.push_str(ending); }
+            if !join_previous { text.push_str(blank_line); text.push_str(ending); }
         } else if previous == Some(false) && !join_previous {
+            text.push_str(blank_line);
             text.push_str(ending);
         }
         text.push_str(&body);
         if !leading && following {
             text.push_str(ending);
-            if !join_next { text.push_str(ending); }
+            if !join_next { text.push_str(blank_line); text.push_str(ending); }
         } else if next == Some(false) && !join_next {
             text.push_str(ending);
+            text.push_str(blank_line);
         }
         let bytes = self.encoding().encode_fragment(&text)?;
         let rest = if leading || !following { source.end } else { source.start };
@@ -573,9 +586,26 @@ impl Document {
         Ok(range.start + self.encoding().encode_fragment(content)?.len())
     }
 
-    /// The pasted blocks reproject as authored: same text, kinds and
-    /// containers, not merged into a neighboring list, quote or paragraph.
-    fn inserted_blocks_match(&self, start: usize, expected: &Document) -> Result<bool, DocumentError> {
+    /// The quote continuation of a paragraph's first source line: its quote
+    /// markers. Empty when pasted blocks go to the top level; `None` when the
+    /// prefix does not show the paragraph's depth.
+    fn quote_continuation(&self, block: &Block, first_line: usize) -> Result<Option<String>, DocumentError> {
+        if quote_owner(block).is_empty() {
+            return Ok(Some(String::new()));
+        }
+        let Some(line) = self.source_line_text(first_line)? else { return Ok(None) };
+        let containers = &line[..super::super::markdown_quotes::container_prefix(&line)];
+        let Some(marker) = containers.rfind('>') else { return Ok(None) };
+        let end = marker + 1 + usize::from(containers[marker + 1..].starts_with([' ', '\t']));
+        let prefix = &containers[..end];
+        Ok((prefix.matches('>').count() == block.quote_depth).then(|| prefix.to_owned()))
+    }
+
+    /// The pasted blocks reproject as authored inside `outer`, the
+    /// destination's containers through its innermost quote: same text,
+    /// kinds and containers, not merged into a neighboring list, quote or
+    /// paragraph.
+    fn inserted_blocks_match(&self, start: usize, expected: &Document, outer: &[ContainerKind]) -> Result<bool, DocumentError> {
         let projection = expected.projection();
         let length = projection.text_tree().byte_len();
         let end = start + length;
@@ -587,18 +617,33 @@ impl Document {
         if actual_text != expected_text {
             return Ok(false);
         }
-        let shape = |block: &Block, origin: usize| (
-            block.range.start - origin, block.range.end - origin, block.style.0.clone(), block.quote_depth,
-            std::mem::discriminant(&block.kind), block.thematic_break, block.markdown_html,
-            block.code_language.clone(),
-            block.containers.iter().map(|membership| membership.container.kind).collect::<Vec<_>>(),
-        );
+        let shape = |block: &Block, origin: usize, outer: &[ContainerKind]| {
+            let containers = block.containers.iter().map(|membership| membership.container.kind).collect::<Vec<_>>();
+            containers.starts_with(outer).then(|| (
+                block.range.start - origin, block.range.end - origin, block.style.0.clone(),
+                block.quote_depth.checked_sub(outer.iter().filter(|kind| **kind == ContainerKind::Quote).count()),
+                std::mem::discriminant(&block.kind), block.thematic_break, block.markdown_html,
+                block.code_language.clone(), containers[outer.len()..].to_vec(),
+            ))
+        };
         let actual = self.projection().blocks_for_region(&(start..end)).into_iter()
             .filter(|block| start <= block.range.start && block.range.end <= end)
-            .map(|block| shape(&block, start)).collect::<Vec<_>>();
-        let expected = projection.blocks_for_region(&(0..length)).iter().map(|block| shape(block, 0)).collect::<Vec<_>>();
-        Ok(actual == expected)
+            .map(|block| shape(&block, start, outer)).collect::<Vec<_>>();
+        let expected = projection.blocks_for_region(&(0..length)).iter().map(|block| shape(block, 0, &[])).collect::<Vec<_>>();
+        Ok(actual.iter().all(Option::is_some) && actual == expected)
     }
+}
+
+/// A paragraph's containers through its innermost quote: where pasted blocks
+/// go. Paragraphs in list items take their item's style, so a quote inside a
+/// list item keeps pasted blocks at the top level, as outside quotes.
+fn quote_owner(block: &Block) -> Vec<ContainerKind> {
+    let kinds = block.containers.iter().map(|membership| membership.container.kind).collect::<Vec<_>>();
+    let end = kinds.iter().rposition(|kind| *kind == ContainerKind::Quote).map_or(0, |at| at + 1);
+    if kinds[..end].iter().any(|kind| matches!(kind, ContainerKind::List { .. } | ContainerKind::ListItem)) {
+        return Vec::new();
+    }
+    kinds[..end].to_vec()
 }
 
 /// The list kind a line's unindented item marker starts: ordered with its

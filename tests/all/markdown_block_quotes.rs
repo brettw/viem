@@ -400,3 +400,78 @@ fn enter_on_an_empty_quoted_list_item_exits_its_visible_paragraph_style() {
         }
     }
 }
+
+fn quote_editor(source: &str) -> crate::support::Editor {
+    crate::support::Editor::open(source, Format::Markdown)
+}
+
+fn set_quote(editor: &mut crate::support::Editor, enabled: bool) {
+    let expected = editor.core.list_selection_identity(editor.view).unwrap();
+    editor.core.handle(editor.view, CoreEvent::SetBlockQuote { expected, enabled }).unwrap();
+}
+
+#[test]
+fn two_enters_leave_a_quote_on_the_unterminated_last_line() {
+    // A new document has no final line ending after the quote's last line.
+    for (source, expected) in [
+        ("", "Hello\n\n> quoted\n>\nafter\n"),
+        ("Intro\n\n", "Intro\n\nHello\n\n> quoted\n>\nafter\n"),
+        ("Intro\n", "IntroHello\n\n> quoted\n>\nafter\n"),
+    ] {
+        let mut editor = quote_editor(source);
+        editor.type_keys("GA");
+        editor.type_keys("Hello\n");
+        set_quote(&mut editor, true);
+        editor.type_keys("quoted\n\n");
+        let blocks = editor.document().projection().blocks();
+        let last = blocks.last().unwrap();
+        assert!(last.range.is_empty() && last.quote_depth == 0, "{source:?}: {blocks:?}");
+        editor.type_keys("after");
+        assert_eq!(editor.source(), expected, "{source:?}");
+        crate::support::assert_reopens_as_displayed(editor.document(), source);
+    }
+    let mut editor = quote_editor("> quoted");
+    editor.type_keys("A\n\n");
+    assert_eq!(editor.source(), "> quoted\n>\n\n");
+    crate::support::assert_exact_undo_redo(&mut editor, "> quoted", "> quoted\n>\n\n", "exit at EOF");
+}
+
+#[test]
+fn quote_button_puts_selected_paragraphs_in_one_quote() {
+    for (source, expected) in [
+        ("a\n\nb\n\nc", "> a\n>\n> b\n>\n> c"),
+        ("a\r\n\r\nb", "> a\r\n>\r\n> b"),
+        ("a\n\n# H\n\n- item", "> a\n>\n> # H\n>\n> - item"),
+    ] {
+        let mut editor = quote_editor(source);
+        editor.type_keys("vG");
+        set_quote(&mut editor, true);
+        assert_eq!(editor.source(), expected, "{source:?}");
+        let blocks = editor.document().projection().blocks();
+        assert!(blocks.iter().all(|block| block.quote_depth == 1), "{source:?}");
+        let quotes = blocks.iter().filter_map(|block| block.containers.first().map(|member| member.container.id))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(quotes.len(), 1, "{source:?}: one quote container");
+        crate::support::assert_reopens_as_displayed(editor.document(), source);
+        crate::support::assert_exact_undo_redo(&mut editor, source, expected, source);
+    }
+}
+
+#[test]
+fn quote_button_on_a_final_empty_quote_paragraph_ends_the_quote_like_enter() {
+    for (source, expected) in [
+        ("> quoted\n>\n> ", "> quoted\n>\nX\n"),
+        ("> quoted\n>\n> \n\nNext", "> quoted\n>\nX\n\nNext"),
+    ] {
+        let mut editor = quote_editor(source);
+        let text = editor.document().text().to_owned();
+        let at = text.find("Next").map_or(text.len(), |at| at - 1);
+        editor.key(Key::Char('i'));
+        editor.place(at);
+        set_quote(&mut editor, false);
+        editor.type_keys("X");
+        assert_eq!(editor.source(), expected, "{source:?}");
+        assert!(editor.document().projection().blocks()[0].quote_depth == 1, "{source:?}");
+        crate::support::assert_reopens_as_displayed(editor.document(), source);
+    }
+}

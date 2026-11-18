@@ -138,6 +138,20 @@ container, including its first and last lines.
   them, and plain registers everywhere, as literal lines.
 - `o`, `O` and Enter at a line's end keep the new line in the container.
 
+- The Block quote and Code Block buttons put several selected paragraphs in
+  one container. Quoting writes `>` on the blank lines between them; Code Block
+  turns each paragraph into one code line, so Preview text is unchanged.
+  Selected list items lose their list first. Selections that mix containers,
+  include code, rules or HTML, or span unselected source keep one code block
+  per paragraph.
+- Complete Markdown blocks pasted (Native Paste or a `*`/`+` put) into a
+  quote or alert go inside it, writing its prefix on every line and blank
+  separator. A quote inside a list item, like a paragraph outside quotes,
+  takes them at the top level.
+- Turning either button off with the caret on an empty final line of a quote
+  or code block that has other lines ends the container before that line, as
+  Enter's exit does.
+
 Deliberate code differences include literal line endings, Enter's exit after
 blank code lines, and Shift-Enter adding a literal code line. Lists differ only
 in that a new line can be a new item of the same list.

@@ -10652,6 +10652,18 @@ impl CommandInterpreter {
             Err(output) => return Ok(output),
         };
         if let Some(output) = self.paste_table_matrix(document, &register, count)? { return Ok(output); }
+        if !native && matches!(register_name, '*' | '+') && count == 1
+            && self.puts_clipboard_markdown(document, &register)
+        {
+            // `P` keeps every register; `p` deletes into the unnamed one.
+            let put = clipboard::MarkdownPut {
+                selected: true, editing: false, after: false,
+                replaced: (!preserve_unnamed).then_some(None),
+            };
+            if let Some(output) = self.paste_platform_markdown(document, &register, put)? {
+                return Ok(output);
+            }
+        }
         let register = match checked_register_repetition(&register, count) {
             Ok(register) => register,
             Err(error) => return Ok(error.into_command_output()),
@@ -12582,6 +12594,19 @@ impl CommandInterpreter {
         if let Some(output) = self.paste_table_matrix(document, &value, count)? { return Ok(output); }
         if value.text.is_empty() {
             return Ok(CommandOutput::complete());
+        }
+        // Clipboard text puts exactly as Native Paste interprets it, at the
+        // put command's own position.
+        if matches!(name, '*' | '+') && count == 1 && self.mode == Mode::Normal
+            && self.puts_clipboard_markdown(document, &value)
+        {
+            let put = clipboard::MarkdownPut { selected: false, editing: false, after: !before, replaced: None };
+            if let Some(output) = self.paste_platform_markdown(document, &value, put)? {
+                if !self.replaying {
+                    self.last_repeat = Some(RepeatAction::Paste { before, follow, count, register: name });
+                }
+                return Ok(output);
+            }
         }
         if self.line_mode == LineMode::PhysicalSource && value.kind == RegisterKind::Linewise {
             return self.paste_physical_lines(document, before, count, follow, name, value);

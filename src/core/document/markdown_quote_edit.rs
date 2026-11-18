@@ -266,6 +266,30 @@ impl Document {
         self.prepare_markdown_quote_style_raw(range, quote)
     }
 
+    /// An unterminated final `> ` line is the only line of its empty quoted
+    /// paragraph. Without its prefix it would become the empty boundary after
+    /// the previous line's ending, which is not a line, and the caret's
+    /// paragraph would vanish. Its own ending keeps that empty paragraph.
+    fn unquoted_terminal_line_patch(&self, last: usize) -> Result<Option<SourcePatch>, DocumentError> {
+        let index = &self.state().source_hard_lines;
+        if last == 0 || last + 1 != index.len() {
+            return Ok(None);
+        }
+        let line = index.get(last).ok_or(DocumentError::AmbiguousProjection)?;
+        let bytes = self.state().source.bytes_in(line.clone())
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let decoded = self.encoding().decode_region(&bytes, line.start)?;
+        let body = &decoded.text[crate::document::markdown_quotes::container_prefix(&decoded.text)..];
+        // A nested quote's line keeps its outer prefix, so it remains a line.
+        if !body.trim_matches([' ', '\t']).is_empty() || body.contains(['\n', '\r'])
+            || decoded.text.matches('>').count() > 1
+        {
+            return Ok(None);
+        }
+        Ok(Some(SourcePatch::primary(line.end..line.end,
+            self.encoding().encode_fragment(self.file_format().spelling())?)))
+    }
+
     pub(super) fn prepare_markdown_quote_style_raw(
         &self,
         range: Range<usize>,
@@ -444,7 +468,14 @@ impl Document {
             let separator = decoded.text[crate::document::markdown_quotes::prefix(&decoded.text)..]
                 .trim()
                 .is_empty();
-            if quote && lines.contains(&index) {
+            if quote && !lines.contains(&index) && separator && !decoded.text.contains('>')
+                && !code_list_prefixes.contains_key(&(index - 1))
+                && !code_list_prefixes.contains_key(&(index + 1))
+            {
+                // Blank lines between selected blocks join them in one
+                // quote. Nested list content keeps its own separators.
+                patches.push(SourcePatch::primary(line.start..line.start, self.encoding().encode_fragment(">")?));
+            } else if quote && lines.contains(&index) {
                 let (offset, padding) = if let Some(&(opening, opening_prefix, columns)) = code_list_prefixes.get(&index) {
                     if index == opening { (opening_prefix, 0) } else {
                         let mut width = 0;
@@ -481,6 +512,9 @@ impl Document {
         }
         if patches.is_empty() {
             return Ok(self.no_op_prepared());
+        }
+        if !quote && self.format() == Format::Markdown {
+            patches.extend(self.unquoted_terminal_line_patch(last)?);
         }
         if self.format() == Format::Markdown {
             if !quote {

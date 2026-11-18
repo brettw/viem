@@ -25,6 +25,11 @@ impl Document {
                 });
             }
         }
+        if enabled && self.format() == Format::Markdown && blocks.len() > 1 {
+            if let Some(prepared) = self.prepare_merged_code_style(&blocks)? {
+                return Ok(prepared);
+            }
+        }
         let mut patches = Vec::new();
         let mut targets = Vec::new();
         for block in blocks {
@@ -241,6 +246,81 @@ impl Document {
         }
         prepared.summary.kind = ModelChangeKind::SemanticStyle;
         Ok(prepared)
+    }
+
+    /// Several selected prose paragraphs become one fenced block whose lines
+    /// are their visible text, so Preview shows the same text. `None` keeps
+    /// one block per paragraph: selections reaching into lists, other
+    /// containers, code, rules, HTML or source lines that are neither part of
+    /// a selected paragraph nor blank.
+    fn prepare_merged_code_style(
+        &self,
+        blocks: &[super::super::Block],
+    ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
+        let (Some(first), Some(last)) = (blocks.first(), blocks.last()) else { return Ok(None) };
+        let lines = &self.state().source_hard_lines;
+        let mut covered = std::collections::BTreeSet::new();
+        let mut sources = Vec::new();
+        let mut container: Option<String> = None;
+        for block in blocks {
+            if !matches!(block.kind, super::super::BlockKind::Paragraph | super::super::BlockKind::Heading(_))
+                || block.style.is_code_block() || block.thematic_break || block.markdown_html
+                || block.task_checkbox.is_some() || block.quote_depth != first.quote_depth
+                || block.containers.iter().any(|member| member.container.alert.is_some())
+                || super::super::markdown_quotes::is_fenced_block(self, block)?
+            {
+                return Ok(None);
+            }
+            let (source, raw) = self.markdown_paragraph_source(block, false)?;
+            let opening = raw.lines().next().unwrap_or("");
+            let prefix = &opening[..super::super::markdown_quotes::prefix(opening)];
+            if container.get_or_insert_with(|| prefix.to_owned()) != prefix
+                || matches!(block.kind, super::super::BlockKind::Heading(_)) && !opening[prefix.len()..].starts_with('#')
+            {
+                return Ok(None);
+            }
+            let start = lines.line_at_offset(source.start).ok_or(DocumentError::AmbiguousProjection)?;
+            let end = lines.line_at_offset(source.end.saturating_sub(1).max(source.start))
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            covered.extend(start..=end);
+            sources.push(source);
+        }
+        let container = container.unwrap_or_default();
+        let source = sources[0].start..sources[sources.len() - 1].end;
+        let first_line = *covered.first().ok_or(DocumentError::AmbiguousProjection)?;
+        let last_line = *covered.last().ok_or(DocumentError::AmbiguousProjection)?;
+        for index in (first_line..=last_line).filter(|index| !covered.contains(index)) {
+            let line = lines.get(index).ok_or(DocumentError::AmbiguousProjection)?;
+            let bytes = self.state().source.bytes_in(line.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+            let decoded = self.encoding().decode_region(&bytes, line.start)?;
+            if decoded.text.trim_end() != container.trim_end() {
+                return Ok(None);
+            }
+        }
+        let visible = first.range.start..last.range.end;
+        let body = self.projection().text_tree().slice(visible.clone())
+            .map_err(DocumentError::FormattedTextStorage)?;
+        let width = body.split(|ch| ch != '`').map(str::len).max().unwrap_or(0).max(2) + 1;
+        let fence = "`".repeat(width);
+        let language = self.projection().default_code_language(first.range.start).unwrap_or_default();
+        let syntax = format!("{container}{fence}{language}\n{}\n{container}{fence}", quote_lines(&body, &container));
+        let patch = SourcePatch::primary(source, self.encoding()
+            .encode_fragment(&syntax.replace('\n', self.file_format().spelling()))?);
+        // Paragraph separators become code line endings: the same text with
+        // different hard-line ownership, so the edit names the whole body.
+        let mut prepared = self.prepare_text_edits_with_patch_policy(
+            vec![TextEdit::new(visible.clone(), body.as_str())], Some(vec![patch]), true)?;
+        let PreparedPublication::State(candidate) = &prepared.publication else {
+            return Err(DocumentError::VerificationFailed.into());
+        };
+        if candidate.projection.text() != self.text()
+            || !candidate.projection.blocks_for_region(&(visible.start..visible.start)).iter()
+                .any(|block| block.range == visible && block.style.is_code_block())
+        {
+            return Err(DocumentError::VerificationFailed.into());
+        }
+        prepared.summary.kind = ModelChangeKind::SemanticStyle;
+        Ok(Some(prepared))
     }
 
     fn markdown_paragraph_source(

@@ -93,6 +93,21 @@ impl Editor {
             .unwrap_or_else(|error| panic!("paste {text:?}: {error:?}"));
     }
 
+    /// Type Normal-mode keys (such as `"*p` or `"+P`) with `text` on both
+    /// system clipboard registers.
+    pub fn put_clipboard(&mut self, keys: &str, text: &str) {
+        for character in keys.chars() {
+            let mut clipboard = ClipboardCommandContext::new();
+            for target in [ClipboardTarget::Clipboard, ClipboardTarget::Primary] {
+                clipboard = clipboard.with_read(ClipboardSnapshot::new(
+                    target, ClipboardGeneration(1), ClipboardContent::from_plain_text(text)));
+            }
+            self.core
+                .handle(self.view, CoreEvent::InputWithClipboard { input: InputEvent::key(character), clipboard })
+                .unwrap_or_else(|error| panic!("{keys:?} with {text:?}: {error:?}"));
+        }
+    }
+
     pub fn set_autoformat(&mut self, enabled: bool) {
         self.core.handle(self.view, CoreEvent::SetMarkdownAutodetect(enabled)).expect("autoformat option");
     }
