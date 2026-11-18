@@ -7,6 +7,26 @@ import XCTest
 
 final class EVStyleMenuBridgeTests: XCTestCase {
   @MainActor
+  func testRulesAndPassiveHTMLDisableHeadingAndCodeBlockMenus() throws {
+    for text in ["---", "<div>\nx\n</div>", "<pre>x</pre>"] {
+      let backend = EVCoreDocumentBackend()
+      let source = Data(text.utf8)
+      try backend.readUntitled(source: source, typeName: EVDocument.markdownType)
+      let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+      surface.loadViewIfNeeded()
+      let content = EVDocumentContentViewController(editorSurface: surface)
+      for command in [EVMenuCommand.heading0, .heading1, .codeBlock] {
+        let item = NSMenuItem(title: "Style", action: #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)), keyEquivalent: "")
+        item.tag = command.rawValue
+        XCTAssertFalse(content.validateMenuItem(item), "\(text): \(command)")
+      }
+      let catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
+      XCTAssertTrue(catalogue.entries.filter { $0.role == .paragraph }.allSatisfy { !$0.presentation.isEnabled })
+      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
+    }
+  }
+
+  @MainActor
   func testParagraphShortcutValidationRetainsCurrentStyleCheckmark() throws {
     let backend = EVCoreDocumentBackend()
     let source = Data("## Title\n\nBody".utf8)

@@ -492,3 +492,25 @@ fn list_prefix_recognition_reparses_local_structure_without_unrelated_suffix() {
         assert_eq!(d.projection().blocks()[0].kind, reopened(&d).projection().blocks()[0].kind);
     }
 }
+
+#[test]
+fn leading_hyphen_in_a_bullet_body_stays_literal() {
+    for source in ["- a", "* a", "+ a", "> - a", "- parent\n  - a", "- "] {
+        for batched in [false, true] {
+            let mut editor = crate::support::Editor::open(source, Format::Markdown);
+            editor.type_keys("i");
+            let at = editor.document().text().rfind('a').unwrap_or(0);
+            editor.place(at);
+            let before = editor.document().text().to_owned();
+            let count = editor.document().projection().list_structure().lists.len();
+            if batched {
+                editor.core.handle_with_layout(editor.view, CoreEvent::Input(InputEvent::text("- "))).unwrap();
+            } else { editor.type_keys("- "); }
+            assert_eq!(editor.document().text(), format!("{}- {}", &before[..at], &before[at..]), "{source:?}");
+            assert_eq!(editor.document().projection().list_structure().lists.len(), count, "{source:?}");
+            crate::support::assert_reopens_as_displayed(editor.document(), source);
+            let edited = editor.source();
+            crate::support::assert_exact_undo_redo(&mut editor, source, &edited, source);
+        }
+    }
+}

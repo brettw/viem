@@ -47,6 +47,25 @@ and reopened styles.
 
 ## Shared fixtures and diagnostics
 
+Leading hyphens typed into existing bullet bodies remain literal; ordinary
+paragraphs still recognize new list prefixes. Table boundary Backspace/Delete
+moves between cells without a source edit, while internal cell breaks remain
+deletable. Preview sorting preserves a table's header/delimiter and refuses
+ranges crossing outside that table. Paragraph-style availability and request
+validation both exclude thematic breaks and passive HTML blocks, before source
+preparation or verification. Representatives live in `markdown_autodetect`,
+`markdown_table_boundary_keys`, `ex_sort`, and `formatting_actions`; native
+`EVStyleMenuBridgeTests` checks menu availability.
+
+Preview `>`/`<` commands use the formatting buttons' list-indent capabilities
+and transactions. A wrapped row targets its whole owning item and descendants;
+non-list content and structurally unavailable moves are no-ops. Linear Visual
+selections use the same selected-item range as the buttons. Line counts choose
+the addressed rows/items; Visual application counts repeat the structural move
+up to its limit in one undo unit. `tests/all/preview_shifts.rs` compares command
+and button results, wrapped-row caret retention, no-op history, counts, repeat
+and exact undo/redo. Text and Code retain their literal shift behavior.
+
 `tests/all/markdown_test_support.rs` supplies encoded fixtures, reopen/history
 assertions and explicit Insert-boundary placement. A Normal-mode character
 position can differ from an Insert boundary at the end of a paragraph. Assert

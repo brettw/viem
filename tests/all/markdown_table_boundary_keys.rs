@@ -184,3 +184,39 @@ fn backspace_after_a_table_still_removes_list_or_code_treatment() {
         assert_eq!(core.document().source_bytes(), saved);
     }
 }
+
+#[test]
+fn boundary_backspace_and_delete_move_between_cells_without_editing() {
+    for source in ["| h | j |\n| - | - |\n| b | c |", "> | h | j |\n> | - | - |\n> |  | 👩‍💻é |"] {
+        for with_layout in [false, true] {
+            for mode in ['i', 'R'] {
+                for forward in [false, true] {
+                    let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+                    let cells = document.projection().tables()[0].rows.iter()
+                        .flat_map(|row| row.cells.iter().map(|cell| cell.range.clone())).collect::<Vec<_>>();
+                    for ordinal in 0..cells.len() {
+                        let mut core = Core::new(Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap());
+                        let view = core.add_view(MockTextMeasurementProvider::new(), 700., 500.);
+                        let send = |core: &mut Core<MockTextMeasurementProvider>, event| {
+                            if with_layout { core.handle_with_layout(view, event) } else { core.handle(view, event) }
+                        };
+                        send(&mut core, CoreEvent::Input(InputEvent::key(mode))).unwrap();
+                        let at = if forward { cells[ordinal].end } else { cells[ordinal].start };
+                        let revision = core.document().revision();
+                        send(&mut core, CoreEvent::PlaceCursor { document_revision: revision,
+                            text_offset: at, affinity: BoundaryAffinity::Downstream, extend_selection: false }).unwrap();
+                        let history = core.document().history_status();
+                        let output = send(&mut core, CoreEvent::Input(InputEvent::Key(if forward { Key::Delete } else { Key::Backspace }))).unwrap();
+                        assert!(matches!(output.command.unwrap().status, CommandStatus::Complete));
+                        let target = if forward { (ordinal + 1 < cells.len()).then_some(ordinal + 1) } else { ordinal.checked_sub(1) };
+                        let expected = target.map_or(at, |target| if forward { cells[target].start } else { cells[target].end });
+                        assert_eq!(core.command_state(view).unwrap().cursor(), expected, "{source:?} {mode} cell={ordinal} forward={forward}");
+                        assert_eq!(core.document().source_bytes(), source.as_bytes());
+                        assert_eq!(core.document().history_status(), history);
+                        assert!(!core.command_state(view).unwrap().is_native_selection());
+                    }
+                }
+            }
+        }
+    }
+}

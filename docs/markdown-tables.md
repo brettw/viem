@@ -213,9 +213,11 @@ In Preview Insert/Replace within a cell:
   alignment, then enters its first cell. This also works in a header-only table.
   Row creation and the following typing use the structural-insertion undo policy.
   Shift-Tab in the first header cell stays there; it never creates a row above.
-- Boundary Backspace/Delete without a selection does not merge neighboring
-  cells or destroy table structure. Internal hard breaks and graphemes remain
-  normally deletable. The same boundary protection applies to Insert-mode
+- Boundary Backspace/Delete without a selection moves to the previous cell's
+  end or the next cell's start in row-major order, retaining Insert/Replace
+  mode without selecting or deleting text. At the first/last cell it stays put;
+  it never adds a row. Internal hard breaks and graphemes remain normally
+  deletable. The same boundary protection applies to Insert-mode
   Ctrl-W/Ctrl-U, and to the separator between a table and adjacent prose:
   a key that would join these owners does nothing. Structural widgets handle
   row/column deletion.
@@ -286,6 +288,13 @@ these row rules. Counts,
 cross-cell selections, registers, and replay must retain the originating line
 domain and exact range set. Do not claim command support until these cases and
 the complete-table deletion case have entry-point tests.
+
+Preview `:sort` sorts the addressed source body rows of one table, preserving
+the header and delimiter rows exactly. It supports ordinary sort flags and
+partial body-row ranges. A range mixing table rows with non-table content, or
+including more than one table, is unavailable and changes nothing. A range
+containing only the header and delimiter is a no-op. With Preview off, sorting
+retains unrestricted literal source-line semantics.
 
 ## Row and column widgets
 

@@ -910,7 +910,11 @@ fn prepare_sort(
     reverse: bool,
     plan: &mut ExPlan,
 ) -> Result<(), ExExecuteError> {
-    if let Some(source) = source_range(document, range)? {
+    let physical_source = source_range(document, range)?;
+    let table_source = document.preview_table_sort_range(range.text.clone(), physical_source.as_ref())?;
+    let in_table = table_source.is_some();
+    if let Some(source) = table_source.or(physical_source) {
+        if source.is_empty() { return Ok(()); }
         let units = source_units(document, source.clone())?;
         // A prefix prevents BOM-looking selected content from becoming the
         // temporary document's artifact BOM. Source bytes are never serialized
@@ -939,7 +943,7 @@ fn prepare_sort(
         if order.iter().copied().eq(0..units.len()) {
             return Ok(());
         }
-        verify_mixed_fragment(document, range, &source)?;
+        if !in_table { verify_mixed_fragment(document, range, &source)?; }
         let mut replacement = Vec::new();
         let mut relocations = Vec::with_capacity(order.len());
         for (position, index) in order.iter().copied().enumerate() {

@@ -8,6 +8,7 @@
 //! `cargo test --test all hard_line_reflow::`.
 
 mod application_theme;
+mod preview_shifts;
 mod vimscript_register_compatibility;
 mod audit_rich_boundaries;
 mod formatting_presentation_work;

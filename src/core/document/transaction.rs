@@ -3357,6 +3357,10 @@ impl Document {
         range: Range<usize>,
         style: StyleId,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        self.validate_range(&range)?;
+        if !self.can_set_paragraph_style(range.clone(), &style) {
+            return Err(DocumentError::UnsupportedFormatting.into());
+        }
         if self.format().is_markdown() {
             if let Some(prepared) = self.prepare_exclusive_structural_style(
                 range.clone(),

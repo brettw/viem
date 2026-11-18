@@ -23,9 +23,9 @@ fn list_levels(editor: &Editor) -> Vec<(String, u8, bool)> {
 }
 
 #[test]
-fn pasted_and_typed_lists_stay_flat_with_unescaped_words() {
+fn pasted_lists_keep_markers_and_typed_hyphens_stay_literal_in_continued_items() {
     for (input, ordered, expected) in [
-        ("- one\n- two-part\n- three", false, "- one\n- two-part\n- three"),
+        ("- one\n- two-part\n- three", false, "- one\n- \\- two-part\n- \\- three"),
         ("* one\n* two-part\n* three", false, "* one\n* two-part\n* three"),
         ("1. one\n2. two-part\n3. three", true, "1. one\n2. two-part\n3. three"),
         // Continuation numbering wins over a repeated typed ordinal; pasted
@@ -39,9 +39,12 @@ fn pasted_and_typed_lists_stay_flat_with_unescaped_words() {
             let context = format!("{input:?} pasted={pasted}");
             let expected = if pasted { input } else { expected };
             assert_eq!(editor.source(), expected, "{context}");
+            let bodies = if !pasted && input.starts_with('-') {
+                ["one", "- two-part", "- three"]
+            } else { ["one", "two-part", "three"] };
             assert_eq!(
                 list_levels(&editor),
-                vec![("one".into(), 0, ordered), ("two-part".into(), 0, ordered), ("three".into(), 0, ordered)],
+                bodies.into_iter().map(|body| (body.into(), 0, ordered)).collect::<Vec<_>>(),
                 "{context}"
             );
             assert_reopens_as_displayed(editor.document(), &context);
@@ -84,13 +87,12 @@ fn a_repeated_quote_prefix_continues_the_quote() {
 }
 
 #[test]
-fn a_marker_typed_before_item_text_still_nests() {
-    // Only a marker that is an empty first paragraph's whole body continues
-    // its item; before existing text it keeps CommonMark's nesting.
+fn a_hyphen_typed_before_item_text_stays_in_the_same_item() {
     let mut editor = Editor::open("- a\n- b", Format::Markdown);
     editor.place_at("b");
     editor.type_keys("i- ");
-    assert_eq!(editor.source(), "- a\n- - b");
+    assert_eq!(editor.document().text(), "a\n- b");
+    assert_eq!(list_levels(&editor), vec![("a".into(), 0, false), ("- b".into(), 0, false)]);
     assert_reopens_as_displayed(editor.document(), "marker before body text");
 }
 

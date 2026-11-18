@@ -9647,6 +9647,9 @@ impl CommandInterpreter {
         deletion_class: DeletionClass,
         application_count: usize,
     ) -> Result<CommandOutput, DocumentError> {
+        if document.format().is_markdown() && matches!(operator, Operator::Indent | Operator::Outdent) {
+            return self.apply_preview_list_shift(document, extent.range, operator, application_count);
+        }
         if operator != Operator::Yank { document.require_modifiable()?; }
         if matches!(
             operator,
@@ -18613,13 +18616,15 @@ mod tests {
                 let mut commands = CommandInterpreter::new();
         commands.set_indentation_defaults(crate::document::IndentationOptions { shiftwidth: 4, ..Default::default() }).unwrap();
                 keys(&mut commands, &mut document, "G>>");
-                assert_eq!(document.text(), "a\n    b\nc");
+                assert_eq!(document.text(), if format.is_markdown() { "a\nb\nc" } else { "a\n    b\nc" });
                 assert_eq!(
                     document.source_bytes(),
-                    forced_mac_source(if format == Format::Markdown {
-                        "a\r&#32;   b\nc"
+                    forced_mac_source(if format.is_markdown() {
+                        // Preview prose has no list treatment to indent.
+                        "a\rb\nc"
                     } else { "a\r    b\nc" }, format)
                 );
+                if format.is_markdown() { assert!(!document.undo(), "disabled Preview shifts add no undo"); }
             }
         }
     }

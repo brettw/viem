@@ -607,7 +607,15 @@ impl Document {
             let marker = prefix.strip_suffix(' ');
             let heading =
                 marker.is_some_and(|m| (1..=6).contains(&m.len()) && m.bytes().all(|b| b == b'#'));
-            let bullet = matches!(marker, Some("-" | "*" | "+"));
+            // A leading hyphen in an existing bullet's body is text. List
+            // nesting is an explicit Tab action, not a side effect of typing.
+            let literal_hyphen = marker == Some("-")
+                && super::super::edit_boundary::paragraph_at(self, start)?.is_some_and(|block|
+                    block.range.start == start
+                        && matches!(block.kind, super::super::BlockKind::ListItem {
+                            ordered: false, item_start: true, ..
+                        }));
+            let bullet = matches!(marker, Some("-" | "*" | "+")) && !literal_hyphen;
             let quote = marker == Some(">");
             let task = matches!(marker, Some("[ ]" | "[x]" | "[X]"))
                 && self.can_set_task_list(start..start)

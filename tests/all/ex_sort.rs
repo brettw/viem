@@ -371,6 +371,115 @@ fn markdown_multiline_soft_paragraph_reorders_as_one_styled_line() {
     assert_eq!(doc.text(), "apple\nzebra last");
     assert_eq!(doc.source_bytes(), b"**apple**\n\n__zebra\nlast__");
 }
+
+#[test]
+fn preview_table_sort_preserves_header_and_sorts_complete_source_body_rows() {
+    for prefix in ["", "> ", "  "] {
+        let before = format!("{prefix}| Z header | other |\n{prefix}| :--- | ---: |\n{prefix}| zebra | **z** |\n{prefix}| apple | _a_ |");
+        let expected = format!("{prefix}| Z header | other |\n{prefix}| :--- | ---: |\n{prefix}| apple | _a_ |\n{prefix}| zebra | **z** |");
+        for command in [":sort", ":%sort", ":.,$sort", ":1,4sort"] {
+            let mut document = source(&before, Format::Markdown);
+            let outcome = run(&mut document, command);
+            assert!(outcome.register_effects.is_empty());
+            assert_eq!(document.source_bytes(), expected.as_bytes(), "{command} {prefix:?}");
+            assert_eq!(document.projection().tables().len(), 1);
+            let reopened = source(&expected, Format::Markdown);
+            assert_eq!(document.text(), reopened.text());
+            assert!(document.undo());
+            assert_eq!(document.source_bytes(), before.as_bytes());
+            assert!(!document.undo());
+            assert!(document.redo());
+            assert_eq!(document.source_bytes(), expected.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn preview_table_sort_flags_partial_ranges_and_header_only_are_source_preserving() {
+    let before = "| z |\n| :-- |\n| b |\n| A |\n| a |\n| c |";
+    for (command, expected) in [
+        (":sort! iu", "| z |\n| :-- |\n| c |\n| b |\n| a |"),
+        (":3,5sort", "| z |\n| :-- |\n| A |\n| a |\n| b |\n| c |"),
+        (":1,2sort", before),
+    ] {
+        let mut document = source(before, Format::Markdown);
+        run(&mut document, command);
+        assert_eq!(document.source_bytes(), expected.as_bytes(), "{command}");
+    }
+    let mut header = source("| z |\n| - |", Format::Markdown);
+    run(&mut header, ":sort");
+    assert_eq!(header.source_bytes(), b"| z |\n| - |");
+    assert!(!header.undo());
+    let mut encoded = vec![0xff, 0xfe];
+    encoded.extend("| z |\r\n| - |\r\n| b |\n| a |\r\n".encode_utf16().flat_map(u16::to_le_bytes));
+    let mut document = Document::from_bytes_with_file_format(encoded.clone(), Encoding::Utf16Le, Format::Markdown, FileFormat::Dos).unwrap();
+    run(&mut document, ":sort");
+    let mut expected = vec![0xff, 0xfe];
+    expected.extend("| z |\r\n| - |\r\n| a |\n| b |\r\n".encode_utf16().flat_map(u16::to_le_bytes));
+    assert_eq!(document.source_bytes(), expected);
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), encoded);
+}
+
+#[test]
+fn preview_sort_rejects_table_ranges_mixed_with_other_content_atomically() {
+    let before = "before\n\n| z |\n| - |\n| b |\n| a |\n\nafter";
+    for command in [":sort", ":%sort", ":.,$sort", ":1,6sort", ":3,8sort", ":2,7sort"] {
+        let mut document = source(before, Format::Markdown);
+        let revision = document.revision();
+        let result = execute_ex(&mut document, &mut ExExecutionState::default(), &ExExecutionContext::default(),
+            &parse_ex(command).unwrap(), &());
+        assert!(matches!(result, Err(viem_core::command::ex_execute::ExExecuteError::Document(
+            viem_core::document::DocumentError::UnsupportedTableEdit(_)))), "{command}: {result:?}");
+        assert_eq!(document.source_bytes(), before.as_bytes());
+        assert_eq!(document.revision(), revision);
+        assert!(!document.undo());
+    }
+    let mut document = source(before, Format::Markdown);
+    run(&mut document, ":3,6sort");
+    assert_eq!(document.source_bytes(), before.replace("| b |\n| a |", "| a |\n| b |").as_bytes());
+    // Code's literal source semantics retain the ordinary unrestricted sort.
+    let mut document = source("| z |\n| - |\n| b |\n| a |", Format::Code);
+    run(&mut document, ":sort");
+    assert_eq!(document.source_bytes(), b"| - |\n| a |\n| b |\n| z |");
+}
+
+#[test]
+fn preview_table_selection_sorts_source_rows_through_the_command_prompt() {
+    use viem_core::command::{CommandStatus, TableSelectionExtent};
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
+    let before = "| z | q |\n| - | - |\n| b | **two** |\n| a | _one_ |";
+    for first_row in [0, 1] {
+        for reverse in [false, true] {
+            let mut core = Core::new(source(before, Format::Markdown));
+            let view = core.add_view(MockTextMeasurementProvider::new(), 500., 400.);
+            let (anchor_row, active_row) = if reverse { (2, first_row) } else { (first_row, 2) };
+            core.select_table_cells(view, core.document().id(), core.document().revision(), Some(TableSelectionExtent {
+                table: core.document().projection().tables()[0].id,
+                anchor_row, active_row, anchor_column: if reverse { 1 } else { 0 }, active_column: if reverse { 0 } else { 1 },
+            })).unwrap();
+            for key in ":sort".chars().map(Key::Char).chain([Key::Enter]) {
+                let result = core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(key))).unwrap();
+                assert!(matches!(result.command.unwrap().status, CommandStatus::Pending | CommandStatus::Complete));
+            }
+            assert_eq!(core.document().source_bytes(), b"| z | q |\n| - | - |\n| a | _one_ |\n| b | **two** |");
+            core.handle_with_layout(view, CoreEvent::Input(InputEvent::key('u'))).unwrap();
+            assert_eq!(core.document().source_bytes(), before.as_bytes());
+        }
+    }
+    let before = format!("before\n\n{before}\n\nafter");
+    let mut core = Core::new(source(&before, Format::Markdown));
+    let view = core.add_view(MockTextMeasurementProvider::new(), 500., 400.);
+    let history = core.document().history_status();
+    let mut status = None;
+    for key in "VG:sort".chars().map(Key::Char).chain([Key::Enter]) {
+        status = core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(key))).unwrap().command.map(|out| out.status);
+    }
+    assert!(matches!(status, Some(CommandStatus::ExError(_))), "{status:?}");
+    assert_eq!(core.document().source_bytes(), before.as_bytes());
+    assert_eq!(core.document().history_status(), history);
+}
 #[test]
 fn coordinator_obeys_sort_cursor_even_when_new_ordinal_equals_old_zero() {
     use viem_core::layout::MockTextMeasurementProvider;

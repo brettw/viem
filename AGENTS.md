@@ -422,6 +422,8 @@ Deliberate presentation differences from GitHub:
   divergent paths; see
   [container parity](docs/markdown-feature-contracts.md#container-parity).
 - Headings, quotes, lists and Code Blocks change through semantic operations.
+  Paragraph-style assignment is unavailable on thematic breaks and passive
+  HTML blocks; explicit requests fail before preparing source changes.
   List actions apply to whole items with their descendants and renumber
   affected ordered runs in the same transaction, keeping the first run's
   starting number. Removing a treatment preserves paragraph boundaries with
@@ -430,6 +432,8 @@ Deliberate presentation differences from GitHub:
 - Automatic formatting of typed Markdown (on by default) applies only to
   committed Preview input, uses bounded local context, and shares the
   insertion's undo unit. Protected and opaque content stays literal.
+  A hyphen typed at the start of an existing bulleted item's first paragraph
+  stays literal, including when followed by a space; Tab creates nesting.
   Ctrl-Q/Ctrl-V literal-next bypasses it, and its literal protection survives
   later edits.
 - Toggling Preview changes only the active view. It is not an edit: bytes,
@@ -590,6 +594,10 @@ Unsupported commands fail without side effects.
   Text and Code even with soft wrapping, but displayed rows in Markdown
   Preview; explicit physical addresses and existing selections retain their
   own domains.
+- In Markdown Preview, `>` and `<` use the same list-item indent/unindent
+  operations and availability as the formatting buttons, including `>>`, `<<`,
+  linear Visual selections, counts and repeat. They move whole eligible items
+  with their descendants; unavailable shifts are no-ops, never inserted spaces.
 - Absolute addresses are always physical source lines: decimal Ex addresses,
   counted `G`, `gg`, `zt`, `zz` and `zb`, `N%`, and launch line numbers.
   Offsets inherit their base's domain: `23+2` is physical line 25, while `.+2`

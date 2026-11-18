@@ -10,6 +10,18 @@ pub(super) enum Assignment {
 }
 
 impl Document {
+    /// Paragraph assignments need an editable Markdown paragraph owner.
+    /// Rules and passive HTML keep their own structure; trial edits are not
+    /// capability checks and must not reach verification for these targets.
+    pub fn can_set_paragraph_style(&self, range: Range<usize>, style: &StyleId) -> bool {
+        self.format().is_markdown()
+            && self.validate_range(&range).is_ok()
+            && style.supports_markdown_paragraph_assignment()
+            && !self.projection().range_intersects_table(&range)
+            && !selected_blocks(self, &range).iter()
+                .any(|block| block.thematic_break || block.markdown_html)
+    }
+
     pub(super) fn prepare_markdown_heading_patches(
         &self,
         patches: Vec<SourcePatch>,

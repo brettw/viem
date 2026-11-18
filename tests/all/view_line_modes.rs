@@ -953,7 +953,9 @@ fn counted_absolute_operators_edit_physical_lines_in_both_modes() {
             keys(&mut core, view, "u");
             assert_eq!(core.document().source_bytes(), original.as_bytes());
         }
-        for (command, expected) in [("gU2G", "FIRST\nSECOND\nthird"), (">2G", "  first\n  second\nthird")] {
+        // Absolute addresses still choose physical lines, but Preview shifts
+        // apply list treatment to that range rather than inserting spaces.
+        for (command, expected) in [("gU2G", "FIRST\nSECOND\nthird"), (">2G", "first\nsecond\nthird")] {
             let document = Document::from_bytes(b"first\nsecond\nthird".to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
             let (mut core, view) = editor(document, 45.);
             core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();

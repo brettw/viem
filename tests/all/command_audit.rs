@@ -1045,13 +1045,14 @@ fn rich_linewise_put_preserves_markdown_owners_and_exact_undo() {
 }
 
 #[test]
-fn rich_indentation_preserves_literal_reference_definitions() {
+fn preview_shift_leaves_prose_and_literal_reference_definitions_unchanged() {
     for source in [
         "[ref]: /url \"title\"\n[other]: <x y>",
         "[ref]\n\n[ref]: /url",
         "[a][ref]\n\n[ref]: https://example.com",
     ] {
         let (mut core, view) = editor(source, Format::Markdown);
+        let history = core.document().history_status();
         keys(&mut core, view, ">>");
         let reopened = Document::from_bytes(
             core.document().source_bytes(),
@@ -1060,8 +1061,8 @@ fn rich_indentation_preserves_literal_reference_definitions() {
         )
         .unwrap();
         assert_eq!(reopened.text(), core.document().text(), "{source:?}");
-        keys(&mut core, view, "u");
         assert_eq!(core.document().source_bytes(), source.as_bytes());
+        assert_eq!(core.document().history_status(), history);
     }
 }
 

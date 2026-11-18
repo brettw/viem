@@ -372,6 +372,11 @@ impl CommandInterpreter {
                 || self.selection_behavior == SelectionBehavior::Visual
                     && self.selection_return_mode == Mode::Normal
             {
+                if matches!(event, InputEvent::Key(Key::Char(':'))) {
+                    let output = self.enter_visual_ex(document);
+                    if output.mode_changed { self.table_cells = None; }
+                    return Ok(Some(output));
+                }
                 if matches!(event, InputEvent::Key(Key::Char('"'))) {
                     return Ok(None);
                 }
@@ -634,6 +639,36 @@ impl CommandInterpreter {
         ) && self.cursor == range.start)
             || (matches!(event, InputEvent::Key(Key::Delete)) && self.cursor == range.end)
         {
+            let step = match event {
+                InputEvent::Key(Key::Backspace) => Some((false, EditSessionStep::Backspace)),
+                InputEvent::Key(Key::Delete) => Some((true, EditSessionStep::Delete)),
+                _ => None,
+            };
+            if let Some((forward, step)) = step {
+                let columns = table.columns.len();
+                let ordinal = row_index * columns + column;
+                let target = if forward {
+                    ordinal.checked_add(1).filter(|next| *next < table.rows.len() * columns)
+                } else { ordinal.checked_sub(1) };
+                if let Some(target) = target {
+                    let next = &table.rows[target / columns].cells[target % columns];
+                    let at = if forward { next.range.start } else { next.range.end };
+                    document.end_edit_group();
+                    document.begin_edit_group();
+                    self.retire_typing_context();
+                    self.invalidate_replace_restoration();
+                    self.cursor = at;
+                    self.boundary_affinity = if forward { BoundaryAffinity::Downstream }
+                        else { BoundaryAffinity::Upstream };
+                    self.visual_position = None;
+                    self.desired_x = None;
+                    if let Some(session) = self.insert_session.as_mut() {
+                        session.unit_floor = at;
+                        session.record_step(step);
+                    }
+                    return Ok(Some(CommandOutput { cursor_moved: true, ..CommandOutput::complete() }));
+                }
+            }
             return Ok(Some(CommandOutput::complete()));
         }
         Ok(None)

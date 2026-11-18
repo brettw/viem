@@ -50,6 +50,21 @@ final class EVTableEditingTests: XCTestCase {
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), saved)
     }
 
+    func testBoundaryDeletionMovesTheCaretBetweenCellsWithoutEditing() throws {
+        let source = "| a | b |\n| - | - |\n| c | d |"
+        let (backend, surface, session) = try surface(source)
+        surface.performInput { _ = try session.sendText("i") }
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 2, length: 0))
+        surface.editorView.doCommand(by: #selector(NSResponder.deleteBackward(_:)))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 1)
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+        surface.editorView.doCommand(by: #selector(NSResponder.deleteForward(_:)))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 2)
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+        XCTAssertFalse(backend.persistenceState.isDirty)
+    }
+
     func testNativeStructuralActionsRetainAlignmentAndUndoExactSpelling() throws {
         let source = "| A | B |\n| :-- | --: |\n| one | two |"
         let (backend, surface, session) = try surface(source)

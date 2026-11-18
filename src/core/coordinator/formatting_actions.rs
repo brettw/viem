@@ -240,7 +240,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                 || self.document.validate_typing_properties_at(commands.cursor(), affinity, &[]).is_ok();
             let character_styles = editable && typing && !named.has_code_block;
             let paragraph_styles = editable && selection.kind() != LogicalSelectionKind::Cells && !named.has_table;
-            result.set(ParagraphStyles, paragraph_styles, SemanticStyleState::Off);
+            let paragraph_assignment = paragraph_styles && self.document.can_set_paragraph_style(
+                selection.range(), &self.document.projection().style_sheet().base_paragraph);
+            result.set(ParagraphStyles, paragraph_assignment, SemanticStyleState::Off);
             result.set(CharacterStyles, character_styles, SemanticStyleState::Off);
             for (action, property) in [
                 (Underline, StyleProperty::CharacterUnderline),
@@ -259,7 +261,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             let character = |id: &str| named.character.as_ref().is_some_and(|style| style.0 == id);
             let paragraph = |id: &str| named.paragraph.as_ref().is_some_and(|style| style.0 == id);
             result.set(Code, character_styles, on_if(character("Code")));
-            result.set(CodeBlock, paragraph_styles, on_if(paragraph("Code Block")));
+            result.set(CodeBlock, paragraph_assignment, on_if(paragraph("Code Block")));
             result.set(BlockQuote, paragraph_styles && !named.has_code_block,
                 membership(named.has_quotes, named.has_non_quote));
             if requested.intersects(&[AlertNote, AlertTip, AlertImportant, AlertWarning, AlertCaution]) {
@@ -288,7 +290,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             for level in 0..=6 {
                 let id = if level == 0 { "Paragraph".to_owned() } else { format!("Heading{level}") };
                 let defined = self.document.projection().style_sheet().block_style(&StyleId::from(id.as_str())).is_some();
-                result.set(FormattingAction::heading(level).expect("standard level"), paragraph_styles && defined,
+                result.set(FormattingAction::heading(level).expect("standard level"), paragraph_assignment && defined,
                     on_if(paragraph(&id)));
             }
         }

@@ -229,3 +229,31 @@ fn availability_reads_local_context_without_parsing_or_preparing_edits() {
         assert!(work.source_decoded_bytes < 2048, "{count}: {work:?}");
     }
 }
+
+#[test]
+fn rules_and_passive_html_disable_paragraph_assignments_and_reject_them_before_verification() {
+    use viem_core::document::{DocumentError, ModelRequest, ModelTransactionError, StyleNamespace};
+    for source in ["---", "<div>\nx\n</div>", "<pre>x</pre>", "before\n\n---\n\nafter"] {
+        let (mut core, view) = open(source);
+        if source.starts_with("before") { select_all(&mut core, view); }
+        let available = actions(&core, view);
+        for action in [ParagraphStyles, Heading0, Heading1, Heading6, CodeBlock] {
+            assert!(!available.is_enabled(action), "{source:?} {action:?}");
+        }
+        let expected = core.list_selection_identity(view).unwrap();
+        let history = core.document().history_status();
+        for style in ["Heading1", "Code Block"] {
+            for request in [
+                ModelRequest::SetParagraphStyle { document: expected.document(), revision: expected.revision(), range: expected.range(), style: style.into() },
+                ModelRequest::AssignNamedStyle { document: expected.document(), revision: expected.revision(), range: expected.range(), namespace: StyleNamespace::Block, style: style.into() },
+            ] {
+                assert!(matches!(core.document().prepare_model_request(request), Err(ModelTransactionError::Document(DocumentError::UnsupportedFormatting))), "{source:?} {style}");
+            }
+            assert!(matches!(core.handle(view, CoreEvent::SetParagraphStyle { expected: expected.clone(), style: style.into() }),
+                Err(viem_core::CoreError::Document(DocumentError::UnsupportedFormatting))
+                | Err(viem_core::CoreError::ModelTransaction(ModelTransactionError::Document(DocumentError::UnsupportedFormatting)))));
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+            assert_eq!(core.document().history_status(), history);
+        }
+    }
+}

@@ -1021,6 +1021,17 @@ impl CommandInterpreter {
         extent: LineExtent,
         applications: usize,
     ) -> Result<CommandOutput, DocumentError> {
+        if document.format().is_markdown() && matches!(operator, Operator::Indent | Operator::Outdent) {
+            let output = self.apply_preview_list_shift(document, extent.text, operator, applications)?;
+            if output.document_changed && !self.replaying {
+                self.last_repeat = Some(RepeatAction::Operator {
+                    command: OperatorRepeat { operator,
+                        target: RepeatTarget::ViewLine(shape, applications), count, register },
+                    edits: None,
+                });
+            }
+            return Ok(output);
+        }
         if operator.is_format() && document.format().is_markdown() {
             let output = self.apply_preview_format_operator(document,
                 operator == Operator::FormatKeepCursor, extent.text, extent.last_visual_row)?;
@@ -1334,6 +1345,58 @@ impl CommandInterpreter {
         self.visual_position = None;
         self.desired_x = None;
         Ok(output)
+    }
+
+    /// Preview shifts use the same eligibility and model transaction as the
+    /// native indent buttons. A displayed row identifies its owning list item;
+    /// it never supplies a position at which to insert whitespace.
+    pub(super) fn apply_preview_list_shift(
+        &mut self,
+        document: &mut Document,
+        range: Range<usize>,
+        operator: Operator,
+        applications: usize,
+    ) -> Result<CommandOutput, DocumentError> {
+        if applications > 250_000 { return Ok(repetition_too_large(applications)); }
+        if document.projection().range_intersects_table(&range) {
+            return Ok(CommandOutput::complete());
+        }
+        let unindent = operator == Operator::Outdent;
+        let capable = |document: &Document| {
+            let (indent, outdent) = document.list_indent_capabilities(range.clone());
+            if unindent { outdent } else { indent }
+        };
+        if !capable(document) { return Ok(CommandOutput::complete()); }
+        document.require_modifiable()?;
+        let before = document.revision();
+        // Counts repeat button presses up to the structural limit. Group the
+        // successful steps into one undo unit; the command checkpoint rolls
+        // back the whole event if a real preparation/publication error occurs.
+        document.begin_edit_group();
+        let result = (|| {
+            for _ in 0..applications {
+                if !capable(document) { break; }
+                let prepared = match document.prepare_model_request(ModelRequest::IndentList {
+                    document: document.id(), revision: document.revision(), range: range.clone(), unindent,
+                }) {
+                    Ok(prepared) => prepared,
+                    Err(ModelTransactionError::Document(DocumentError::UnsupportedFormatting)) => break,
+                    Err(error) => return Err(command_document_error(error)),
+                };
+                document.commit_model_transaction(prepared).map_err(command_document_error)?;
+            }
+            Ok(())
+        })();
+        document.end_edit_group();
+        result?;
+        let changed = document.revision() != before;
+        if changed {
+            let covered = Self::hard_lines_covered(&document.hard_line_snapshot(), &range);
+            self.note_shift_mark_range(document, covered.start, covered.end - 1);
+            self.visual_position = None;
+            self.desired_x = None;
+        }
+        Ok(CommandOutput { document_changed: changed, ..CommandOutput::complete() })
     }
 
     pub(super) fn finish_line_deletion_caret(

@@ -7,6 +7,45 @@ fn unsupported(reason: &'static str) -> ModelTransactionError {
     DocumentError::UnsupportedTableEdit(reason).into()
 }
 impl Document {
+    /// Resolve a Preview sort inside one table to complete source body rows.
+    /// Header spelling and delimiter syntax are never sortable records.
+    pub fn preview_table_sort_range(
+        &self,
+        text: Range<usize>,
+        source: Option<&Range<usize>>,
+    ) -> Result<Option<Range<usize>>, DocumentError> {
+        if !self.format().is_markdown() { return Ok(None); }
+        self.validate_range(&text)?;
+        let tables = self.projection().tables();
+        let index = if let Some(source) = source {
+            tables.partition_point(|table| table.source_range.end <= source.start)
+        } else {
+            tables.partition_point_end(text.start)
+        };
+        let Some(table) = tables.get(index).filter(|table| {
+            if let Some(source) = source { table.source_range.start < source.end }
+            else { table.range.start < text.end || text.is_empty() && table.range.contains(&text.start) }
+        }) else { return Ok(None); };
+        let contained = if let Some(source) = source {
+            table.source_range.start <= source.start && source.end <= table.source_range.end
+        } else {
+            table.range.start <= text.start && text.end <= table.range.end
+        };
+        if !contained {
+            return Err(DocumentError::UnsupportedTableEdit(
+                "Sorting in Markdown Preview requires a range entirely inside one table or entirely outside tables.",
+            ));
+        }
+        let source = if let Some(source) = source { source.clone() } else {
+            let first = table.rows.partition_point(|row| row.range.end < text.start);
+            let last = table.rows.partition_point(|row| row.range.start < text.end).max(first + 1) - 1;
+            table.rows[first].source_range.start..table.rows[last].source_range.end
+        };
+        let body_start = table.source_rows[1].source_range.end;
+        let start = source.start.max(body_start);
+        Ok(Some(start..source.end.max(start)))
+    }
+
     pub fn can_insert_table(&self, range: Range<usize>) -> bool {
         if !self.format().is_markdown() || self.validate_range(&range).is_err() {
             return false;
