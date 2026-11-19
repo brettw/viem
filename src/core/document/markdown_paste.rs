@@ -665,8 +665,16 @@ fn list_marker(line: &str) -> Option<(bool, char)> {
     (rest.is_empty() || rest.starts_with([' ', '\t'])).then_some((ordered, delimiter))
 }
 
-/// A rich fragment of one pasted paragraph, for inline insertion.
+/// A rich fragment of one pasted paragraph, for inline insertion. A
+/// paragraph's edge spaces and tabs are not Markdown, but pasted inline they
+/// separate the text from its neighbors, so they stay visible.
 fn markdown_fragment(source: &str) -> Result<(crate::document::ClipboardFragment, String), DocumentError> {
+    let body = source.trim_matches([' ', '\t']);
+    let start = source.len() - source.trim_start_matches([' ', '\t']).len();
+    let protect = |edge: &str| edge.chars().map(|ch| if ch == '\t' { "&#9;" } else { "&#32;" }).collect::<String>();
+    let source = if body.is_empty() { source.to_owned() } else {
+        format!("{}{body}{}", protect(&source[..start]), protect(&source[start + body.len()..]))
+    };
     let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown)?;
     let length = document.projection().text_tree().byte_len();
     let text = document.projection().text_tree().slice(0..length).map_err(DocumentError::FormattedTextStorage)?;

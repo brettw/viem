@@ -508,3 +508,29 @@ fn pasting_into_code_shows_the_pasted_text_literally() {
         }
     }
 }
+
+#[test]
+fn spaces_at_the_edges_of_a_pasted_partial_paragraph_stay_visible() {
+    for (keys, text, expected, shown) in [
+        ("A", " **there**", "Hello world **there**", "Hello world there"),
+        ("I", "**Hi** ", "**Hi** Hello world", "Hi Hello world"),
+        ("A", "\n\nnext\n\n**b** ", "Hello world\n\nnext\n\n**b** ", "Hello world\nnext\nb "),
+    ] {
+        for native in [true, false] {
+            let mut editor = Editor::open("Hello world", Format::Markdown);
+            if native {
+                editor.type_keys(keys);
+                editor.paste_plain(text);
+            } else {
+                // `"+p` after the last character, `"+P` before the first.
+                editor.type_keys(if keys == "A" { "$" } else { "0" });
+                editor.put_clipboard(if keys == "A" { "\"+p" } else { "\"+P" }, text);
+            }
+            let context = format!("{text:?} native={native}");
+            assert_eq!(editor.source(), expected, "{context}");
+            assert_eq!(editor.document().text(), shown, "{context}");
+            assert_reopens_as_displayed(editor.document(), &context);
+            assert_exact_undo_redo(&mut editor, "Hello world", expected, &context);
+        }
+    }
+}
